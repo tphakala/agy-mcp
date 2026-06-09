@@ -68,6 +68,16 @@ Or add to your MCP client config:
 - `list_models()` -> `{ models }`
 - `list_sessions(dir?)` -> `{ sessions }`
 
+A fresh `agy_run` (no `conversation_id`, no `continue_latest`) starts with an empty
+`conversation_id`; agy assigns one as the run proceeds, and `agy_status` reports it once the
+run completes, so the thread can be continued later. To keep that capture unambiguous, fresh
+runs sharing a `cwd` are serialized: while one fresh run is active, a second fresh run in the
+same directory is refused (`agy_run` returns a conflict error rather than queuing it), so run
+them in separate directories or retry once the first finishes. Runs in different directories,
+and runs continuing distinct conversations, still run concurrently up to the configured cap.
+The gate that enforces this is rebuilt at startup from jobs whose supervisor outlived a server
+restart, so the cap and serialization hold across restarts.
+
 ## HTTP mode
 
 ```bash

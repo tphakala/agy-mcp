@@ -24,9 +24,11 @@ func agyCachePath() string {
 	return filepath.Join(home, ".gemini", "antigravity-cli", "cache", "last_conversations.json")
 }
 
-// ListSessions returns known conversations, optionally filtered to one dir.
+// ListSessions returns known conversations, optionally filtered to one dir. It
+// reads m.cacheFile so it shares the manager's single source of truth for the agy
+// cache path (and is injectable in tests) like the capture/resolve paths.
 func (m *Manager) ListSessions(dir string) ([]Session, error) {
-	return readSessions(agyCachePath(), dir)
+	return readSessions(m.cacheFile, dir)
 }
 
 func readSessions(cacheFile, filterDir string) ([]Session, error) {

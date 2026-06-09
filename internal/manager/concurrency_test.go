@@ -4,13 +4,19 @@ import "testing"
 
 func TestKeyForRequest(t *testing.T) {
 	if k := keyFor(StartRequest{ConversationID: "abc"}); k != "conv:abc" {
-		t.Errorf("key = %q", k)
+		t.Errorf("conversation key = %q", k)
 	}
 	if k := keyFor(StartRequest{ContinueLatest: true, Cwd: "/w"}); k != "cwd:/w" {
-		t.Errorf("key = %q", k)
+		t.Errorf("continue-latest key = %q", k)
 	}
-	if k := keyFor(StartRequest{Cwd: "/w"}); k != "" {
-		t.Errorf("fresh run should have no serialization key, got %q", k)
+	// A fresh run now serializes on its cwd, so two new conversations created in the
+	// same directory cannot interleave and misattribute their captured UUIDs.
+	if k := keyFor(StartRequest{Cwd: "/w"}); k != "cwd:/w" {
+		t.Errorf("fresh run should serialize on cwd, got %q", k)
+	}
+	// With no cwd at all there is nothing to serialize on.
+	if k := keyFor(StartRequest{}); k != "" {
+		t.Errorf("keyless request = %q", k)
 	}
 }
 

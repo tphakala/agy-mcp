@@ -52,6 +52,7 @@ func (m *Manager) Status(id string) (Status, error) {
 		case 0:
 			st.State = StateDone
 			st.Result = readFile(filepath.Join(dir, "out"))
+			st.ConversationID = m.lazyCaptureConversationID(meta)
 		case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
 			st.State = StateCancelled
 		case jobstore.ExitTimeout:
@@ -74,6 +75,7 @@ func (m *Manager) Status(id string) (Status, error) {
 	if out != "" {
 		st.State = StateDone
 		st.Result = out
+		st.ConversationID = m.lazyCaptureConversationID(meta)
 	} else {
 		st.State = StateFailed
 		st.Error = "job process exited without writing a result (interrupted)"

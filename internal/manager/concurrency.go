@@ -48,19 +48,23 @@ func (g *gate) release(key string) {
 	}
 }
 
-// keyFor returns the serialization key for a request, or "" for a fresh run
-// (no conversation, no continue) which needs no per-key lock.
+// keyFor returns the serialization key for a request.
 //
-// Fresh runs return "" today because the snapshot-diff UUID capture in
-// conversation.go is not wired into Status yet. If that lazy capture is ever
-// enabled, fresh runs sharing a cwd MUST be serialized too (return
-// "cwd:"+req.Cwd here), otherwise two new conversations created in the same
-// directory could misattribute their UUIDs (design spec section 5.4).
+// A run with a resolved conversation id serializes on that conversation. Any
+// other run with a cwd (a fresh run, or a continue_latest that found no prior
+// conversation) serializes on the cwd: agy creates a new conversation for it,
+// and the snapshot-diff UUID capture must hold the cwd key while it reads the
+// shared conversation cache, otherwise two new conversations created in the same
+// directory could misattribute their captured UUIDs.
+//
+// StartJob always populates req.Cwd, so the "" branch is effectively a defensive
+// default; two distinct conversations in the same cwd still get distinct conv
+// keys and run concurrently.
 func keyFor(req StartRequest) string {
 	if req.ConversationID != "" {
 		return "conv:" + req.ConversationID
 	}
-	if req.ContinueLatest && req.Cwd != "" {
+	if req.Cwd != "" {
 		return "cwd:" + req.Cwd
 	}
 	return ""

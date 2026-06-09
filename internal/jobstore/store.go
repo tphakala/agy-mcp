@@ -123,6 +123,26 @@ func (s *Store) UpdateMeta(m Meta) error {
 	return nil
 }
 
+// SetConversationID persists convID as the job's conversation id, but only when
+// it is currently unset: it reloads the latest meta and rewrites just that field,
+// so it cannot clobber a concurrent meta update, and a second caller that races to
+// capture the same job is a no-op. It returns the effective conversation id (the
+// existing one if already set, otherwise convID).
+func (s *Store) SetConversationID(id, convID string) (string, error) {
+	m, err := s.Load(id)
+	if err != nil {
+		return "", err
+	}
+	if m.ConversationID != "" {
+		return m.ConversationID, nil
+	}
+	m.ConversationID = convID
+	if err := s.UpdateMeta(m); err != nil {
+		return "", err
+	}
+	return convID, nil
+}
+
 // Remove deletes a job's directory and everything in it.
 func (s *Store) Remove(id string) error {
 	if !validJobID(id) {
