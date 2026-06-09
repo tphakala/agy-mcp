@@ -1,5 +1,12 @@
 # agy-mcp
 
+[![CI](https://github.com/tphakala/agy-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/tphakala/agy-mcp/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/tphakala/agy-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/tphakala/agy-mcp/actions/workflows/codeql.yml)
+[![Version](https://img.shields.io/github/v/tag/tphakala/agy-mcp?label=version&sort=semver)](https://github.com/tphakala/agy-mcp/tags)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tphakala/agy-mcp.svg)](https://pkg.go.dev/github.com/tphakala/agy-mcp)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tphakala/agy-mcp)](https://goreportcard.com/report/github.com/tphakala/agy-mcp)
+[![License: MIT](https://img.shields.io/github/license/tphakala/agy-mcp)](LICENSE)
+
 An MCP (Model Context Protocol) server that wraps the [Antigravity CLI](https://antigravity.google) (`agy`), so any MCP client (Claude Code, Cursor, Cline, and others) can run `agy` prompts, peer reviews, and follow-up turns as native tools.
 
 > Status: feature complete (stdio and HTTP transports, async and sync job lifecycle, model and session discovery, cross-platform builds) and verified against a live agy (1.0.6). Latest release: v1.0.0.
@@ -22,28 +29,22 @@ Driving `agy` from a shell for automation has two recurring problems:
 
 Session continuation rides `agy`'s own durable conversation store (`--conversation <id>`), so threads survive across calls without keeping a process warm.
 
-## Transports
+Two transports run the same core:
 
-- **stdio** (default): zero-config, add one line to your MCP client config.
-- **Streamable HTTP** (opt-in): `agy-mcp -http 127.0.0.1:8765` runs the same core as a long-lived daemon for multi-client use. The bind is restricted to loopback (`localhost`, `127.0.0.1`, `::1`); a non-loopback address is refused at startup. Cross-origin browser requests are rejected (Origin/CSRF protection), and an optional bearer token (`-http-token`) can require authentication.
+- **stdio** (default): zero-config, one line in your MCP client config.
+- **Streamable HTTP** (opt-in): a long-lived, loopback-only daemon for multi-client use. See [HTTP mode](#http-mode).
 
 ## Requirements
 
-- The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_run_sync` / `agy_status` / `agy_cancel`) relies on process groups, `/proc`, and the kernel boot id, so it runs on Linux only; on macOS and Windows those tools return a clear "job supervision is only supported on Linux" error, while stdio/HTTP serving, `list_models`, and `list_sessions` work everywhere.
-- The `agy` binary on `PATH` (or configured explicitly).
+- The `agy` binary on `PATH` (or configured explicitly via `AGY_MCP_AGY_PATH`).
 - Go 1.26+ to build.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+- The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_run_sync` / `agy_status` / `agy_cancel`) relies on process groups, `/proc`, and the kernel boot id, so it runs on Linux only; on macOS and Windows those tools return a clear "job supervision is only supported on Linux" error, while stdio/HTTP serving, `list_models`, and `list_sessions` work everywhere.
 
 ## Install
 
 ```bash
 go install github.com/tphakala/agy-mcp@latest
 ```
-
-Requires the `agy` binary on `PATH` (or set `AGY_MCP_AGY_PATH`).
 
 ## Use with Claude Code (stdio)
 
@@ -105,3 +106,17 @@ agy-mcp -http 127.0.0.1:8765 -http-token "$(openssl rand -hex 32)"
 | `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
 | `AGY_MCP_DEFAULT_MODEL` | agy default | default model |
 | `AGY_MCP_HTTP_TOKEN` | (none) | optional bearer token for HTTP mode; empty = unauthenticated |
+
+## Development
+
+```bash
+go build ./...
+go test ./... -race
+golangci-lint run
+```
+
+CI builds and vets on Linux and macOS, runs the race-enabled test suite on Linux, and cross-compiles for Windows.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
