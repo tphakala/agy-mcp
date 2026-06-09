@@ -2,6 +2,7 @@ package mcptools
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"net/http"
@@ -43,20 +44,26 @@ func HTTPHandler(mgr *manager.Manager, token string) http.Handler {
 // disables the check and returns h unchanged.
 //
 // The auth-scheme is matched case-insensitively (RFC 7235 makes it case-insensitive,
-// so "bearer"/"BEARER" are accepted), but the token itself is compared with
-// crypto/subtle so a timing side-channel cannot reveal it. An unequal length
-// short-circuits to a mismatch, which leaks only length, the standard tradeoff for a
-// bearer check.
+// so "bearer"/"BEARER" are accepted). The token is compared by its fixed-size SHA-256
+// digest rather than its raw bytes: subtle.ConstantTimeCompare returns early when the
+// lengths differ, which would leak the expected token's length through timing. Hashing
+// both sides to 32 bytes keeps the comparison constant-time regardless of the supplied
+// length, and SHA-256's preimage resistance means comparing digests does not weaken it.
 func withBearerAuth(token string, h http.Handler) http.Handler {
 	if token == "" {
 		return h
 	}
-	want := []byte(token)
+	wantHash := sha256.Sum256([]byte(token))
 	const prefix = "Bearer "
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-		if len(auth) < len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) ||
-			subtle.ConstantTimeCompare([]byte(auth[len(prefix):]), want) != 1 {
+		if len(auth) < len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		gotHash := sha256.Sum256([]byte(auth[len(prefix):]))
+		if subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) != 1 {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
