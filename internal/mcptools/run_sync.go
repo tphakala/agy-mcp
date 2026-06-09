@@ -83,6 +83,8 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 			if st.State != manager.StateRunning {
 				return nil, out, nil
 			}
+			// The cap is approximate: the loop only observes the deadline on a
+			// poll tick, so a call can overshoot wait by up to syncPollInterval.
 			if time.Now().After(deadline) {
 				out.Note = "wait cap reached; the job is still running, poll it with agy_status"
 				return nil, out, nil
