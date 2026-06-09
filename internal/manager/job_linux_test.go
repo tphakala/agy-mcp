@@ -1,35 +1,20 @@
 package manager
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tphakala/agy-mcp/internal/config"
+	"github.com/tphakala/agy-mcp/internal/testutil"
 )
-
-// fakeSupervisor writes a script that mimics `agy-mcp run-job <dir>`:
-// it writes out="done" and exit_code=0 for the given job dir.
-func fakeSupervisor(t *testing.T) string {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), "fake-sup")
-	script := "#!/usr/bin/env bash\n" +
-		"dir=\"$2\"\n" +
-		"printf 'done' > \"$dir/out\"\n" +
-		"printf '0' > \"$dir/exit_code\"\n"
-	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
 
 func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	state := t.TempDir()
 	c := config.Config{
 		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  fakeSupervisor(t),
+		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
 		StateDir:       state,
 		DefaultTimeout: time.Minute,
 		MaxConcurrency: 4,
