@@ -2,7 +2,7 @@
 
 An MCP (Model Context Protocol) server that wraps the [Antigravity CLI](https://antigravity.google) (`agy`), so any MCP client (Claude Code, Cursor, Cline, and others) can run `agy` prompts, peer reviews, and follow-up turns as native tools.
 
-> Status: initial implementation complete (stdio and HTTP transports, async job lifecycle, model and session discovery). Pending a one-off verification against the real agy before a tagged release.
+> Status: feature complete (stdio and HTTP transports, async and sync job lifecycle, model and session discovery, cross-platform builds) and verified against a live agy (1.0.6). No tagged release yet; install from `@latest`.
 
 ## Why
 
