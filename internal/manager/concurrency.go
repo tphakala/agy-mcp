@@ -50,6 +50,12 @@ func (g *gate) release(key string) {
 
 // keyFor returns the serialization key for a request, or "" for a fresh run
 // (no conversation, no continue) which needs no per-key lock.
+//
+// Fresh runs return "" today because the snapshot-diff UUID capture in
+// conversation.go is not wired into Status yet. If that lazy capture is ever
+// enabled, fresh runs sharing a cwd MUST be serialized too (return
+// "cwd:"+req.Cwd here), otherwise two new conversations created in the same
+// directory could misattribute their UUIDs (design spec section 5.4).
 func keyFor(req StartRequest) string {
 	if req.ConversationID != "" {
 		return "conv:" + req.ConversationID
