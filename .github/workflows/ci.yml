@@ -2,14 +2,34 @@ name: ci
 on:
   push:
   pull_request:
+permissions:
+  contents: read
+env:
+  GO_VERSION: '1.26'
+  # Pinned to match the local toolchain so local runs and CI use the same
+  # linter version (and the same ruleguard behavior).
+  GOLANGCI_LINT_VERSION: 'v2.11.4'
 jobs:
   build:
+    name: Build and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: ${{ env.GO_VERSION }}
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./...
+      - run: go test ./... -race
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}

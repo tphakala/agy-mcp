@@ -1,0 +1,77 @@
+# Copied from github.com/tphakala/go-flac (which adapts birdnet-go's config) to
+# keep one linting standard across projects, including the rules/*.go ruleguard
+# matchers. agy-mcp-specific adaptation:
+#   - gocritic hugeParam is disabled: StartRequest, config.Config and
+#     jobstore.Meta are passed by value on purpose (StartJob mutates its own
+#     copy of the request), and these calls are not on a hot path, so the
+#     by-pointer suggestion would only leak mutation into callers.
+#   - modernize stays disabled: it panics on Go 1.26 + atomic types in
+#     golangci-lint v2.11.4 (known bug)
+version: "2"
+output:
+  sort-order:
+    - linter
+    - severity
+    - file
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - iface
+    - ineffassign
+    - misspell
+    - nilerr
+    - nilnil
+    - predeclared
+    - prealloc
+    - revive
+    - staticcheck
+    - testifylint
+    - thelper
+    - unconvert
+    - wastedassign
+  disable:
+    - unused
+  settings:
+    gocognit:
+      min-complexity: 50
+    gocritic:
+      # gocritic auto-enables the ruleguard check when settings.ruleguard.rules
+      # is set; the rules/*.go matchers carry the //go:build ruleguard tag so
+      # the normal toolchain ignores them.
+      disabled-checks:
+        - commentFormatting
+        - commentedOutCode
+        - hugeParam
+      enabled-tags:
+        - style
+        - diagnostic
+        - performance
+      settings:
+        ruleguard:
+          rules: "rules/*.go"
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: true
+    exhaustive:
+      default-signifies-exhaustive: true
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+  new: false

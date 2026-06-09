@@ -2,7 +2,10 @@ module github.com/tphakala/agy-mcp
 
 go 1.26
 
-require github.com/modelcontextprotocol/go-sdk v1.6.1
+require (
+	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/quasilyte/go-ruleguard/dsl v0.3.23
+)
 
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
