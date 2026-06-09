@@ -4,6 +4,7 @@ package mcptools
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -88,9 +89,19 @@ type sessionsOutput struct {
 	Sessions []manager.Session `json:"sessions"`
 }
 
+// serverVersion reports the module version the Go toolchain stamped into the
+// binary (e.g. v1.0.0 for a tagged `go install`, a pseudo-version for builds
+// past a tag), or "dev" when no version was stamped (plain `go test` binaries).
+func serverVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
+
 // NewServer builds an MCP server with all agy tools registered.
 func NewServer(mgr *manager.Manager) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "agy-mcp", Version: "0.1.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "agy-mcp", Version: serverVersion()}, nil)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "agy_run",
