@@ -28,7 +28,7 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 
 ## Requirements
 
-- Linux. The job supervisor relies on process groups, `/proc`, and the kernel boot id, so the server is Linux only for now. Cross-platform support is a possible future enhancement.
+- The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_status` / `agy_cancel`) relies on process groups, `/proc`, and the kernel boot id, so it runs on Linux only; on macOS and Windows those tools return a clear "job supervision is only supported on Linux" error, while stdio/HTTP serving, `list_models`, and `list_sessions` work everywhere.
 - The `agy` binary on `PATH` (or configured explicitly).
 - Go 1.26+ to build.
 

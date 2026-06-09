@@ -57,7 +57,7 @@ func Run(jobDir string) error {
 	cmd.Stdout = outF
 	cmd.Stderr = errF
 	// Put agy in its own process group so we can signal it and its children.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		_ = writeExit(jobDir, jobstore.ExitSpawnFail)
@@ -89,7 +89,7 @@ func Run(jobDir string) error {
 		case <-deadline:
 			close(timedOut)
 		}
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		_ = terminateGroup(cmd.Process.Pid, syscall.SIGTERM)
 		select {
 		case <-done:
 		case <-time.After(killGrace):
@@ -98,7 +98,7 @@ func Run(jobDir string) error {
 			select {
 			case <-done:
 			default:
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				_ = terminateGroup(cmd.Process.Pid, syscall.SIGKILL)
 			}
 		}
 	}()

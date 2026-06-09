@@ -12,15 +12,26 @@ env:
 jobs:
   build:
     name: Build and test
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      # build + vet on every OS proves the package compiles cross-platform (macOS gets
+      # the unsupported-platform stubs). Tests run job supervision, which is Linux only,
+      # so they (and the Windows cross-compile check) run on the ubuntu job.
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./... -race
+      - name: Test (race)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test ./... -race
+      - name: Windows cross-compile
+        if: matrix.os == 'ubuntu-latest'
+        run: GOOS=windows go build ./...
   lint:
     name: Lint
     runs-on: ubuntu-latest

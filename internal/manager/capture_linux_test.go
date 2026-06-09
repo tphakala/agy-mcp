@@ -86,6 +86,23 @@ func TestFreshRunCapturesConversationID(t *testing.T) {
 // A successful fresh run that creates no conversation (cache unchanged) must report
 // an empty conversation id and, crucially, still release its gate key after the
 // capture budget so a later same-cwd run is not blocked forever.
+// waitForExitCode blocks until the job has written its exit_code, the supervisor's last
+// write into the job dir. Its callers use the cache-less fakeSupervisor, which creates no
+// conversation, so no manager-side meta rewrite follows the exit; for them this is the
+// final write. A test that returns while a supervisor is still writing into a t.TempDir
+// StateDir races the TempDir RemoveAll cleanup.
+func waitForExitCode(t *testing.T, m *Manager, id string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := m.store.ExitCode(id); ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job %s never wrote exit_code", id)
+}
+
 func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 	state := t.TempDir()
 	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
@@ -132,7 +149,12 @@ func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 	// same-cwd fresh run eventually succeeds.
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		if _, err := m.StartJob(StartRequest{Prompt: "again", Cwd: cwd}); err == nil {
+		job2, err := m.StartJob(StartRequest{Prompt: "again", Cwd: cwd})
+		if err == nil {
+			// Wait for the second job's supervisor to finish before returning. It writes
+			// into StateDir (a t.TempDir), and a still-running supervisor races the TempDir
+			// RemoveAll cleanup ("directory not empty"). Waiting for exit removes the racer.
+			waitForExitCode(t, m, job2.ID)
 			return
 		}
 		if time.Now().After(deadline) {
