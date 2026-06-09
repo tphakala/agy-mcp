@@ -63,7 +63,7 @@ Or add to your MCP client config:
 
 ## Tools
 
-- `agy_run(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?)` -> `{ job_id, conversation_id, state }`
+- `agy_run(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?)` -> `{ job_id, conversation_id?, state }`
 - `agy_run_sync(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, note? }`
 - `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id? }`
 - `agy_cancel(job_id)` -> `{ state }`

@@ -82,7 +82,7 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 			}
 			// Notify once per elapsed second, not per poll tick: the message has
 			// whole-second granularity, so finer cadence is pure stream noise.
-			if sec := st.Elapsed.Round(time.Second); token != nil && sec != lastNotified {
+			if sec := st.Elapsed.Truncate(time.Second); token != nil && sec != lastNotified {
 				lastNotified = sec
 				// Best effort: the result, not the notifications, is the
 				// contract. The bounded context keeps a client that stopped
