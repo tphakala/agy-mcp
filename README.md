@@ -24,7 +24,7 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 ## Transports
 
 - **stdio** (default): zero-config, add one line to your MCP client config.
-- **Streamable HTTP** (opt-in): `agy-mcp -http 127.0.0.1:8765` runs the same core as a long-lived daemon for multi-client use. It is unauthenticated, so the bind is restricted to loopback (`localhost`, `127.0.0.1`, `::1`); a non-loopback address is refused at startup.
+- **Streamable HTTP** (opt-in): `agy-mcp -http 127.0.0.1:8765` runs the same core as a long-lived daemon for multi-client use. The bind is restricted to loopback (`localhost`, `127.0.0.1`, `::1`); a non-loopback address is refused at startup. Cross-origin browser requests are rejected (Origin/CSRF protection), and an optional bearer token (`-http-token`) can require authentication.
 
 ## Requirements
 
@@ -84,7 +84,16 @@ restart, so the cap and serialization hold across restarts.
 agy-mcp -http 127.0.0.1:8765
 ```
 
-HTTP mode is opt-in and unauthenticated, so it only accepts a loopback bind address (`localhost`, `127.0.0.1`, or `::1`). A non-loopback address (including `:8765`, which binds all interfaces) is refused at startup, so it cannot be accidentally exposed.
+HTTP mode is opt-in and only accepts a loopback bind address (`localhost`, `127.0.0.1`, or `::1`). A non-loopback address (including `:8765`, which binds all interfaces) is refused at startup, so it cannot be accidentally exposed.
+
+Two extra hardening layers are always available:
+
+- **Origin/CSRF protection** is always on. A state-changing cross-origin browser request (one carrying a cross-site `Sec-Fetch-Site` or a mismatched `Origin`) is rejected with `403`. Normal non-browser MCP clients (Claude Code, Cursor, the go-sdk client) send no `Origin` header and are unaffected.
+- **Optional bearer token.** Set `-http-token <token>` (or `AGY_MCP_HTTP_TOKEN`) to require `Authorization: Bearer <token>` on every request; a missing or wrong token gets `401`. The flag overrides the env var. Off by default, so the bare loopback mode stays unauthenticated.
+
+```bash
+agy-mcp -http 127.0.0.1:8765 -http-token "$(openssl rand -hex 32)"
+```
 
 ## Configuration
 
@@ -93,3 +102,4 @@ HTTP mode is opt-in and unauthenticated, so it only accepts a loopback bind addr
 | `AGY_MCP_AGY_PATH` | `agy` on PATH | path to the agy binary |
 | `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
 | `AGY_MCP_DEFAULT_MODEL` | agy default | default model |
+| `AGY_MCP_HTTP_TOKEN` | (none) | optional bearer token for HTTP mode; empty = unauthenticated |

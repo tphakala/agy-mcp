@@ -46,3 +46,29 @@ func TestResolveAgyPathOverride(t *testing.T) {
 		t.Errorf("AgyPath = %q", c.AgyPath)
 	}
 }
+
+func TestResolveHTTPToken(t *testing.T) {
+	t.Setenv("AGY_MCP_AGY_PATH", "/opt/custom/agy") // skip PATH lookup
+
+	t.Run("default empty", func(t *testing.T) {
+		t.Setenv("AGY_MCP_HTTP_TOKEN", "")
+		c, err := Resolve()
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if c.HTTPToken != "" {
+			t.Errorf("HTTPToken = %q, want empty by default", c.HTTPToken)
+		}
+	})
+
+	t.Run("from env", func(t *testing.T) {
+		t.Setenv("AGY_MCP_HTTP_TOKEN", "s3cret")
+		c, err := Resolve()
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if c.HTTPToken != "s3cret" {
+			t.Errorf("HTTPToken = %q, want %q", c.HTTPToken, "s3cret")
+		}
+	})
+}
