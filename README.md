@@ -24,7 +24,7 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 ## Transports
 
 - **stdio** (default): zero-config, add one line to your MCP client config.
-- **Streamable HTTP** (opt-in): `agy-mcp -http 127.0.0.1:8765` runs the same core as a long-lived daemon for multi-client use. It is unauthenticated and intended for localhost only; do not bind it to a public interface.
+- **Streamable HTTP** (opt-in): `agy-mcp -http 127.0.0.1:8765` runs the same core as a long-lived daemon for multi-client use. It is unauthenticated, so the bind is restricted to loopback (`localhost`, `127.0.0.1`, `::1`); a non-loopback address is refused at startup.
 
 ## Requirements
 
@@ -74,7 +74,7 @@ Or add to your MCP client config:
 agy-mcp -http 127.0.0.1:8765
 ```
 
-HTTP mode is opt-in and unauthenticated. Bind it to localhost only; do not expose it on a public interface.
+HTTP mode is opt-in and unauthenticated, so it only accepts a loopback bind address (`localhost`, `127.0.0.1`, or `::1`). A non-loopback address (including `:8765`, which binds all interfaces) is refused at startup, so it cannot be accidentally exposed.
 
 ## Configuration
 
