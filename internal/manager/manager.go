@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 type Manager struct {
 	cfg   config.Config
 	store *jobstore.Store
-	gate  *gate // concurrency control (Task 8)
+	gate  *gate // serializes conflicting jobs and caps total concurrency
 }
 
 // New constructs a Manager.
@@ -38,7 +37,7 @@ type StartRequest struct {
 	Model          string   // optional; falls back to cfg.DefaultModel
 	Dirs           []string // repeated --add-dir
 	ConversationID string   // optional; --conversation <id>
-	ContinueLatest bool     // resolve cwd's latest conversation before run (Task 11)
+	ContinueLatest bool     // resolve cwd's latest conversation before the run
 	Cwd            string   // optional; defaults to process cwd
 	Timeout        time.Duration
 }
@@ -124,27 +123,60 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		m.gate.release(key)
 		return Job{}, fmt.Errorf("spawn supervisor: %w", err)
 	}
-	// Record the supervisor PID for liveness/cancel, then release it.
+	// Record the supervisor PID (for liveness and cancel) with an atomic rewrite,
+	// so the just-spawned supervisor never reads a half-written meta.json.
 	meta.PID = cmd.Process.Pid
-	if b, e := jobMetaBytes(meta); e == nil {
-		_ = os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o644)
+	if err := m.store.UpdateMeta(meta); err != nil {
+		// Without a persisted PID the supervisor would be untrackable
+		// (uncancellable, and reported as not-alive). Fail closed: terminate it.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		go func() { _ = cmd.Wait() }()
+		m.gate.release(key)
+		return Job{}, fmt.Errorf("record supervisor pid: %w", err)
 	}
-	_ = cmd.Process.Release()
+	// Reap the supervisor in the background so a finished job does not leave a
+	// zombie. The supervisor is detached (its own process group) and survives
+	// the manager regardless, so reaping does not couple their lifetimes; if the
+	// manager dies first, init adopts and reaps the supervisor.
+	go func() { _ = cmd.Wait() }()
 
 	// The gate slot is released by a background watchdog when the job reaches a
 	// terminal state (or after a bounded safety window).
 	go m.releaseWhenDone(key, id, timeout)
 
-	return Job{ID: id, ConversationID: req.ConversationID, State: "running"}, nil
+	return Job{ID: id, ConversationID: req.ConversationID, State: StateRunning}, nil
 }
 
-// GarbageCollect removes finished jobs older than the configured TTL. It is
-// safe to call at startup. A non-positive TTL disables collection.
+// GarbageCollect removes jobs older than the configured TTL. A job whose
+// supervisor is still alive (including one that survived a manager restart) is
+// never removed, even past the TTL, so a live job is never deleted out from
+// under its supervisor. A non-positive TTL disables collection.
 func (m *Manager) GarbageCollect() ([]string, error) {
 	if m.cfg.JobTTL <= 0 {
 		return nil, nil
 	}
-	return m.store.GC(m.cfg.JobTTL)
+	ids, err := m.store.List()
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-m.cfg.JobTTL)
+	var removed []string
+	for _, id := range ids {
+		meta, err := m.store.Load(id)
+		if err != nil {
+			continue
+		}
+		if !meta.StartedAt.Before(cutoff) {
+			continue // too recent to collect
+		}
+		if _, terminal := m.store.ExitCode(id); !terminal && m.processAlive(meta) {
+			continue // still running; keep it
+		}
+		if err := m.store.Remove(id); err == nil {
+			removed = append(removed, id)
+		}
+	}
+	return removed, nil
 }
 
 func (m *Manager) releaseWhenDone(key, id string, timeout time.Duration) {
@@ -152,7 +184,7 @@ func (m *Manager) releaseWhenDone(key, id string, timeout time.Duration) {
 	for time.Now().Before(deadline) {
 		if st, err := m.Status(id); err == nil {
 			switch st.State {
-			case "done", "failed", "cancelled":
+			case StateDone, StateFailed, StateCancelled:
 				m.gate.release(key)
 				return
 			}
@@ -184,8 +216,4 @@ func newID() (string, error) {
 	}
 	// Time prefix keeps IDs roughly sortable.
 	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), hex.EncodeToString(b[:])), nil
-}
-
-func jobMetaBytes(m jobstore.Meta) ([]byte, error) {
-	return jsonMarshalIndent(m)
 }

@@ -3,6 +3,7 @@ package jobstore
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -32,6 +33,32 @@ func TestCreateAndLoadMeta(t *testing.T) {
 	if got.PID != 4242 || got.AgyPath != "/usr/bin/agy" {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
+	if got.Cwd != "/work" || got.BootID != "boot-abc" {
+		t.Fatalf("round-trip cwd/bootid mismatch: %+v", got)
+	}
+	if !slices.Equal(got.Args, m.Args) {
+		t.Fatalf("round-trip args = %v, want %v", got.Args, m.Args)
+	}
+	if !got.StartedAt.Equal(m.StartedAt) {
+		t.Fatalf("round-trip startedAt = %v, want %v", got.StartedAt, m.StartedAt)
+	}
+}
+
+func TestUpdateMetaRoundTrip(t *testing.T) {
+	s := New(t.TempDir())
+	if _, err := s.Create(Meta{ID: "j"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateMeta(Meta{ID: "j", PID: 99, AgyPath: "/x"}); err != nil {
+		t.Fatalf("UpdateMeta: %v", err)
+	}
+	got, err := s.Load("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PID != 99 || got.AgyPath != "/x" {
+		t.Fatalf("UpdateMeta round-trip = %+v", got)
+	}
 }
 
 func TestExitCodeSentinel(t *testing.T) {
@@ -51,19 +78,19 @@ func TestExitCodeSentinel(t *testing.T) {
 	}
 }
 
-func TestListAndGC(t *testing.T) {
+func TestListAndRemove(t *testing.T) {
 	s := New(t.TempDir())
-	_, _ = s.Create(Meta{ID: "old", StartedAt: time.Unix(0, 0)})
-	_, _ = s.Create(Meta{ID: "new", StartedAt: time.Now()})
+	_, _ = s.Create(Meta{ID: "a", StartedAt: time.Unix(0, 0)})
+	_, _ = s.Create(Meta{ID: "b", StartedAt: time.Now()})
 	ids, err := s.List()
 	if err != nil || len(ids) != 2 {
 		t.Fatalf("List = %v, %v", ids, err)
 	}
-	removed, err := s.GC(time.Hour)
-	if err != nil {
-		t.Fatal(err)
+	if err := s.Remove("a"); err != nil {
+		t.Fatalf("Remove: %v", err)
 	}
-	if len(removed) != 1 || removed[0] != "old" {
-		t.Fatalf("GC removed = %v", removed)
+	ids, _ = s.List()
+	if len(ids) != 1 || ids[0] != "b" {
+		t.Fatalf("after Remove, List = %v", ids)
 	}
 }

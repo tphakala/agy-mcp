@@ -72,6 +72,25 @@ func (s *Store) Load(id string) (Meta, error) {
 	return m, json.Unmarshal(b, &m)
 }
 
+// UpdateMeta atomically rewrites a job's meta.json by writing a temp file and
+// renaming it into place, so a concurrent reader (such as the freshly spawned
+// supervisor) never observes a partially written file.
+func (s *Store) UpdateMeta(m Meta) error {
+	dir := s.jobDir(m.ID)
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, "meta.json.tmp")
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "meta.json"))
+}
+
+// Remove deletes a job's directory and everything in it.
+func (s *Store) Remove(id string) error { return os.RemoveAll(s.jobDir(id)) }
+
 // Dir returns the on-disk directory for a job (out, err, exit_code live here).
 func (s *Store) Dir(id string) string { return s.jobDir(id) }
 
@@ -109,26 +128,4 @@ func (s *Store) List() ([]string, error) {
 		}
 	}
 	return ids, nil
-}
-
-// GC removes finished jobs whose StartedAt is older than ttl. Returns removed IDs.
-func (s *Store) GC(ttl time.Duration) ([]string, error) {
-	ids, err := s.List()
-	if err != nil {
-		return nil, err
-	}
-	cutoff := time.Now().Add(-ttl)
-	var removed []string
-	for _, id := range ids {
-		m, err := s.Load(id)
-		if err != nil {
-			continue
-		}
-		if m.StartedAt.Before(cutoff) {
-			if err := os.RemoveAll(s.jobDir(id)); err == nil {
-				removed = append(removed, id)
-			}
-		}
-	}
-	return removed, nil
 }
