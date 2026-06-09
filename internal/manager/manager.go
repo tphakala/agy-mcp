@@ -285,14 +285,14 @@ func (m *Manager) RestoreGate() error {
 		if !m.processAlive(meta) {
 			continue // supervisor gone; GarbageCollect will reap it
 		}
-		// tryAcquire reserves the key and counts the job against the cap. A failure
-		// means the cap is already full or the key is a duplicate; log it, because a
-		// live job left untracked by the gate is the bypass this method prevents.
+		// forceAcquire counts the job and holds its key unconditionally: a restored
+		// job is already running, so it must be tracked even past the cap (otherwise a
+		// new same-key run could start once a slot frees and run concurrently with it,
+		// the bypass this method prevents). A false return means another restored job
+		// already holds this key, so it is already watched.
 		key := keyFor(reqFromMeta(meta))
-		if m.gate.tryAcquire(key) {
+		if m.gate.forceAcquire(key) {
 			m.watchRestored(meta, key)
-		} else {
-			log.Printf("agy-mcp: RestoreGate could not re-acquire gate key %q for live job %s (cap full or duplicate key); it is untracked by the gate", key, id)
 		}
 	}
 	return nil

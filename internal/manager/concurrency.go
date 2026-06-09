@@ -37,6 +37,26 @@ func (g *gate) tryAcquire(key string) bool {
 	return true
 }
 
+// forceAcquire reserves a slot and key for a job that is already running (a
+// restored job whose agy session exists regardless of the gate), so the gate
+// accounts for it. Unlike tryAcquire it ignores the cap: a live job must be
+// counted even when live jobs exceed max (for example the cap was lowered across a
+// restart), which then correctly blocks new runs until enough restored jobs drain.
+// It still returns false without double-counting when the key is already held, so
+// the caller starts exactly one liveness watcher per key.
+func (g *gate) forceAcquire(key string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if key != "" && g.keys[key] {
+		return false
+	}
+	g.inFlight++
+	if key != "" {
+		g.keys[key] = true
+	}
+	return true
+}
+
 func (g *gate) release(key string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

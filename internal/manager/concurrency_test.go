@@ -34,6 +34,35 @@ func TestGateBlocksSameKey(t *testing.T) {
 	}
 }
 
+func TestGateForceAcquire(t *testing.T) {
+	g := newGate(2)
+	// A restored job is already running, so forceAcquire tracks it even past the cap.
+	g.forceAcquire("cwd:a")
+	g.forceAcquire("cwd:b")
+	if !g.forceAcquire("cwd:c") {
+		t.Fatal("forceAcquire must ignore the cap for an already-running job")
+	}
+	// A duplicate key is not double-tracked.
+	if g.forceAcquire("cwd:c") {
+		t.Fatal("forceAcquire on a held key must return false")
+	}
+	// inFlight is now past the cap, so a new normal run is refused.
+	if g.tryAcquire("cwd:d") {
+		t.Fatal("a new run must be refused while forced jobs exceed the cap")
+	}
+	// Drain below the cap; the still-held forced key cwd:c must keep blocking a
+	// same-key run even though a slot is now free (key block, not cap block).
+	g.release("cwd:a")
+	g.release("cwd:b")
+	if g.tryAcquire("cwd:c") {
+		t.Fatal("a forced key must keep blocking a same-key run with a free slot")
+	}
+	// A different key with a free slot is still acquirable.
+	if !g.tryAcquire("cwd:d") {
+		t.Fatal("a free key under the cap should be acquirable")
+	}
+}
+
 func TestGateGlobalCap(t *testing.T) {
 	g := newGate(2)
 	if !g.tryAcquire("conv:a") || !g.tryAcquire("conv:b") {
