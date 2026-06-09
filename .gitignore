@@ -1,0 +1,25 @@
+# Compiled binaries
+/agy-mcp
+/dist/
+*.exe
+*.test
+*.out
+*.prof
+
+# Go workspace / vendor
+/vendor/
+go.work
+go.work.sum
+
+# Local design specs and implementation plans (never committed)
+/plans/
+/specs/
+*-design.md
+*-plan.md
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
