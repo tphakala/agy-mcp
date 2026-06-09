@@ -2,6 +2,8 @@ package mcptools
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -168,4 +170,52 @@ func TestAgyRunSyncSendsProgress(t *testing.T) {
 			t.Fatalf("progress token = %v, want tok-7", tok)
 		}
 	}
+}
+
+func TestAgyRunSyncClientCancelKeepsJobAlive(t *testing.T) {
+	mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "LATE OK", Exit: 0, SleepSecs: 5})
+	cs := connect(t, mgr, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := cs.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "agy_run_sync",
+			Arguments: map[string]any{"prompt": "review", "wait": "30s"},
+		})
+		done <- err
+	}()
+
+	// Wait until the job exists on disk, then cancel the call mid-wait.
+	jobID := waitForJobDir(t, stateDir, 5*time.Second)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the cancelled call to return an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled call did not return")
+	}
+
+	// Cancelling the call must not cancel the job.
+	waitForDone(t, mgr, jobID, "LATE OK", 15*time.Second)
+}
+
+// waitForJobDir polls <stateDir>/jobs until exactly one job directory exists
+// and returns its id.
+func waitForJobDir(t *testing.T, stateDir string, timeout time.Duration) string {
+	t.Helper()
+	jobs := filepath.Join(stateDir, "jobs")
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(jobs)
+		if err == nil && len(entries) == 1 && entries[0].IsDir() {
+			return entries[0].Name()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("job directory did not appear")
+	return ""
 }
