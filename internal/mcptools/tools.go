@@ -105,12 +105,13 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		if err := mgr.Cancel(in.JobID); err != nil {
 			return nil, cancelOutput{}, err
 		}
-		st, err := mgr.Status(in.JobID)
-		if err != nil {
-			// Cancel itself succeeded; the job state is just no longer readable.
-			return nil, cancelOutput{State: "unknown"}, nil
+		// Cancel itself succeeded; report the resulting state, or "unknown" if the
+		// job state is no longer readable.
+		state := "unknown"
+		if st, err := mgr.Status(in.JobID); err == nil {
+			state = st.State
 		}
-		return nil, cancelOutput{State: st.State}, nil
+		return nil, cancelOutput{State: state}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{

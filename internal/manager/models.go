@@ -17,7 +17,7 @@ func (m *Manager) ListModels(ctx context.Context) ([]string, error) {
 
 func parseModels(raw string) []string {
 	var models []string
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.Lines(raw) {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

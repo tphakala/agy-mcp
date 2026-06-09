@@ -35,13 +35,22 @@ func main() {
 		return
 	}
 
+	if err := serve(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+}
+
+// serve resolves configuration, runs startup garbage collection, and serves the
+// MCP tools over stdio (default) or Streamable HTTP. It returns an error rather
+// than calling os.Exit so deferred cleanup (the signal stop) still runs.
+func serve() error {
 	httpAddr := flag.String("http", "", "serve over Streamable HTTP on this address (e.g. 127.0.0.1:8765) instead of stdio; unauthenticated, bind localhost only")
 	flag.Parse()
 
 	cfg, err := config.Resolve()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("config: %w", err)
 	}
 	mgr := manager.New(cfg)
 	if removed, err := mgr.GarbageCollect(); err != nil {
@@ -56,15 +65,14 @@ func main() {
 	if *httpAddr != "" {
 		log.Printf("agy-mcp serving Streamable HTTP on %s", *httpAddr)
 		if err := mcptools.ServeHTTP(ctx, mgr, *httpAddr); err != nil {
-			fmt.Fprintf(os.Stderr, "http serve: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("http serve: %w", err)
 		}
-		return
+		return nil
 	}
 
 	log.Print("agy-mcp serving over stdio")
 	if err := mcptools.ServeStdio(ctx, mgr); err != nil && !errors.Is(err, io.EOF) {
-		fmt.Fprintf(os.Stderr, "stdio serve: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("stdio serve: %w", err)
 	}
+	return nil
 }

@@ -71,7 +71,10 @@ func (s *Store) Load(id string) (Meta, error) {
 	if err != nil {
 		return m, err
 	}
-	return m, json.Unmarshal(b, &m)
+	if err := json.Unmarshal(b, &m); err != nil {
+		return m, err
+	}
+	return m, nil
 }
 
 // UpdateMeta atomically rewrites a job's meta.json by writing a temp file and

@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -20,8 +21,7 @@ func TestFakeAgyEmitsStdoutAndExit(t *testing.T) {
 func TestFakeAgyNonZeroExit(t *testing.T) {
 	path := WriteFakeAgy(t, FakeAgy{Stderr: "boom", Exit: 3})
 	err := exec.Command(path).Run()
-	ee, ok := err.(*exec.ExitError)
-	if !ok || ee.ExitCode() != 3 {
+	if ee, ok := errors.AsType[*exec.ExitError](err); !ok || ee.ExitCode() != 3 {
 		t.Fatalf("exit = %v, want code 3", err)
 	}
 }

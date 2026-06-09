@@ -88,7 +88,7 @@ func errorSummary(dir string, code int) string {
 	if len(tail) > 2000 {
 		tail = tail[len(tail)-2000:]
 		// Advance to a valid UTF-8 boundary so a multi-byte rune is not split.
-		for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		for tail != "" && !utf8.RuneStart(tail[0]) {
 			tail = tail[1:]
 		}
 	}

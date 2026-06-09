@@ -1,7 +1,6 @@
 package mcptools
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,7 +36,7 @@ func TestAgyRunAndStatusOverMCP(t *testing.T) {
 
 	srv := NewServer(mgr)
 	ct, st := mcp.NewInMemoryTransports()
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := srv.Connect(ctx, st, nil); err != nil { // server side
 		t.Fatalf("server connect: %v", err)
 	}
@@ -46,7 +45,7 @@ func TestAgyRunAndStatusOverMCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "agy_run",

@@ -12,11 +12,11 @@ type gate struct {
 	keys     map[string]bool
 }
 
-func newGate(max int) *gate {
-	if max <= 0 {
-		max = 1
+func newGate(maxJobs int) *gate {
+	if maxJobs <= 0 {
+		maxJobs = 1
 	}
-	return &gate{max: max, keys: map[string]bool{}}
+	return &gate{max: maxJobs, keys: map[string]bool{}}
 }
 
 // tryAcquire reserves a slot. An empty key skips per-key serialization but still

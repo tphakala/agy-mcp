@@ -1,8 +1,6 @@
 package mcptools
 
 import (
-	"context"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -19,12 +17,12 @@ func TestHTTPServeListsTools(t *testing.T) {
 	defer ts.Close()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "0"}, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: ts.URL}, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	tools, err := cs.ListTools(ctx, nil)
 	if err != nil {
@@ -33,5 +31,4 @@ func TestHTTPServeListsTools(t *testing.T) {
 	if len(tools.Tools) < 5 {
 		t.Fatalf("expected >=5 tools, got %d", len(tools.Tools))
 	}
-	_ = http.StatusOK
 }

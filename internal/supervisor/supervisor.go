@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -37,17 +38,17 @@ func Run(jobDir string) error {
 	if err != nil {
 		return err
 	}
-	defer outF.Close()
+	defer func() { _ = outF.Close() }()
 	errF, err := os.Create(filepath.Join(jobDir, "err"))
 	if err != nil {
 		return err
 	}
-	defer errF.Close()
+	defer func() { _ = errF.Close() }()
 	devnull, err := os.Open(os.DevNull)
 	if err != nil {
 		return err
 	}
-	defer devnull.Close()
+	defer func() { _ = devnull.Close() }()
 
 	cmd := exec.Command(m.AgyPath, m.Args...)
 	cmd.Dir = m.Cwd
@@ -107,7 +108,7 @@ func Run(jobDir string) error {
 
 	code := 0
 	if waitErr != nil {
-		if ee, ok := waitErr.(*exec.ExitError); ok {
+		if ee, ok := errors.AsType[*exec.ExitError](waitErr); ok {
 			code = ee.ExitCode()
 			if code < 0 {
 				code = jobstore.ExitSIGTERM // terminated by signal
