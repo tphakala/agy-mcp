@@ -1,0 +1,63 @@
+// Package config resolves agy-mcp runtime configuration from environment and defaults.
+package config
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+)
+
+// Config holds resolved runtime settings.
+type Config struct {
+	AgyPath        string        // path to the agy binary
+	SupervisorExe  string        // path to the agy-mcp binary used as the run-job supervisor
+	StateDir       string        // root of the on-disk job store
+	DefaultModel   string        // empty means let agy use its configured default
+	DefaultTimeout time.Duration // hard per-job timeout
+	MaxConcurrency int           // global cap on concurrent jobs
+	JobTTL         time.Duration // age after which finished jobs are GC'd
+}
+
+// Resolve builds a Config from environment variables and defaults.
+func Resolve() (Config, error) {
+	c := Config{
+		DefaultModel:   os.Getenv("AGY_MCP_DEFAULT_MODEL"),
+		DefaultTimeout: 30 * time.Minute,
+		MaxConcurrency: 4,
+		JobTTL:         24 * time.Hour,
+	}
+
+	if p := os.Getenv("AGY_MCP_AGY_PATH"); p != "" {
+		c.AgyPath = p
+	} else {
+		p, err := exec.LookPath("agy")
+		if err != nil {
+			return Config{}, fmt.Errorf("agy not found on PATH; set AGY_MCP_AGY_PATH: %w", err)
+		}
+		c.AgyPath = p
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve own executable: %w", err)
+	}
+	c.SupervisorExe = self
+
+	stateRoot := os.Getenv("AGY_MCP_STATE_DIR")
+	if stateRoot == "" {
+		xdg := os.Getenv("XDG_STATE_HOME")
+		if xdg == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return Config{}, fmt.Errorf("resolve home: %w", err)
+			}
+			xdg = filepath.Join(home, ".local", "state")
+		}
+		stateRoot = filepath.Join(xdg, "agy-mcp")
+	}
+	c.StateDir = stateRoot
+
+	return c, nil
+}

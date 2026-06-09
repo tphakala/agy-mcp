@@ -2,7 +2,7 @@
 
 An MCP (Model Context Protocol) server that wraps the [Antigravity CLI](https://antigravity.google) (`agy`), so any MCP client (Claude Code, Cursor, Cline, and others) can run `agy` prompts, peer reviews, and follow-up turns as native tools.
 
-> Status: early development. The design is being finalized before implementation.
+> Status: initial implementation complete (stdio and HTTP transports, async job lifecycle, model and session discovery). Pending a one-off verification against the real agy before a tagged release.
 
 ## Why
 
@@ -24,13 +24,62 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 ## Transports
 
 - **stdio** (default): zero-config, add one line to your MCP client config.
-- **Streamable HTTP** (opt-in): `agy-mcp serve --http :PORT` runs the same core as a long-lived daemon for multi-client use.
+- **Streamable HTTP** (opt-in): `agy-mcp -http 127.0.0.1:8765` runs the same core as a long-lived daemon for multi-client use. It is unauthenticated, so the bind is restricted to loopback (`localhost`, `127.0.0.1`, `::1`); a non-loopback address is refused at startup.
 
 ## Requirements
 
+- Linux. The job supervisor relies on process groups, `/proc`, and the kernel boot id, so the server is Linux only for now. Cross-platform support is a possible future enhancement.
 - The `agy` binary on `PATH` (or configured explicitly).
 - Go 1.26+ to build.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Install
+
+```bash
+go install github.com/tphakala/agy-mcp@latest
+```
+
+Requires the `agy` binary on `PATH` (or set `AGY_MCP_AGY_PATH`).
+
+## Use with Claude Code (stdio)
+
+```bash
+claude mcp add agy -- agy-mcp
+```
+
+Or add to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "agy": { "command": "agy-mcp" }
+  }
+}
+```
+
+## Tools
+
+- `agy_run(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?)` -> `{ job_id, conversation_id, state }`
+- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id? }`
+- `agy_cancel(job_id)` -> `{ state }`
+- `list_models()` -> `{ models }`
+- `list_sessions(dir?)` -> `{ sessions }`
+
+## HTTP mode
+
+```bash
+agy-mcp -http 127.0.0.1:8765
+```
+
+HTTP mode is opt-in and unauthenticated, so it only accepts a loopback bind address (`localhost`, `127.0.0.1`, or `::1`). A non-loopback address (including `:8765`, which binds all interfaces) is refused at startup, so it cannot be accidentally exposed.
+
+## Configuration
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `AGY_MCP_AGY_PATH` | `agy` on PATH | path to the agy binary |
+| `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
+| `AGY_MCP_DEFAULT_MODEL` | agy default | default model |
