@@ -99,6 +99,22 @@ func TestHTTPBearerAuth(t *testing.T) {
 			t.Fatalf("wrong token: expected 401, got %d", resp.StatusCode)
 		}
 	})
+
+	t.Run("lowercase scheme accepted", func(t *testing.T) {
+		// RFC 7235: the auth-scheme is case-insensitive, so "bearer <token>" with the
+		// correct token must authenticate (it reaches the MCP handler, so it is never 401).
+		req, _ := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "bearer s3cret")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode == http.StatusUnauthorized {
+			t.Fatalf("lowercase scheme with correct token must not be 401, got %d", resp.StatusCode)
+		}
+	})
 }
 
 // TestHTTPNoTokenSkipsAuth pins the default: with no token configured, a request

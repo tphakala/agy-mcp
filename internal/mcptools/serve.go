@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -39,17 +40,23 @@ func HTTPHandler(mgr *manager.Manager, token string) http.Handler {
 }
 
 // withBearerAuth wraps h to require Authorization: Bearer <token>. An empty token
-// disables the check and returns h unchanged. The comparison is constant-time so a
-// timing side-channel cannot reveal the token; an unequal length short-circuits to
-// a mismatch, which leaks only length, the standard tradeoff for a bearer check.
+// disables the check and returns h unchanged.
+//
+// The auth-scheme is matched case-insensitively (RFC 7235 makes it case-insensitive,
+// so "bearer"/"BEARER" are accepted), but the token itself is compared with
+// crypto/subtle so a timing side-channel cannot reveal it. An unequal length
+// short-circuits to a mismatch, which leaks only length, the standard tradeoff for a
+// bearer check.
 func withBearerAuth(token string, h http.Handler) http.Handler {
 	if token == "" {
 		return h
 	}
-	want := []byte("Bearer " + token)
+	want := []byte(token)
+	const prefix = "Bearer "
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := []byte(r.Header.Get("Authorization"))
-		if subtle.ConstantTimeCompare(got, want) != 1 {
+		auth := r.Header.Get("Authorization")
+		if len(auth) < len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) ||
+			subtle.ConstantTimeCompare([]byte(auth[len(prefix):]), want) != 1 {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

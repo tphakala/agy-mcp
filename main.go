@@ -47,18 +47,24 @@ func main() {
 // than calling os.Exit so deferred cleanup (the signal stop) still runs.
 func serve() error {
 	httpAddr := flag.String("http", "", "serve over Streamable HTTP on this address (e.g. 127.0.0.1:8765) instead of stdio; bind localhost only")
-	httpToken := flag.String("http-token", "", "require Authorization: Bearer <token> in HTTP mode (overrides AGY_MCP_HTTP_TOKEN; empty = unauthenticated)")
+	httpToken := flag.String("http-token", "", "require Authorization: Bearer <token> in HTTP mode (overrides AGY_MCP_HTTP_TOKEN; pass an empty value to force unauthenticated)")
 	flag.Parse()
 
 	cfg, err := config.Resolve()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	// The flag overrides the env-resolved token; empty flag falls back to the env
-	// value (which is itself empty when unset, leaving HTTP mode unauthenticated).
-	if *httpToken != "" {
-		cfg.HTTPToken = *httpToken
-	}
+	// An explicitly provided -http-token (even an empty one) overrides the
+	// env-resolved token, so the flag can both set and force-disable auth. An unset
+	// flag leaves the AGY_MCP_HTTP_TOKEN value untouched. flag.Visit reports only the
+	// flags actually present on the command line, which is how we tell "-http-token \"\""
+	// (explicit disable) apart from an omitted flag. Parsing flags before Resolve keeps
+	// -h working even when agy is not on PATH.
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "http-token" {
+			cfg.HTTPToken = *httpToken
+		}
+	})
 	mgr := manager.New(cfg)
 	if removed, err := mgr.GarbageCollect(); err != nil {
 		log.Printf("startup GC: %v", err)
