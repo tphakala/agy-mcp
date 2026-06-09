@@ -1,6 +1,8 @@
 package mcptools
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -114,4 +116,56 @@ func TestAgyRunSyncOverrunReturnsJobID(t *testing.T) {
 
 	// The overrun must not have cancelled the job: it finishes on its own.
 	waitForDone(t, mgr, jobID, "LATE OK", 15*time.Second)
+}
+
+func TestAgyRunSyncSendsProgress(t *testing.T) {
+	// One second spans several 250ms poll ticks, so at least one progress
+	// notification fires while the job runs.
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "SLOW OK", Exit: 0, SleepSecs: 1})
+
+	var mu sync.Mutex
+	var tokens []any
+	opts := &mcp.ClientOptions{
+		ProgressNotificationHandler: func(_ context.Context, r *mcp.ProgressNotificationClientRequest) {
+			mu.Lock()
+			tokens = append(tokens, r.Params.ProgressToken)
+			mu.Unlock()
+		},
+	}
+	cs := connect(t, mgr, opts)
+
+	params := &mcp.CallToolParams{
+		Name:      "agy_run_sync",
+		Arguments: map[string]any{"prompt": "review", "wait": "30s"},
+	}
+	params.SetProgressToken("tok-7")
+	res, err := cs.CallTool(t.Context(), params)
+	if err != nil || res.IsError {
+		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
+	}
+	if sc := res.StructuredContent.(map[string]any); sc["state"] != "done" {
+		t.Fatalf("state = %v, want done", sc["state"])
+	}
+
+	// Notifications are one-way; give in-flight ones a moment to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(tokens)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tokens) == 0 {
+		t.Fatal("no progress notifications received")
+	}
+	for _, tok := range tokens {
+		if tok != "tok-7" {
+			t.Fatalf("progress token = %v, want tok-7", tok)
+		}
+	}
 }
