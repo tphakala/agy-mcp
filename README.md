@@ -24,7 +24,7 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 ## Transports
 
 - **stdio** (default): zero-config, add one line to your MCP client config.
-- **Streamable HTTP** (opt-in): `agy-mcp serve --http :PORT` runs the same core as a long-lived daemon for multi-client use.
+- **Streamable HTTP** (opt-in): `agy-mcp -http 127.0.0.1:8765` runs the same core as a long-lived daemon for multi-client use. It is unauthenticated and intended for localhost only; do not bind it to a public interface.
 
 ## Requirements
 
@@ -34,3 +34,51 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Install
+
+```bash
+go install github.com/tphakala/agy-mcp@latest
+```
+
+Requires the `agy` binary on `PATH` (or set `AGY_MCP_AGY_PATH`).
+
+## Use with Claude Code (stdio)
+
+```bash
+claude mcp add agy -- agy-mcp
+```
+
+Or add to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "agy": { "command": "agy-mcp" }
+  }
+}
+```
+
+## Tools
+
+- `agy_run(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?)` -> `{ job_id, conversation_id, state }`
+- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id? }`
+- `agy_cancel(job_id)` -> `{ state }`
+- `list_models()` -> `{ models }`
+- `list_sessions(dir?)` -> `{ sessions }`
+
+## HTTP mode
+
+```bash
+agy-mcp -http 127.0.0.1:8765
+```
+
+HTTP mode is opt-in and unauthenticated. Bind it to localhost only; do not expose it on a public interface.
+
+## Configuration
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `AGY_MCP_AGY_PATH` | `agy` on PATH | path to the agy binary |
+| `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
+| `AGY_MCP_DEFAULT_MODEL` | agy default | default model |
