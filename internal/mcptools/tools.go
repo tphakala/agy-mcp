@@ -124,6 +124,8 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		return nil, cancelOutput{State: state}, nil
 	})
 
+	registerRunSync(s, mgr)
+
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_models", Description: "List available agy models.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, modelsOutput, error) {
