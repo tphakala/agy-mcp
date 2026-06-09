@@ -43,7 +43,7 @@ func (m *Manager) Status(id string) (Status, error) {
 	}
 
 	// No sentinel: decide running vs interrupted.
-	if processAlive(meta) {
+	if m.processAlive(meta) {
 		st.State = "running"
 		return st, nil
 	}
