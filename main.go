@@ -46,13 +46,25 @@ func main() {
 // MCP tools over stdio (default) or Streamable HTTP. It returns an error rather
 // than calling os.Exit so deferred cleanup (the signal stop) still runs.
 func serve() error {
-	httpAddr := flag.String("http", "", "serve over Streamable HTTP on this address (e.g. 127.0.0.1:8765) instead of stdio; unauthenticated, bind localhost only")
+	httpAddr := flag.String("http", "", "serve over Streamable HTTP on this address (e.g. 127.0.0.1:8765) instead of stdio; bind localhost only")
+	httpToken := flag.String("http-token", "", "require Authorization: Bearer <token> in HTTP mode (overrides AGY_MCP_HTTP_TOKEN; pass an empty value to force unauthenticated)")
 	flag.Parse()
 
 	cfg, err := config.Resolve()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	// An explicitly provided -http-token (even an empty one) overrides the
+	// env-resolved token, so the flag can both set and force-disable auth. An unset
+	// flag leaves the AGY_MCP_HTTP_TOKEN value untouched. flag.Visit reports only the
+	// flags actually present on the command line, which is how we tell "-http-token \"\""
+	// (explicit disable) apart from an omitted flag. Parsing flags before Resolve keeps
+	// -h working even when agy is not on PATH.
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "http-token" {
+			cfg.HTTPToken = *httpToken
+		}
+	})
 	mgr := manager.New(cfg)
 	if removed, err := mgr.GarbageCollect(); err != nil {
 		log.Printf("startup GC: %v", err)
@@ -79,8 +91,12 @@ func serve() error {
 		if err := checkLoopbackAddr(*httpAddr); err != nil {
 			return err
 		}
-		log.Printf("agy-mcp serving Streamable HTTP on %s", *httpAddr)
-		if err := mcptools.ServeHTTP(ctx, mgr, *httpAddr); err != nil {
+		authNote := "unauthenticated"
+		if cfg.HTTPToken != "" {
+			authNote = "bearer-token auth enabled"
+		}
+		log.Printf("agy-mcp serving Streamable HTTP on %s (%s)", *httpAddr, authNote)
+		if err := mcptools.ServeHTTP(ctx, mgr, *httpAddr, cfg.HTTPToken); err != nil {
 			return fmt.Errorf("http serve: %w", err)
 		}
 		return nil
@@ -93,17 +109,18 @@ func serve() error {
 	return nil
 }
 
-// checkLoopbackAddr rejects any HTTP bind address that is not loopback. The
-// HTTP mode is unauthenticated, so binding a non-loopback interface would
-// expose it; this refuses to do so rather than relying on the user reading the
-// docs.
+// checkLoopbackAddr rejects any HTTP bind address that is not loopback. HTTP mode
+// binds loopback only as a safety default: the bearer token is optional, so a
+// non-loopback bind could expose an unauthenticated server. This refuses to do so
+// rather than relying on the user reading the docs (set -http-token to add auth, but
+// the loopback restriction holds regardless).
 func checkLoopbackAddr(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr // no port; treat the whole value as the host
 	}
 	if host == "" {
-		return fmt.Errorf("http address %q binds all interfaces; specify a loopback host (e.g. 127.0.0.1:8765) for the unauthenticated HTTP mode", addr)
+		return fmt.Errorf("http address %q binds all interfaces; specify a loopback host (e.g. 127.0.0.1:8765) for HTTP mode", addr)
 	}
 	if host == "localhost" {
 		return nil
@@ -111,5 +128,5 @@ func checkLoopbackAddr(addr string) error {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		return nil
 	}
-	return fmt.Errorf("http address %q must be loopback only (localhost, 127.0.0.1, or ::1) for the unauthenticated HTTP mode", addr)
+	return fmt.Errorf("http address %q must be loopback only (localhost, 127.0.0.1, or ::1) for HTTP mode", addr)
 }

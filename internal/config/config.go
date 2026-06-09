@@ -18,6 +18,7 @@ type Config struct {
 	DefaultTimeout time.Duration // hard per-job timeout
 	MaxConcurrency int           // global cap on concurrent jobs
 	JobTTL         time.Duration // age after which finished jobs are GC'd
+	HTTPToken      string        // optional bearer token for HTTP mode; empty = unauthenticated
 }
 
 // Resolve builds a Config from environment variables and defaults.
@@ -27,6 +28,7 @@ func Resolve() (Config, error) {
 		DefaultTimeout: 30 * time.Minute,
 		MaxConcurrency: 4,
 		JobTTL:         24 * time.Hour,
+		HTTPToken:      os.Getenv("AGY_MCP_HTTP_TOKEN"),
 	}
 
 	if p := os.Getenv("AGY_MCP_AGY_PATH"); p != "" {
