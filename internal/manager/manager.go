@@ -99,10 +99,11 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		BootID:         readBootID(),
 		Timeout:        timeout,
 	}
-	// For a genuinely fresh run (no conversation, no continue), snapshot the
-	// cwd's current conversation id so a later diff can capture the new
-	// conversation agy creates.
-	if req.ConversationID == "" && !req.ContinueLatest {
+	// Whenever the run has no resolved conversation id (a fresh run, or a
+	// continue_latest that found no prior conversation), agy will create a new
+	// conversation. Snapshot the cwd's current conversation id so a later diff
+	// can capture the one agy creates.
+	if req.ConversationID == "" {
 		meta.CwdUUIDBefore = snapshotCwd(agyCachePath(), cwd)
 	}
 	dir, err := m.store.Create(meta)
@@ -134,15 +135,15 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		m.gate.release(key)
 		return Job{}, fmt.Errorf("record supervisor pid: %w", err)
 	}
-	// Reap the supervisor in the background so a finished job does not leave a
-	// zombie. The supervisor is detached (its own process group) and survives
-	// the manager regardless, so reaping does not couple their lifetimes; if the
-	// manager dies first, init adopts and reaps the supervisor.
-	go func() { _ = cmd.Wait() }()
-
-	// The gate slot is released by a background watchdog when the job reaches a
-	// terminal state (or after a bounded safety window).
-	go m.releaseWhenDone(key, id, timeout)
+	// Wait for the supervisor in the background. cmd.Wait returns exactly when
+	// the supervisor (and thus the job) exits, so this both reaps it (no zombie)
+	// and releases the gate slot at the precise moment the job ends, with no
+	// disk polling. The supervisor is detached and survives manager death; if
+	// the manager dies first, init adopts and reaps it.
+	go func() {
+		_ = cmd.Wait()
+		m.gate.release(key)
+	}()
 
 	return Job{ID: id, ConversationID: req.ConversationID, State: StateRunning}, nil
 }
@@ -177,21 +178,6 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 		}
 	}
 	return removed, nil
-}
-
-func (m *Manager) releaseWhenDone(key, id string, timeout time.Duration) {
-	deadline := time.Now().Add(timeout + time.Minute)
-	for time.Now().Before(deadline) {
-		if st, err := m.Status(id); err == nil {
-			switch st.State {
-			case StateDone, StateFailed, StateCancelled:
-				m.gate.release(key)
-				return
-			}
-		}
-		time.Sleep(time.Second)
-	}
-	m.gate.release(key) // safety release after the watchdog window
 }
 
 func buildAgyArgs(req StartRequest, model string, timeout time.Duration) []string {

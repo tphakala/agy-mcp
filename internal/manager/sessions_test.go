@@ -24,8 +24,13 @@ func TestListSessionsFromCache(t *testing.T) {
 func TestListSessionsFilteredByDir(t *testing.T) {
 	cache := t.TempDir()
 	data := `{"/home/u/proj":"uuid-1","/home/u/other":"uuid-2"}`
-	_ = os.WriteFile(filepath.Join(cache, "last_conversations.json"), []byte(data), 0o644)
-	sessions, _ := readSessions(filepath.Join(cache, "last_conversations.json"), "/home/u/proj")
+	if err := os.WriteFile(filepath.Join(cache, "last_conversations.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := readSessions(filepath.Join(cache, "last_conversations.json"), "/home/u/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(sessions) != 1 || sessions[0].ConversationID != "uuid-1" {
 		t.Fatalf("got %+v", sessions)
 	}

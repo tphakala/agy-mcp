@@ -10,8 +10,12 @@ import (
 
 func TestGarbageCollectRemovesExpired(t *testing.T) {
 	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
-	_, _ = m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-2 * time.Hour)})
-	_, _ = m.store.Create(jobstore.Meta{ID: "fresh", StartedAt: time.Now()})
+	if _, err := m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.store.Create(jobstore.Meta{ID: "fresh", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 	removed, err := m.GarbageCollect()
 	if err != nil {
 		t.Fatal(err)
@@ -23,8 +27,13 @@ func TestGarbageCollectRemovesExpired(t *testing.T) {
 
 func TestGarbageCollectDisabledWhenTTLZero(t *testing.T) {
 	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4}) // JobTTL 0
-	_, _ = m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-100 * time.Hour)})
-	removed, _ := m.GarbageCollect()
+	if _, err := m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-100 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := m.GarbageCollect()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(removed) != 0 {
 		t.Fatalf("TTL 0 should disable GC, removed %v", removed)
 	}

@@ -1,12 +1,31 @@
 package jobstore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 )
+
+func TestRejectsUnsafeJobID(t *testing.T) {
+	s := New(t.TempDir())
+	for _, id := range []string{"", ".", "..", "../escape", "a/b", `a\b`} {
+		if _, err := s.Create(Meta{ID: id}); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("Create(%q) err = %v, want ErrInvalidID", id, err)
+		}
+		if _, err := s.Load(id); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("Load(%q) err = %v, want ErrInvalidID", id, err)
+		}
+		if err := s.Remove(id); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("Remove(%q) err = %v, want ErrInvalidID", id, err)
+		}
+		if _, ok := s.ExitCode(id); ok {
+			t.Errorf("ExitCode(%q) ok = true, want false", id)
+		}
+	}
+}
 
 func TestCreateAndLoadMeta(t *testing.T) {
 	s := New(t.TempDir())

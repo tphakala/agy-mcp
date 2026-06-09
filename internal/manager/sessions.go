@@ -41,9 +41,13 @@ func readSessions(cacheFile, filterDir string) ([]Session, error) {
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return nil, err
 	}
+	cleanFilter := ""
+	if filterDir != "" {
+		cleanFilter = filepath.Clean(filterDir)
+	}
 	var out []Session
 	for ws, id := range raw {
-		if filterDir != "" && ws != filterDir {
+		if cleanFilter != "" && filepath.Clean(ws) != cleanFilter {
 			continue
 		}
 		out = append(out, Session{Workspace: ws, ConversationID: id})

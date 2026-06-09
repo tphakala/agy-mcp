@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -63,6 +64,9 @@ func serve() error {
 	defer stop()
 
 	if *httpAddr != "" {
+		if err := checkLoopbackAddr(*httpAddr); err != nil {
+			return err
+		}
 		log.Printf("agy-mcp serving Streamable HTTP on %s", *httpAddr)
 		if err := mcptools.ServeHTTP(ctx, mgr, *httpAddr); err != nil {
 			return fmt.Errorf("http serve: %w", err)
@@ -75,4 +79,25 @@ func serve() error {
 		return fmt.Errorf("stdio serve: %w", err)
 	}
 	return nil
+}
+
+// checkLoopbackAddr rejects any HTTP bind address that is not loopback. The
+// HTTP mode is unauthenticated, so binding a non-loopback interface would
+// expose it; this refuses to do so rather than relying on the user reading the
+// docs.
+func checkLoopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr // no port; treat the whole value as the host
+	}
+	if host == "" {
+		return fmt.Errorf("http address %q binds all interfaces; specify a loopback host (e.g. 127.0.0.1:8765) for the unauthenticated HTTP mode", addr)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("http address %q must be loopback only (localhost, 127.0.0.1, or ::1) for the unauthenticated HTTP mode", addr)
 }

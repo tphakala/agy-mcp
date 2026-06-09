@@ -28,6 +28,7 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 
 ## Requirements
 
+- Linux. The job supervisor relies on process groups, `/proc`, and the kernel boot id, so the server is Linux only for now. Cross-platform support is a possible future enhancement.
 - The `agy` binary on `PATH` (or configured explicitly).
 - Go 1.26+ to build.
 

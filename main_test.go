@@ -80,3 +80,16 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 		t.Fatalf("exit_code = %q, want %d (SIGTERM cancel)", code, jobstore.ExitSIGTERM)
 	}
 }
+
+func TestCheckLoopbackAddr(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8765", "localhost:8765", "[::1]:8765", "127.0.0.1:0"} {
+		if err := checkLoopbackAddr(addr); err != nil {
+			t.Errorf("checkLoopbackAddr(%q) = %v, want nil", addr, err)
+		}
+	}
+	for _, addr := range []string{":8765", "0.0.0.0:8765", "192.168.1.10:8765", "example.com:8765"} {
+		if err := checkLoopbackAddr(addr); err == nil {
+			t.Errorf("checkLoopbackAddr(%q) = nil, want error", addr)
+		}
+	}
+}
