@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +11,11 @@ import (
 
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 )
+
+// maxReadBytes caps how much of a job's out/err file is read into memory, so a
+// runaway agy emitting huge output cannot OOM the server. Reviews are text and
+// far smaller than this; anything larger is truncated.
+const maxReadBytes = 32 << 20 // 32 MiB
 
 // Job states reported by Status. These are shared with StartJob and the gate
 // watchdog so the producer and consumer of a job's state cannot drift apart.
@@ -76,7 +82,12 @@ func (m *Manager) Status(id string) (Status, error) {
 }
 
 func readFile(p string) string {
-	b, err := os.ReadFile(p)
+	f, err := os.Open(p)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, maxReadBytes))
 	if err != nil {
 		return ""
 	}
