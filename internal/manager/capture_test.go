@@ -87,10 +87,6 @@ func TestFreshRunCapturesConversationID(t *testing.T) {
 // an empty conversation id and, crucially, still release its gate key after the
 // capture budget so a later same-cwd run is not blocked forever.
 func TestFreshRunNoConversationReleasesKey(t *testing.T) {
-	oldBudget, oldPoll := captureBudget, capturePoll
-	captureBudget, capturePoll = 50*time.Millisecond, 10*time.Millisecond
-	t.Cleanup(func() { captureBudget, capturePoll = oldBudget, oldPoll })
-
 	state := t.TempDir()
 	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
 	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
@@ -107,6 +103,8 @@ func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 	}
 	m := New(c)
 	m.cacheFile = cachePath
+	m.captureBudget = 50 * time.Millisecond
+	m.capturePoll = 10 * time.Millisecond
 
 	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: cwd})
 	if err != nil {
@@ -115,14 +113,19 @@ func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 
 	// Wait for the job to finish; the id stays empty (no conversation was created).
 	deadline := time.Now().Add(2 * time.Second)
+	seenDone := false
 	for time.Now().Before(deadline) {
 		if st, _ := m.Status(job.ID); st.State == StateDone {
 			if st.ConversationID != "" {
 				t.Fatalf("expected empty conversation id, got %q", st.ConversationID)
 			}
+			seenDone = true
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !seenDone {
+		t.Fatal("job never reached done state")
 	}
 
 	// The gate key must have been released after the capture budget: a second

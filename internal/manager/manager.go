@@ -22,15 +22,26 @@ type Manager struct {
 	store     *jobstore.Store
 	gate      *gate  // serializes conflicting jobs and caps total concurrency
 	cacheFile string // agy conversation cache (last_conversations.json); injectable for tests
+
+	// Timing for the fresh-run conversation-id capture and the restored-job
+	// liveness watcher. Fields (not package globals) so tests stay isolated and can
+	// run in parallel. agy's conversation cache is flushed by a separate daemon that
+	// can lag the foreground agy exit, so the capture retries briefly.
+	captureBudget        time.Duration
+	capturePoll          time.Duration
+	restoredPollInterval time.Duration
 }
 
 // New constructs a Manager.
 func New(c config.Config) *Manager {
 	return &Manager{
-		cfg:       c,
-		store:     jobstore.New(c.StateDir),
-		gate:      newGate(c.MaxConcurrency),
-		cacheFile: agyCachePath(),
+		cfg:                  c,
+		store:                jobstore.New(c.StateDir),
+		gate:                 newGate(c.MaxConcurrency),
+		cacheFile:            agyCachePath(),
+		captureBudget:        2 * time.Second,
+		capturePoll:          100 * time.Millisecond,
+		restoredPollInterval: 2 * time.Second,
 	}
 }
 
@@ -52,15 +63,6 @@ type Job struct {
 	State          string // "running"
 }
 
-// Capture timing for a fresh run's conversation id. agy's conversation cache is
-// written by a separate long-lived daemon that can lag the foreground agy exit, so
-// the capture retries briefly rather than reading once. These are vars so tests can
-// shorten them.
-var (
-	captureBudget = 2 * time.Second
-	capturePoll   = 100 * time.Millisecond
-)
-
 // captureFreshConversationID records the conversation id agy created for a fresh
 // run by diffing the cwd's cache entry against the pre-run snapshot, and persists
 // it to meta so Status reports it. It is a no-op once an id is already known.
@@ -73,7 +75,7 @@ func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
 	if meta.ConversationID != "" {
 		return
 	}
-	deadline := time.Now().Add(captureBudget)
+	deadline := time.Now().Add(m.captureBudget)
 	for {
 		if id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore); ok {
 			final, err := m.store.SetConversationID(meta.ID, id)
@@ -87,7 +89,7 @@ func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
 		if !time.Now().Before(deadline) {
 			return
 		}
-		time.Sleep(capturePoll)
+		time.Sleep(m.capturePoll)
 	}
 }
 
@@ -263,13 +265,14 @@ func reqFromMeta(meta jobstore.Meta) StartRequest {
 // global cap accounts for them. Without this, a restored job is invisible to the
 // gate and the cap could be bypassed, re-exposing the session-lock hang the gate
 // prevents. Intended to run once at startup, after GarbageCollect.
-func (m *Manager) RestoreGate() {
+//
+// It fails closed: if the on-disk jobs cannot be scanned the gate cannot be made
+// safe, so it returns an error and the caller should refuse to start rather than
+// serve with an unrestored gate.
+func (m *Manager) RestoreGate() error {
 	ids, err := m.store.List()
 	if err != nil {
-		// A failed scan leaves the gate unrestored, silently re-opening the cap
-		// bypass this method exists to prevent; surface it rather than swallow it.
-		log.Printf("agy-mcp: RestoreGate could not list jobs; gate not restored: %v", err)
-		return
+		return fmt.Errorf("scan jobs to restore concurrency gate: %w", err)
 	}
 	for _, id := range ids {
 		meta, err := m.store.Load(id)
@@ -283,26 +286,24 @@ func (m *Manager) RestoreGate() {
 			continue // supervisor gone; GarbageCollect will reap it
 		}
 		// tryAcquire reserves the key and counts the job against the cap. A failure
-		// means the cap is already full or the key is a duplicate, so skip it.
+		// means the cap is already full or the key is a duplicate; log it, because a
+		// live job left untracked by the gate is the bypass this method prevents.
 		key := keyFor(reqFromMeta(meta))
 		if m.gate.tryAcquire(key) {
 			m.watchRestored(meta, key)
+		} else {
+			log.Printf("agy-mcp: RestoreGate could not re-acquire gate key %q for live job %s (cap full or duplicate key); it is untracked by the gate", key, id)
 		}
 	}
+	return nil
 }
-
-// restoredPollInterval is how often a restored job's watcher polls its detached
-// supervisor's liveness. It is a var so tests can shorten it.
-var restoredPollInterval = 2 * time.Second
 
 // watchRestored releases a restored job's gate key once its detached supervisor
 // exits. A restored job is not a child of this manager, so there is no cmd.Wait to
 // release on; the watcher polls liveness instead. It only covers jobs that
 // outlived a restart, so the polling cost is bounded.
 func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
-	// Read the interval synchronously so the package-global is never read from the
-	// spawned goroutine (tests mutate it; the goroutine must not race that write).
-	interval := restoredPollInterval
+	interval := m.restoredPollInterval
 	dead := func() bool {
 		if _, terminal := m.store.ExitCode(meta.ID); terminal {
 			return true

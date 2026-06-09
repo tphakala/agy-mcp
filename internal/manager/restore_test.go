@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -65,7 +66,9 @@ func TestRestoreGateBlocksConflictingRun(t *testing.T) {
 	cwd := t.TempDir()
 	createLiveJob(t, m, "live-1", cwd, pid)
 
-	m.RestoreGate()
+	if err := m.RestoreGate(); err != nil {
+		t.Fatalf("RestoreGate: %v", err)
+	}
 
 	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err == nil {
 		t.Fatal("a same-cwd run should be blocked by the restored live job's key")
@@ -79,7 +82,9 @@ func TestRestoreGateCountsAgainstCap(t *testing.T) {
 	m := newManagerForRestore(t, exePath, 1)
 	createLiveJob(t, m, "live-1", t.TempDir(), pid)
 
-	m.RestoreGate()
+	if err := m.RestoreGate(); err != nil {
+		t.Fatalf("RestoreGate: %v", err)
+	}
 
 	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: t.TempDir()}); err == nil {
 		t.Fatal("a run in a different cwd should be refused: the restored job fills the cap")
@@ -89,10 +94,6 @@ func TestRestoreGateCountsAgainstCap(t *testing.T) {
 // Once a restored job's detached supervisor exits, the watcher must release its
 // gate key so a subsequent same-cwd run can proceed (the key must not leak).
 func TestRestoreGateReleasesKeyWhenSupervisorExits(t *testing.T) {
-	old := restoredPollInterval
-	restoredPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { restoredPollInterval = old })
-
 	exePath, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Skipf("sleep not available: %v", err)
@@ -110,10 +111,13 @@ func TestRestoreGateReleasesKeyWhenSupervisorExits(t *testing.T) {
 	})
 
 	m := newManagerForRestore(t, exePath, 4)
+	m.restoredPollInterval = 10 * time.Millisecond
 	cwd := t.TempDir()
 	createLiveJob(t, m, "live-1", cwd, cmd.Process.Pid)
 
-	m.RestoreGate()
+	if err := m.RestoreGate(); err != nil {
+		t.Fatalf("RestoreGate: %v", err)
+	}
 
 	// While the supervisor is alive the key is held: a same-cwd run is blocked.
 	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err == nil {
@@ -138,6 +142,27 @@ func TestRestoreGateReleasesKeyWhenSupervisorExits(t *testing.T) {
 	}
 }
 
+// RestoreGate must fail closed: if the on-disk jobs cannot be scanned, it returns
+// an error so startup can refuse rather than serve with an unrestored gate.
+func TestRestoreGateFailsClosedOnScanError(t *testing.T) {
+	state := t.TempDir()
+	// Make the jobs path a file so the directory scan errors (distinct from the
+	// benign "directory does not exist yet" case, which is not an error).
+	if err := os.WriteFile(filepath.Join(state, "jobs"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  "/bin/true",
+		StateDir:       state,
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	})
+	if err := m.RestoreGate(); err == nil {
+		t.Fatal("RestoreGate must return an error when the jobs dir cannot be scanned")
+	}
+}
+
 // A job whose recorded supervisor is no longer alive must NOT be restored into the
 // gate. Restoring a dead job would hold its key forever and block all same-cwd runs.
 func TestRestoreGateSkipsDeadSupervisor(t *testing.T) {
@@ -159,7 +184,9 @@ func TestRestoreGateSkipsDeadSupervisor(t *testing.T) {
 	cwd := t.TempDir()
 	createLiveJob(t, m, "dead-1", cwd, deadPID)
 
-	m.RestoreGate()
+	if err := m.RestoreGate(); err != nil {
+		t.Fatalf("RestoreGate: %v", err)
+	}
 
 	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err != nil {
 		t.Fatalf("a dead-supervisor job must not hold a gate key, but the run was blocked: %v", err)
@@ -177,7 +204,9 @@ func TestRestoreGateSkipsTerminalJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m.RestoreGate()
+	if err := m.RestoreGate(); err != nil {
+		t.Fatalf("RestoreGate: %v", err)
+	}
 
 	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err != nil {
 		t.Fatalf("a terminal job must not hold a gate key, but the run was blocked: %v", err)

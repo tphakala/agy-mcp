@@ -112,7 +112,10 @@ func TestSetConversationID(t *testing.T) {
 	if got != first {
 		t.Fatalf("second set returned %q, want existing %q", got, first)
 	}
-	reloaded, _ = s.Load("j")
+	reloaded, err = s.Load("j")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if reloaded.ConversationID != first {
 		t.Fatalf("existing id was overwritten: %q", reloaded.ConversationID)
 	}
