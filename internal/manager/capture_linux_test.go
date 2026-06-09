@@ -9,32 +9,8 @@ import (
 
 	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/internal/testutil"
 )
-
-// fakeSupervisorWritingCache mimics `agy-mcp run-job <dir>`: it writes out and
-// exit_code like the plain fake supervisor, but also overwrites the agy
-// conversation cache with cacheJSON, simulating agy creating a new conversation
-// for the run's cwd. The cache write lands before exit_code, so it is on disk by
-// the time the supervisor exits and the manager's completion goroutine reads it.
-func fakeSupervisorWritingCache(t *testing.T, cachePath, cacheJSON string) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "fake-sup-cache")
-	payload := filepath.Join(dir, "cache-payload.json")
-	if err := os.WriteFile(payload, []byte(cacheJSON), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	script := fmt.Sprintf(`#!/usr/bin/env bash
-dir="$2"
-printf 'done' > "$dir/out"
-cat %q > %q
-printf '0' > "$dir/exit_code"
-`, payload, cachePath)
-	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
 
 // A completed fresh run must report the conversation id agy created for it,
 // captured by diffing the conversation cache against the pre-run snapshot.
@@ -49,7 +25,9 @@ func TestFreshRunCapturesConversationID(t *testing.T) {
 
 	c := config.Config{
 		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  fakeSupervisorWritingCache(t, cachePath, fmt.Sprintf(`{%q:%q}`, cwd, newUUID)),
+		SupervisorExe: testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
+			Out: "done", CachePath: cachePath, CacheJSON: fmt.Sprintf(`{%q:%q}`, cwd, newUUID),
+		}),
 		StateDir:       state,
 		DefaultTimeout: time.Minute,
 		MaxConcurrency: 4,
@@ -87,7 +65,7 @@ func TestFreshRunCapturesConversationID(t *testing.T) {
 // an empty conversation id and, crucially, still release its gate key after the
 // capture budget so a later same-cwd run is not blocked forever.
 // waitForExitCode blocks until the job has written its exit_code, the supervisor's last
-// write into the job dir. Its callers use the cache-less fakeSupervisor, which creates no
+// write into the job dir. Its callers use a cache-less testutil.WriteFakeSupervisor, which creates no
 // conversation, so no manager-side meta rewrite follows the exit; for them this is the
 // final write. A test that returns while a supervisor is still writing into a t.TempDir
 // StateDir races the TempDir RemoveAll cleanup.
@@ -113,7 +91,7 @@ func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 
 	c := config.Config{
 		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  fakeSupervisor(t), // writes out + exit 0, never touches the cache
+		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}), // writes out + exit 0, never touches the cache
 		StateDir:       state,
 		DefaultTimeout: time.Minute,
 		MaxConcurrency: 4,

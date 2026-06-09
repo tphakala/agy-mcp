@@ -8,6 +8,7 @@ import (
 
 	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
 // failUpdateStore wraps a real store but fails UpdateMeta whenever failUpdateMeta is
@@ -34,7 +35,7 @@ func TestStartJobCleansUpDirOnUpdateMetaFailure(t *testing.T) {
 	state := t.TempDir()
 	c := config.Config{
 		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  fakeSupervisor(t), // real: cmd.Start succeeds and a supervisor runs
+		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}), // real: cmd.Start succeeds and a supervisor runs
 		StateDir:       state,
 		DefaultTimeout: time.Minute,
 		MaxConcurrency: 1,
