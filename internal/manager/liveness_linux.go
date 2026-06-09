@@ -3,6 +3,7 @@ package manager
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -31,7 +32,7 @@ func (m *Manager) processAlive(meta jobstore.Meta) bool {
 		return false
 	}
 	// Defense in depth: confirm the process is still our supervisor by name.
-	comm, err := os.ReadFile(filepath.Join("/proc", itoa(meta.PID), "comm"))
+	comm, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(meta.PID), "comm"))
 	if err != nil {
 		return false
 	}

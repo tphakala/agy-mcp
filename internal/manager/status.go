@@ -6,6 +6,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/tphakala/agy-mcp/internal/jobstore"
+)
+
+// Job states reported by Status. These are shared with StartJob and the gate
+// watchdog so the producer and consumer of a job's state cannot drift apart.
+const (
+	StateRunning   = "running"
+	StateDone      = "done"
+	StateFailed    = "failed"
+	StateCancelled = "cancelled"
 )
 
 // Status is the observable state of a job.
@@ -30,16 +42,17 @@ func (m *Manager) Status(id string) (Status, error) {
 	}
 
 	if code, ok := m.store.ExitCode(id); ok {
-		if code == 0 {
-			st.State = "done"
+		switch code {
+		case 0:
+			st.State = StateDone
 			st.Result = readFile(filepath.Join(dir, "out"))
-		} else if code == 143 || code == 130 {
-			st.State = "cancelled"
-		} else if code == 124 {
-			st.State = "failed"
+		case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
+			st.State = StateCancelled
+		case jobstore.ExitTimeout:
+			st.State = StateFailed
 			st.Error = "job exceeded its timeout and was terminated"
-		} else {
-			st.State = "failed"
+		default:
+			st.State = StateFailed
 			st.Error = errorSummary(dir, code)
 		}
 		return st, nil
@@ -47,16 +60,16 @@ func (m *Manager) Status(id string) (Status, error) {
 
 	// No sentinel: decide running vs interrupted.
 	if m.processAlive(meta) {
-		st.State = "running"
+		st.State = StateRunning
 		return st, nil
 	}
 	// Process is gone without a sentinel. If output was captured, recover it.
 	out := readFile(filepath.Join(dir, "out"))
 	if out != "" {
-		st.State = "done"
+		st.State = StateDone
 		st.Result = out
 	} else {
-		st.State = "failed"
+		st.State = StateFailed
 		st.Error = "job process exited without writing a result (interrupted)"
 	}
 	return st, nil
@@ -74,8 +87,10 @@ func errorSummary(dir string, code int) string {
 	tail := readFile(filepath.Join(dir, "err"))
 	if len(tail) > 2000 {
 		tail = tail[len(tail)-2000:]
+		// Advance to a valid UTF-8 boundary so a multi-byte rune is not split.
+		for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+			tail = tail[1:]
+		}
 	}
-	return strings.TrimSpace("exit " + itoa(code) + ": " + tail)
+	return strings.TrimSpace("exit " + strconv.Itoa(code) + ": " + tail)
 }
-
-func itoa(i int) string { return strconv.Itoa(i) }

@@ -59,7 +59,7 @@ func Run(jobDir string) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
-		_ = writeExit(jobDir, 127)
+		_ = writeExit(jobDir, jobstore.ExitSpawnFail)
 		return err
 	}
 
@@ -92,7 +92,13 @@ func Run(jobDir string) error {
 		select {
 		case <-done:
 		case <-time.After(killGrace):
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			// Do not signal a process group that may have already been reaped
+			// (and whose pgid could be recycled) once Wait has returned.
+			select {
+			case <-done:
+			default:
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
 		}
 	}()
 
@@ -104,20 +110,23 @@ func Run(jobDir string) error {
 		if ee, ok := waitErr.(*exec.ExitError); ok {
 			code = ee.ExitCode()
 			if code < 0 {
-				code = 143 // terminated by signal
+				code = jobstore.ExitSIGTERM // terminated by signal
 			}
 		} else {
 			code = 1
 		}
 	}
-	// If the hard timeout fired, record the timeout sentinel (124) regardless of
-	// the signal-derived exit code, so Status can report a timeout distinctly
-	// from a user cancel. (timedOut is closed before the kill, so it is always
-	// observable by the time Wait returns.)
-	select {
-	case <-timedOut:
-		code = 124
-	default:
+	// If the hard timeout fired, record the timeout sentinel so Status can report
+	// a timeout distinctly from a user cancel. Guard on waitErr so a job that
+	// finished naturally at the exact instant the timer fired is not mislabeled
+	// as a timeout (a natural success has waitErr == nil). timedOut is closed
+	// before the kill, so it is observable by the time Wait returns.
+	if waitErr != nil {
+		select {
+		case <-timedOut:
+			code = jobstore.ExitTimeout
+		default:
+		}
 	}
 	return writeExit(jobDir, code)
 }

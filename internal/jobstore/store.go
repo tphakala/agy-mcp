@@ -27,6 +27,17 @@ type Meta struct {
 	Timeout        time.Duration `json:"timeout,omitempty"`
 }
 
+// Exit-code sentinels the supervisor writes to the exit_code file and the
+// manager interprets when deriving status. The 128+signal values follow the
+// shell convention; 124 follows GNU timeout's convention for a timed-out
+// command.
+const (
+	ExitTimeout   = 124 // hard timeout fired; the agy process group was terminated
+	ExitSpawnFail = 127 // the supervisor could not start agy
+	ExitSIGINT    = 130 // agy exited via SIGINT (128+2); treated as a cancel
+	ExitSIGTERM   = 143 // agy terminated by SIGTERM (128+15); cancel or timeout kill
+)
+
 // Store is a directory-backed collection of jobs.
 type Store struct{ root string }
 
