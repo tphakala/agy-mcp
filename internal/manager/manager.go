@@ -10,7 +10,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/tphakala/agy-mcp/internal/config"
@@ -20,9 +19,9 @@ import (
 // Manager coordinates jobs backed by an on-disk store.
 type Manager struct {
 	cfg       config.Config
-	store     *jobstore.Store
-	gate      *gate  // serializes conflicting jobs and caps total concurrency
-	cacheFile string // agy conversation cache (last_conversations.json); injectable for tests
+	store     jobStore // *jobstore.Store in production; an interface so tests can inject failures
+	gate      *gate    // serializes conflicting jobs and caps total concurrency
+	cacheFile string   // agy conversation cache (last_conversations.json); injectable for tests
 
 	// Timing for the fresh-run conversation-id capture and the restored-job
 	// liveness watcher. Fields (not package globals) so tests stay isolated and can
@@ -124,6 +123,13 @@ func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 
 // StartJob persists meta and spawns the detached supervisor.
 func (m *Manager) StartJob(req StartRequest) (Job, error) {
+	// Job supervision needs process groups and /proc, which only exist on Linux. On
+	// other platforms refuse before doing any work, so the failure is a clear error
+	// rather than a half-spawned job. stdio/HTTP serve, list_models, and list_sessions
+	// still work everywhere.
+	if !platformSupported {
+		return Job{}, errPlatformUnsupported
+	}
 	id, err := newID()
 	if err != nil {
 		return Job{}, err
@@ -187,7 +193,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 
 	cmd := exec.Command(m.cfg.SupervisorExe, "run-job", dir)
 	cmd.Env = os.Environ()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(cmd)
 	// Detach stdio: supervisor must not inherit the manager's stdout (the
 	// JSON-RPC stream in stdio mode).
 	cmd.Stdin = nil
@@ -215,7 +221,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// remove the dir and release the gate. Releasing only after the agy process
 		// group is gone keeps a conflicting same-key run from starting while the
 		// dying agy still holds its session lock.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		_ = terminateGroup(cmd.Process.Pid)
 		go func() {
 			_ = cmd.Wait()
 			_ = m.store.Remove(id)
