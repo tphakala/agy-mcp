@@ -61,6 +61,15 @@ func TestProcessAliveStartTimeCheck(t *testing.T) {
 		t.Error("mismatched start time should read as not alive")
 	}
 
+	// A matching (boot id, pid, starttime) triple pins the exact process, so it
+	// must read as alive even when the comm does not match the supervisor name.
+	// This is the fork-to-exec window: comm is inherited from the parent (or is
+	// briefly the script interpreter's) before exec sets the final name.
+	wrongComm := New(config.Config{SupervisorExe: "/bogus/not-this-process", StateDir: t.TempDir(), MaxConcurrency: 4})
+	if !wrongComm.processAlive(match) {
+		t.Error("matching start time should be authoritative over a mismatched comm")
+	}
+
 	// Unknown (0) start time: the check is skipped, preserving prior behavior.
 	unknown := base
 	unknown.StartTimeTicks = 0

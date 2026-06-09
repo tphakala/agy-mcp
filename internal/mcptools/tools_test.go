@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/manager"
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
@@ -16,8 +15,11 @@ func writeFakeSupervisor(t *testing.T, agy string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "fake-sup")
 	// Mimics `agy-mcp run-job <dir>`: runs the fake agy, captures stdout to out,
-	// writes exit_code.
+	// writes exit_code. Sets its comm to the script basename to stay faithful to
+	// the real supervisor for the liveness comm fallback (the primary liveness
+	// signal is the recorded starttime triple, which needs no help).
 	script := "#!/usr/bin/env bash\n" +
+		"printf '%s' \"${0##*/}\" > /proc/$$/comm\n" +
 		"dir=\"$2\"\n" +
 		"\"" + agy + "\" -p x > \"$dir/out\" 2> \"$dir/err\"\n" +
 		"printf '%s' \"$?\" > \"$dir/exit_code\"\n"
@@ -28,24 +30,9 @@ func writeFakeSupervisor(t *testing.T, agy string) string {
 }
 
 func TestAgyRunAndStatusOverMCP(t *testing.T) {
-	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "REVIEW OK", Exit: 0})
-	sup := writeFakeSupervisor(t, agy)
-	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: t.TempDir(),
-		DefaultTimeout: time.Minute, MaxConcurrency: 4}
-	mgr := manager.New(c)
-
-	srv := NewServer(mgr)
-	ct, st := mcp.NewInMemoryTransports()
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "REVIEW OK", Exit: 0})
+	cs := connect(t, mgr, nil)
 	ctx := t.Context()
-	if _, err := srv.Connect(ctx, st, nil); err != nil { // server side
-		t.Fatalf("server connect: %v", err)
-	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
-	cs, err := client.Connect(ctx, ct, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	defer func() { _ = cs.Close() }()
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "agy_run",
@@ -67,7 +54,7 @@ func TestAgyRunAndStatusOverMCP(t *testing.T) {
 			t.Fatal(err)
 		}
 		sc := s.StructuredContent.(map[string]any)
-		if sc["state"] == "done" {
+		if sc["state"] == manager.StateDone {
 			if sc["result"] != "REVIEW OK" {
 				t.Fatalf("result = %v", sc["result"])
 			}

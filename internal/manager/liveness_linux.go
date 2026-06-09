@@ -38,26 +38,26 @@ func (m *Manager) processAlive(meta jobstore.Meta) bool {
 	if err := syscall.Kill(meta.PID, 0); err != nil {
 		return false
 	}
-	// Defense in depth: confirm the process is still our supervisor by name.
+	// A matching (boot id, pid, starttime) triple uniquely pins the process:
+	// starttime is set at fork and survives exec, and was recorded right after
+	// cmd.Start while the PID was unreapable. When the recorded ticks are
+	// readable they are authoritative liveness, and the comm check must NOT
+	// run: in the fork-to-exec window comm is inherited from the parent (or is
+	// briefly the script interpreter's), so requiring the supervisor name there
+	// would misread a just-spawned live job as dead. A successful read that
+	// mismatches proves same-boot PID recycling.
+	if meta.StartTimeTicks != 0 {
+		if cur, ok := readStartTimeTicks(meta.PID); ok {
+			return cur == meta.StartTimeTicks
+		}
+	}
+	// Fallback (no recorded starttime in older meta, or a transient stat read
+	// failure): confirm the process is still our supervisor by name.
 	comm, err := os.ReadFile("/proc/" + strconv.Itoa(meta.PID) + "/comm")
 	if err != nil {
 		return false
 	}
-	name := strings.TrimSpace(string(comm))
-	if name != expectedComm(m.cfg.SupervisorExe) {
-		return false
-	}
-	// Same-boot PID recycling: a recycled PID may pass the comm check if the new
-	// process is also an agy-mcp. The start time pins identity to this exact
-	// process. Only a successful read that mismatches proves recycling; a recorded
-	// zero (older meta, or an unreadable /proc at spawn) or a transient read failure
-	// here skips the check, so a live job is never falsely read as dead.
-	if meta.StartTimeTicks != 0 {
-		if cur, ok := readStartTimeTicks(meta.PID); ok && cur != meta.StartTimeTicks {
-			return false
-		}
-	}
-	return true
+	return strings.TrimSpace(string(comm)) == expectedComm(m.cfg.SupervisorExe)
 }
 
 // readStartTimeTicks returns the process start time (field 22 of

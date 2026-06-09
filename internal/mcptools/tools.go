@@ -21,6 +21,23 @@ type runInput struct {
 	Timeout        string   `json:"timeout,omitempty" jsonschema:"max run duration, e.g. 20m"`
 }
 
+// toStartRequest converts the wire input into a manager start request,
+// validating the timeout.
+func (in runInput) toStartRequest() (manager.StartRequest, error) {
+	req := manager.StartRequest{
+		Prompt: in.Prompt, Model: in.Model, Dirs: in.Dirs,
+		ConversationID: in.ConversationID, ContinueLatest: in.ContinueLatest, Cwd: in.Cwd,
+	}
+	if in.Timeout != "" {
+		d, err := time.ParseDuration(in.Timeout)
+		if err != nil || d <= 0 {
+			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: want a positive Go duration like 20m", in.Timeout)
+		}
+		req.Timeout = d
+	}
+	return req, nil
+}
+
 type runOutput struct {
 	JobID          string `json:"job_id"`
 	ConversationID string `json:"conversation_id,omitempty"`
@@ -37,6 +54,18 @@ type statusOutput struct {
 	Result         string `json:"result,omitempty"`
 	Error          string `json:"error,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`
+}
+
+// toStatusOutput converts a manager status into its wire shape, shared by
+// agy_status and agy_run_sync so the two cannot drift.
+func toStatusOutput(st manager.Status) statusOutput {
+	return statusOutput{
+		State:          st.State,
+		Elapsed:        st.Elapsed.Round(time.Second).String(),
+		Result:         st.Result,
+		Error:          st.Error,
+		ConversationID: st.ConversationID,
+	}
 }
 
 type cancelInput struct {
@@ -67,16 +96,9 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        "agy_run",
 		Description: "Start an agy prompt (e.g. a peer review) as an async job. Returns a job_id to poll with agy_status.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
-		req := manager.StartRequest{
-			Prompt: in.Prompt, Model: in.Model, Dirs: in.Dirs,
-			ConversationID: in.ConversationID, ContinueLatest: in.ContinueLatest, Cwd: in.Cwd,
-		}
-		if in.Timeout != "" {
-			d, err := time.ParseDuration(in.Timeout)
-			if err != nil {
-				return nil, runOutput{}, fmt.Errorf("invalid timeout %q: %w", in.Timeout, err)
-			}
-			req.Timeout = d
+		req, err := in.toStartRequest()
+		if err != nil {
+			return nil, runOutput{}, err
 		}
 		job, err := mgr.StartJob(req)
 		if err != nil {
@@ -93,10 +115,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		if err != nil {
 			return nil, statusOutput{}, err
 		}
-		return nil, statusOutput{
-			State: st.State, Elapsed: st.Elapsed.Round(1e9).String(),
-			Result: st.Result, Error: st.Error, ConversationID: st.ConversationID,
-		}, nil
+		return nil, toStatusOutput(st), nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -113,6 +132,8 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		}
 		return nil, cancelOutput{State: state}, nil
 	})
+
+	registerRunSync(s, mgr)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_models", Description: "List available agy models.",

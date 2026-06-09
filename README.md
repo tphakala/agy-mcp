@@ -16,6 +16,7 @@ Driving `agy` from a shell for automation has two recurring problems:
 ## What it provides
 
 - `agy_run` / `agy_status` / `agy_cancel`: start an `agy` prompt, poll for completion, cancel if needed.
+- `agy_run_sync`: start a prompt and wait for it inline (bounded, with MCP progress notifications); returns the `job_id` to poll if it outlives the wait cap.
 - `list_models`: enumerate available `agy` models.
 - `list_sessions`: list known conversations so review threads can be continued.
 
@@ -28,7 +29,7 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 
 ## Requirements
 
-- The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_status` / `agy_cancel`) relies on process groups, `/proc`, and the kernel boot id, so it runs on Linux only; on macOS and Windows those tools return a clear "job supervision is only supported on Linux" error, while stdio/HTTP serving, `list_models`, and `list_sessions` work everywhere.
+- The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_run_sync` / `agy_status` / `agy_cancel`) relies on process groups, `/proc`, and the kernel boot id, so it runs on Linux only; on macOS and Windows those tools return a clear "job supervision is only supported on Linux" error, while stdio/HTTP serving, `list_models`, and `list_sessions` work everywhere.
 - The `agy` binary on `PATH` (or configured explicitly).
 - Go 1.26+ to build.
 
@@ -62,7 +63,8 @@ Or add to your MCP client config:
 
 ## Tools
 
-- `agy_run(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?)` -> `{ job_id, conversation_id, state }`
+- `agy_run(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?)` -> `{ job_id, conversation_id?, state }`
+- `agy_run_sync(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, note? }`
 - `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id? }`
 - `agy_cancel(job_id)` -> `{ state }`
 - `list_models()` -> `{ models }`
