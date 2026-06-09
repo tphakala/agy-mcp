@@ -3,6 +3,7 @@
 package manager
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -26,7 +27,13 @@ type Manager struct {
 	// Timing for the fresh-run conversation-id capture and the restored-job
 	// liveness watcher. Fields (not package globals) so tests stay isolated and can
 	// run in parallel. agy's conversation cache is flushed by a separate daemon that
-	// can lag the foreground agy exit, so the capture retries briefly.
+	// can lag the foreground agy exit, so the capture retries briefly. Verified
+	// against agy 1.0.6: agy rewrites last_conversations.json in place (O_TRUNC, no
+	// file lock), so a concurrent read can be torn; loadCache tolerates that (an
+	// unparsable read yields no capture) and this retry loop re-reads, so no mutex
+	// is needed. agy also ignores a caller-supplied fresh --conversation UUID and
+	// mints its own, which is why the id must be captured by diffing the cache
+	// rather than generated and passed in.
 	captureBudget        time.Duration
 	capturePoll          time.Duration
 	restoredPollInterval time.Duration
@@ -187,18 +194,33 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
+		// No supervisor was spawned, so the just-created job dir is a never-started
+		// orphan; remove it now rather than leaving it for a later GarbageCollect.
+		_ = m.store.Remove(id)
 		m.gate.release(key)
 		return Job{}, fmt.Errorf("spawn supervisor: %w", err)
 	}
-	// Record the supervisor PID (for liveness and cancel) with an atomic rewrite,
-	// so the just-spawned supervisor never reads a half-written meta.json.
+	// Record the supervisor PID (for liveness and cancel) and its start time (so a
+	// later process that recycles the same PID within this boot is not mistaken for
+	// the supervisor) with an atomic rewrite, so the just-spawned supervisor never
+	// reads a half-written meta.json.
 	meta.PID = cmd.Process.Pid
+	if ticks, ok := readStartTimeTicks(cmd.Process.Pid); ok {
+		meta.StartTimeTicks = ticks
+	}
 	if err := m.store.UpdateMeta(meta); err != nil {
 		// Without a persisted PID the supervisor would be untrackable
-		// (uncancellable, and reported as not-alive). Fail closed: terminate it.
+		// (uncancellable, and reported as not-alive). Fail closed: terminate it,
+		// then once it has fully exited (so nothing is still writing the job dir)
+		// remove the dir and release the gate. Releasing only after the agy process
+		// group is gone keeps a conflicting same-key run from starting while the
+		// dying agy still holds its session lock.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		go func() { _ = cmd.Wait() }()
-		m.gate.release(key)
+		go func() {
+			_ = cmd.Wait()
+			_ = m.store.Remove(id)
+			m.gate.release(key)
+		}()
 		return Job{}, fmt.Errorf("record supervisor pid: %w", err)
 	}
 	// Wait for the supervisor in the background. cmd.Wait returns exactly when
@@ -250,6 +272,53 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 		}
 	}
 	return removed, nil
+}
+
+// gcInterval returns how often a long-lived server should sweep finished jobs:
+// half the job TTL, so a finished job is collected within ~1.5x its TTL, floored
+// at one minute so a tiny configured TTL cannot spin the ticker. A non-positive
+// TTL returns 0, which disables periodic collection (matching GarbageCollect's
+// own JobTTL<=0 short-circuit).
+func gcInterval(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return 0
+	}
+	if d := ttl / 2; d > time.Minute {
+		return d
+	}
+	return time.Minute
+}
+
+// RunPeriodicGCFromConfig runs periodic GC using the sweep interval derived from
+// the configured JobTTL (see gcInterval). It blocks until ctx is cancelled, so
+// callers run it in a goroutine; it is a no-op when JobTTL disables collection.
+func (m *Manager) RunPeriodicGCFromConfig(ctx context.Context) {
+	m.runPeriodicGC(ctx, gcInterval(m.cfg.JobTTL))
+}
+
+// runPeriodicGC sweeps finished jobs every interval until ctx is cancelled, so a
+// long-running HTTP daemon does not accumulate finished job dirs between restarts.
+// It reuses GarbageCollect, which never removes a still-alive job, so the ticker
+// inherits that safety. It blocks; callers run it in a goroutine. A non-positive
+// interval is a no-op.
+func (m *Manager) runPeriodicGC(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if removed, err := m.GarbageCollect(); err != nil {
+				log.Printf("agy-mcp: periodic GC: %v", err)
+			} else if len(removed) > 0 {
+				log.Printf("agy-mcp: periodic GC removed %d expired job(s)", len(removed))
+			}
+		}
+	}
 }
 
 // reqFromMeta reconstructs the parts of a StartRequest that determine a job's

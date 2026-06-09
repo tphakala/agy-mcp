@@ -3,6 +3,7 @@ package manager
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,40 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	}
 	if _, ok := m.store.ExitCode(job.ID); !ok {
 		t.Fatal("supervisor did not write exit_code")
+	}
+}
+
+func TestStartJobCleansUpDirOnSpawnFailure(t *testing.T) {
+	c := config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  filepath.Join(t.TempDir(), "nonexistent-supervisor"),
+		StateDir:       t.TempDir(),
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	}
+	m := New(c)
+	cwd := t.TempDir()
+
+	_, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd})
+	if err == nil || !strings.Contains(err.Error(), "spawn supervisor") {
+		t.Fatalf("StartJob error = %v, want a spawn-supervisor failure", err)
+	}
+
+	// The job directory created before the failed spawn must be removed, not left
+	// orphaned for GarbageCollect to reap later.
+	ids, lerr := m.store.List()
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("orphaned job dir left on disk after spawn failure: %v", ids)
+	}
+
+	// The gate slot/key must also be released: a second same-cwd run fails at spawn
+	// again, rather than being refused by the gate ("conflicting job").
+	_, err2 := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd})
+	if err2 == nil || !strings.Contains(err2.Error(), "spawn supervisor") {
+		t.Fatalf("second run error = %v, want spawn-supervisor (gate slot leaked?)", err2)
 	}
 }
 

@@ -63,6 +63,57 @@ func TestCreateAndLoadMeta(t *testing.T) {
 	}
 }
 
+func TestCreateCleansUpDirOnWriteFailure(t *testing.T) {
+	s := New(t.TempDir())
+	dir := s.jobDir("j")
+	// Make meta.json a directory so Create's WriteFile fails after MkdirAll has
+	// already created the job dir. Without cleanup the empty dir would be orphaned:
+	// GarbageCollect skips it forever because Load (no meta.json) errors.
+	if err := os.MkdirAll(filepath.Join(dir, "meta.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(Meta{ID: "j"}); err == nil {
+		t.Fatal("Create should fail when meta.json cannot be written")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("job dir should be removed after a failed Create; stat err = %v", err)
+	}
+}
+
+func TestStartTimeTicksRoundTripAndBackCompat(t *testing.T) {
+	s := New(t.TempDir())
+	if _, err := s.Create(Meta{ID: "j", PID: 4242, StartTimeTicks: 987654}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := s.Load("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StartTimeTicks != 987654 {
+		t.Fatalf("round-trip StartTimeTicks = %d, want 987654", got.StartTimeTicks)
+	}
+
+	// A meta.json written by an older binary has no start_time_ticks field; it must
+	// load as 0 ("unknown"), which disables the start-time liveness check rather
+	// than misbehaving.
+	old := New(t.TempDir())
+	dir := old.jobDir("legacy")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"id":"legacy","agy_path":"/usr/bin/agy","args":["-p","hi"],"cwd":"/work","prompt":"hi","started_at":"2026-01-01T00:00:00Z","pid":7,"boot_id":"b"}`
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lm, err := old.Load("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lm.StartTimeTicks != 0 {
+		t.Fatalf("legacy meta StartTimeTicks = %d, want 0", lm.StartTimeTicks)
+	}
+}
+
 func TestUpdateMetaRoundTrip(t *testing.T) {
 	s := New(t.TempDir())
 	if _, err := s.Create(Meta{ID: "j"}); err != nil {
