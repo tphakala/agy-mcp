@@ -1,8 +1,6 @@
 package mcptools
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,24 +8,6 @@ import (
 	"github.com/tphakala/agy-mcp/internal/manager"
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
-
-func writeFakeSupervisor(t *testing.T, agy string) string {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), "fake-sup")
-	// Mimics `agy-mcp run-job <dir>`: runs the fake agy, captures stdout to out,
-	// writes exit_code. Sets its comm to the script basename to stay faithful to
-	// the real supervisor for the liveness comm fallback (the primary liveness
-	// signal is the recorded starttime triple, which needs no help).
-	script := "#!/usr/bin/env bash\n" +
-		"printf '%s' \"${0##*/}\" > /proc/$$/comm\n" +
-		"dir=\"$2\"\n" +
-		"\"" + agy + "\" -p x > \"$dir/out\" 2> \"$dir/err\"\n" +
-		"printf '%s' \"$?\" > \"$dir/exit_code\"\n"
-	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
 
 func TestAgyRunAndStatusOverMCP(t *testing.T) {
 	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "REVIEW OK", Exit: 0})

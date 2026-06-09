@@ -37,7 +37,7 @@ func connect(t *testing.T, mgr *manager.Manager, opts *mcp.ClientOptions) *mcp.C
 func newTestManager(t *testing.T, fake testutil.FakeAgy) (mgr *manager.Manager, stateDir string) {
 	t.Helper()
 	agy := testutil.WriteFakeAgy(t, fake)
-	sup := writeFakeSupervisor(t, agy)
+	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy})
 	stateDir = t.TempDir()
 	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: stateDir,
 		DefaultTimeout: time.Minute, MaxConcurrency: 4}
