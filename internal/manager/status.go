@@ -35,6 +35,9 @@ func (m *Manager) Status(id string) (Status, error) {
 			st.Result = readFile(filepath.Join(dir, "out"))
 		} else if code == 143 || code == 130 {
 			st.State = "cancelled"
+		} else if code == 124 {
+			st.State = "failed"
+			st.Error = "job exceeded its timeout and was terminated"
 		} else {
 			st.State = "failed"
 			st.Error = errorSummary(dir, code)

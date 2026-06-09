@@ -10,9 +10,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 )
+
+// killGrace is how long the supervisor waits after SIGTERM before escalating to
+// SIGKILL when terminating the agy process group on cancel or timeout.
+const killGrace = 10 * time.Second
 
 // Run executes the agy process described by jobDir/meta.json. It captures
 // stdout to jobDir/out and stderr to jobDir/err, redirects agy stdin from
@@ -58,16 +63,36 @@ func Run(jobDir string) error {
 		return err
 	}
 
-	// Forward SIGTERM (sent by the manager on cancel) to the agy process group.
+	// Terminate the agy process group on either an external SIGTERM (cancel from
+	// the manager) or the hard timeout, escalating to SIGKILL after a grace
+	// window. The hard timeout is the spec's guarantee that a hung agy (which can
+	// stall at 0 CPU and ignore its own --print-timeout) can never block forever.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM)
 	defer signal.Stop(sig)
 	done := make(chan struct{})
+	timedOut := make(chan struct{})
+
 	go func() {
+		var deadline <-chan time.Time
+		if m.Timeout > 0 {
+			t := time.NewTimer(m.Timeout)
+			defer t.Stop()
+			deadline = t.C
+		}
 		select {
-		case <-sig:
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		case <-done:
+			return
+		case <-sig:
+			// Cancel requested by the manager.
+		case <-deadline:
+			close(timedOut)
+		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(killGrace):
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
 	}()
 
@@ -84,6 +109,15 @@ func Run(jobDir string) error {
 		} else {
 			code = 1
 		}
+	}
+	// If the hard timeout fired, record the timeout sentinel (124) regardless of
+	// the signal-derived exit code, so Status can report a timeout distinctly
+	// from a user cancel. (timedOut is closed before the kill, so it is always
+	// observable by the time Wait returns.)
+	select {
+	case <-timedOut:
+		code = 124
+	default:
 	}
 	return writeExit(jobDir, code)
 }

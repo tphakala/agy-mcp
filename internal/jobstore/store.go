@@ -13,17 +13,18 @@ import (
 
 // Meta describes a job. It is written once at creation and is immutable.
 type Meta struct {
-	ID             string    `json:"id"`
-	AgyPath        string    `json:"agy_path"`
-	Args           []string  `json:"args"`
-	Cwd            string    `json:"cwd"`
-	Model          string    `json:"model,omitempty"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	Prompt         string    `json:"prompt"`
-	StartedAt      time.Time `json:"started_at"`
-	PID            int       `json:"pid"`
-	BootID         string    `json:"boot_id"`
-	CwdUUIDBefore  string    `json:"cwd_uuid_before,omitempty"`
+	ID             string        `json:"id"`
+	AgyPath        string        `json:"agy_path"`
+	Args           []string      `json:"args"`
+	Cwd            string        `json:"cwd"`
+	Model          string        `json:"model,omitempty"`
+	ConversationID string        `json:"conversation_id,omitempty"`
+	Prompt         string        `json:"prompt"`
+	StartedAt      time.Time     `json:"started_at"`
+	PID            int           `json:"pid"`
+	BootID         string        `json:"boot_id"`
+	CwdUUIDBefore  string        `json:"cwd_uuid_before,omitempty"`
+	Timeout        time.Duration `json:"timeout,omitempty"`
 }
 
 // Store is a directory-backed collection of jobs.

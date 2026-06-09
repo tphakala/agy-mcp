@@ -42,6 +42,18 @@ func TestStatusFailed(t *testing.T) {
 	}
 }
 
+func TestStatusTimedOut(t *testing.T) {
+	m := newTestManager(t)
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	_ = os.WriteFile(filepath.Join(dir, "err"), []byte("partial"), 0o644)
+	_ = m.store.WriteExitCode("j", 124)
+
+	st, _ := m.Status("j")
+	if st.State != "failed" || st.Error == "" {
+		t.Fatalf("status = %+v, want failed with a timeout error", st)
+	}
+}
+
 func TestStatusInterruptedAfterReboot(t *testing.T) {
 	m := newTestManager(t)
 	// BootID differs from current -> the recorded PID is from a previous boot.

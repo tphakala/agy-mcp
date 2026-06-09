@@ -98,6 +98,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		Prompt:         req.Prompt,
 		StartedAt:      time.Now().UTC(),
 		BootID:         readBootID(),
+		Timeout:        timeout,
 	}
 	// For a genuinely fresh run (no conversation, no continue), snapshot the
 	// cwd's current conversation id so a later diff can capture the new

@@ -50,3 +50,25 @@ func TestSupervisorRecordsNonZeroExit(t *testing.T) {
 		t.Fatalf("exit_code = %q, want 7", code)
 	}
 }
+
+func TestSupervisorHardTimeoutKillsAgy(t *testing.T) {
+	dir := t.TempDir()
+	// A fake agy that would sleep far longer than the hard timeout.
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "should not finish", SleepSecs: 30})
+	writeMeta(t, dir, jobstore.Meta{
+		ID: "j", AgyPath: agy, Args: []string{"-p", "x"},
+		StartedAt: time.Now(), Timeout: 500 * time.Millisecond,
+	})
+
+	start := time.Now()
+	if err := Run(dir); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("Run took %v; the hard timeout did not kill agy", elapsed)
+	}
+	code, _ := os.ReadFile(filepath.Join(dir, "exit_code"))
+	if strings.TrimSpace(string(code)) != "124" {
+		t.Fatalf("exit_code = %q, want 124 (timeout)", code)
+	}
+}
