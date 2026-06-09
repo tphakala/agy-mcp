@@ -2,6 +2,8 @@ package manager
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,7 +31,7 @@ func (m *Manager) ListSessions(dir string) ([]Session, error) {
 
 func readSessions(cacheFile, filterDir string) ([]Session, error) {
 	b, err := os.ReadFile(cacheFile)
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {

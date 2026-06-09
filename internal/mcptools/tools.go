@@ -4,6 +4,7 @@ package mcptools
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tphakala/agy-mcp/internal/manager"
@@ -71,7 +72,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 			ConversationID: in.ConversationID, ContinueLatest: in.ContinueLatest, Cwd: in.Cwd,
 		}
 		if in.Timeout != "" {
-			d, err := parseDuration(in.Timeout)
+			d, err := time.ParseDuration(in.Timeout)
 			if err != nil {
 				return nil, runOutput{}, fmt.Errorf("invalid timeout %q: %w", in.Timeout, err)
 			}
@@ -104,7 +105,11 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		if err := mgr.Cancel(in.JobID); err != nil {
 			return nil, cancelOutput{}, err
 		}
-		st, _ := mgr.Status(in.JobID)
+		st, err := mgr.Status(in.JobID)
+		if err != nil {
+			// Cancel itself succeeded; the job state is just no longer readable.
+			return nil, cancelOutput{State: "unknown"}, nil
+		}
 		return nil, cancelOutput{State: st.State}, nil
 	})
 

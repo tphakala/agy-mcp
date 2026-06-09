@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -62,7 +63,7 @@ func main() {
 	}
 
 	log.Print("agy-mcp serving over stdio")
-	if err := mcptools.ServeStdio(ctx, mgr); err != nil && err != io.EOF {
+	if err := mcptools.ServeStdio(ctx, mgr); err != nil && !errors.Is(err, io.EOF) {
 		fmt.Fprintf(os.Stderr, "stdio serve: %v\n", err)
 		os.Exit(1)
 	}

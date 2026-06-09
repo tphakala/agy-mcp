@@ -4,6 +4,8 @@ package jobstore
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -115,7 +117,7 @@ func (s *Store) ExitCode(id string) (int, bool) {
 // List returns all known job IDs.
 func (s *Store) List() ([]string, error) {
 	entries, err := os.ReadDir(s.root)
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {

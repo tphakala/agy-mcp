@@ -5,18 +5,24 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 )
 
-func readBootID() string {
+// bootID reads the kernel boot id once and caches it. The value is stable for
+// the lifetime of the process, so liveness checks (which run per poll) do not
+// re-read /proc each time.
+var bootID = sync.OnceValue(func() string {
 	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
-}
+})
+
+func readBootID() string { return bootID() }
 
 // processAlive reports whether the job's recorded supervisor PID is still a
 // live supervisor process from the current boot.
