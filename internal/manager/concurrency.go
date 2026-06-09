@@ -37,6 +37,26 @@ func (g *gate) tryAcquire(key string) bool {
 	return true
 }
 
+// forceAcquire reserves a slot and key for a job that is already running (a
+// restored job whose agy session exists regardless of the gate), so the gate
+// accounts for it. Unlike tryAcquire it ignores the cap: a live job must be
+// counted even when live jobs exceed max (for example the cap was lowered across a
+// restart), which then correctly blocks new runs until enough restored jobs drain.
+// It still returns false without double-counting when the key is already held, so
+// the caller starts exactly one liveness watcher per key.
+func (g *gate) forceAcquire(key string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if key != "" && g.keys[key] {
+		return false
+	}
+	g.inFlight++
+	if key != "" {
+		g.keys[key] = true
+	}
+	return true
+}
+
 func (g *gate) release(key string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -48,19 +68,23 @@ func (g *gate) release(key string) {
 	}
 }
 
-// keyFor returns the serialization key for a request, or "" for a fresh run
-// (no conversation, no continue) which needs no per-key lock.
+// keyFor returns the serialization key for a request.
 //
-// Fresh runs return "" today because the snapshot-diff UUID capture in
-// conversation.go is not wired into Status yet. If that lazy capture is ever
-// enabled, fresh runs sharing a cwd MUST be serialized too (return
-// "cwd:"+req.Cwd here), otherwise two new conversations created in the same
-// directory could misattribute their UUIDs (design spec section 5.4).
+// A run with a resolved conversation id serializes on that conversation. Any
+// other run with a cwd (a fresh run, or a continue_latest that found no prior
+// conversation) serializes on the cwd: agy creates a new conversation for it,
+// and the snapshot-diff UUID capture must hold the cwd key while it reads the
+// shared conversation cache, otherwise two new conversations created in the same
+// directory could misattribute their captured UUIDs.
+//
+// StartJob always populates req.Cwd, so the "" branch is effectively a defensive
+// default; two distinct conversations in the same cwd still get distinct conv
+// keys and run concurrently.
 func keyFor(req StartRequest) string {
 	if req.ConversationID != "" {
 		return "conv:" + req.ConversationID
 	}
-	if req.ContinueLatest && req.Cwd != "" {
+	if req.Cwd != "" {
 		return "cwd:" + req.Cwd
 	}
 	return ""

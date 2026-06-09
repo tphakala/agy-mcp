@@ -59,6 +59,13 @@ func serve() error {
 	} else if len(removed) > 0 {
 		log.Printf("startup GC removed %d expired job(s)", len(removed))
 	}
+	// Re-occupy the concurrency gate for jobs whose detached supervisor outlived a
+	// previous manager, so a new run is serialized against them and the cap holds.
+	// Fail closed: serving with an unrestored gate could bypass the cap and
+	// re-expose the agy session-lock hang the gate prevents.
+	if err := mgr.RestoreGate(); err != nil {
+		return fmt.Errorf("restore concurrency gate: %w", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

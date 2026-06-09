@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"syscall"
@@ -17,17 +18,30 @@ import (
 
 // Manager coordinates jobs backed by an on-disk store.
 type Manager struct {
-	cfg   config.Config
-	store *jobstore.Store
-	gate  *gate // serializes conflicting jobs and caps total concurrency
+	cfg       config.Config
+	store     *jobstore.Store
+	gate      *gate  // serializes conflicting jobs and caps total concurrency
+	cacheFile string // agy conversation cache (last_conversations.json); injectable for tests
+
+	// Timing for the fresh-run conversation-id capture and the restored-job
+	// liveness watcher. Fields (not package globals) so tests stay isolated and can
+	// run in parallel. agy's conversation cache is flushed by a separate daemon that
+	// can lag the foreground agy exit, so the capture retries briefly.
+	captureBudget        time.Duration
+	capturePoll          time.Duration
+	restoredPollInterval time.Duration
 }
 
 // New constructs a Manager.
 func New(c config.Config) *Manager {
 	return &Manager{
-		cfg:   c,
-		store: jobstore.New(c.StateDir),
-		gate:  newGate(c.MaxConcurrency),
+		cfg:                  c,
+		store:                jobstore.New(c.StateDir),
+		gate:                 newGate(c.MaxConcurrency),
+		cacheFile:            agyCachePath(),
+		captureBudget:        2 * time.Second,
+		capturePoll:          100 * time.Millisecond,
+		restoredPollInterval: 2 * time.Second,
 	}
 }
 
@@ -47,6 +61,58 @@ type Job struct {
 	ID             string
 	ConversationID string
 	State          string // "running"
+}
+
+// captureFreshConversationID records the conversation id agy created for a fresh
+// run by diffing the cwd's cache entry against the pre-run snapshot, and persists
+// it to meta so Status reports it. It is a no-op once an id is already known.
+//
+// The caller must invoke this while still holding the run's gate key: the cwd key
+// serializes same-cwd fresh runs, so no other run can overwrite the cache entry
+// between the snapshot and this capture. A torn or missing cache read yields no
+// capture (the run simply reports no id), never a misattribution.
+func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
+	if meta.ConversationID != "" {
+		return
+	}
+	deadline := time.Now().Add(m.captureBudget)
+	for {
+		if id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore); ok {
+			final, err := m.store.SetConversationID(meta.ID, id)
+			if err != nil {
+				log.Printf("agy-mcp: persist captured conversation id for job %s: %v", meta.ID, err)
+				final = id
+			}
+			meta.ConversationID = final
+			return
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(m.capturePoll)
+	}
+}
+
+// lazyCaptureConversationID best-effort captures a fresh run's conversation id
+// from the cache when the completion goroutine never ran (the manager was
+// restarted while the job ran). It returns an already-known id unchanged. Unlike
+// the completion-goroutine capture, no gate key is held here, so a same-cwd run
+// that started in between may have overwritten the cache entry; in that case
+// nothing is captured and the run reports no id, exactly as before this change.
+func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
+	if meta.ConversationID != "" {
+		return meta.ConversationID
+	}
+	id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore)
+	if !ok {
+		return ""
+	}
+	final, err := m.store.SetConversationID(meta.ID, id)
+	if err != nil {
+		log.Printf("agy-mcp: persist captured conversation id for job %s: %v", meta.ID, err)
+		return id // best-effort: report what we captured even if the persist failed
+	}
+	return final
 }
 
 // StartJob persists meta and spawns the detached supervisor.
@@ -76,7 +142,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// gate key and args, so serialization, the agy --conversation flag, and the
 	// returned conversation id are all deterministic and consistent.
 	if req.ContinueLatest {
-		if cid, ok := resolveLatest(agyCachePath(), cwd); ok {
+		if cid, ok := resolveLatest(m.cacheFile, cwd); ok {
 			req.ConversationID = cid
 		}
 	}
@@ -104,7 +170,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// conversation. Snapshot the cwd's current conversation id so a later diff
 	// can capture the one agy creates.
 	if req.ConversationID == "" {
-		meta.CwdUUIDBefore = snapshotCwd(agyCachePath(), cwd)
+		meta.CwdUUIDBefore = snapshotCwd(m.cacheFile, cwd)
 	}
 	dir, err := m.store.Create(meta)
 	if err != nil {
@@ -142,6 +208,12 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// the manager dies first, init adopts and reaps it.
 	go func() {
 		_ = cmd.Wait()
+		// For a successful fresh run, capture the conversation id agy created
+		// while the gate key is still held, then release. Gating on exit 0 avoids
+		// waiting out the capture budget for a run that created no conversation.
+		if code, ok := m.store.ExitCode(id); ok && code == 0 {
+			m.captureFreshConversationID(&meta)
+		}
 		m.gate.release(key)
 	}()
 
@@ -178,6 +250,80 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 		}
 	}
 	return removed, nil
+}
+
+// reqFromMeta reconstructs the parts of a StartRequest that determine a job's
+// gate key from its persisted meta. continue_latest is resolved into
+// ConversationID at start time, so ConversationID + Cwd reproduce the same key
+// the original run held.
+func reqFromMeta(meta jobstore.Meta) StartRequest {
+	return StartRequest{ConversationID: meta.ConversationID, Cwd: meta.Cwd}
+}
+
+// RestoreGate re-acquires gate slots and keys for jobs whose detached supervisor
+// survived a manager restart, so a new agy_run is serialized against them and the
+// global cap accounts for them. Without this, a restored job is invisible to the
+// gate and the cap could be bypassed, re-exposing the session-lock hang the gate
+// prevents. Intended to run once at startup, after GarbageCollect.
+//
+// It fails closed: if the on-disk jobs cannot be scanned the gate cannot be made
+// safe, so it returns an error and the caller should refuse to start rather than
+// serve with an unrestored gate.
+func (m *Manager) RestoreGate() error {
+	ids, err := m.store.List()
+	if err != nil {
+		return fmt.Errorf("scan jobs to restore concurrency gate: %w", err)
+	}
+	for _, id := range ids {
+		meta, err := m.store.Load(id)
+		if err != nil {
+			continue
+		}
+		if _, terminal := m.store.ExitCode(id); terminal {
+			continue // already finished; nothing to hold
+		}
+		if !m.processAlive(meta) {
+			continue // supervisor gone; GarbageCollect will reap it
+		}
+		// forceAcquire counts the job and holds its key unconditionally: a restored
+		// job is already running, so it must be tracked even past the cap (otherwise a
+		// new same-key run could start once a slot frees and run concurrently with it,
+		// the bypass this method prevents). A false return means another restored job
+		// already holds this key, so it is already watched.
+		key := keyFor(reqFromMeta(meta))
+		if m.gate.forceAcquire(key) {
+			m.watchRestored(meta, key)
+		}
+	}
+	return nil
+}
+
+// watchRestored releases a restored job's gate key once its detached supervisor
+// exits. A restored job is not a child of this manager, so there is no cmd.Wait to
+// release on; the watcher polls liveness instead. It only covers jobs that
+// outlived a restart, so the polling cost is bounded.
+func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
+	interval := m.restoredPollInterval
+	dead := func() bool {
+		if _, terminal := m.store.ExitCode(meta.ID); terminal {
+			return true
+		}
+		return !m.processAlive(meta)
+	}
+	go func() {
+		// Check once before waiting a full interval, so a supervisor that exits
+		// right after startup does not hold its slot for a whole poll period.
+		if !dead() {
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for range t.C {
+				if dead() {
+					break
+				}
+			}
+		}
+		m.gate.release(key)
+	}()
 }
 
 func buildAgyArgs(req StartRequest, model string, timeout time.Duration) []string {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,7 +45,10 @@ const (
 var ErrInvalidID = errors.New("invalid job id")
 
 // Store is a directory-backed collection of jobs.
-type Store struct{ root string }
+type Store struct {
+	root string
+	mu   sync.Mutex // serializes SetConversationID's read-modify-write
+}
 
 // New returns a Store rooted at dir/jobs.
 func New(dir string) *Store { return &Store{root: filepath.Join(dir, "jobs")} }
@@ -100,9 +104,10 @@ func (s *Store) Load(id string) (Meta, error) {
 	return m, nil
 }
 
-// UpdateMeta atomically rewrites a job's meta.json by writing a temp file and
-// renaming it into place, so a concurrent reader (such as the freshly spawned
-// supervisor) never observes a partially written file.
+// UpdateMeta atomically rewrites a job's meta.json by writing a uniquely-named
+// temp file and renaming it into place, so a concurrent reader (such as the
+// freshly spawned supervisor) never observes a partially written file, and two
+// concurrent writers never corrupt a shared temp file.
 func (s *Store) UpdateMeta(m Meta) error {
 	if !validJobID(m.ID) {
 		return ErrInvalidID
@@ -112,15 +117,53 @@ func (s *Store) UpdateMeta(m Meta) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, "meta.json.tmp")
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, "meta-*.json.tmp")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, filepath.Join(dir, "meta.json")); err != nil {
-		_ = os.Remove(tmp)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, filepath.Join(dir, "meta.json")); err != nil {
+		_ = os.Remove(tmpName)
 		return err
 	}
 	return nil
+}
+
+// SetConversationID persists convID as the job's conversation id, but only when
+// it is currently unset: it reloads the latest meta and rewrites just that field,
+// so it cannot clobber a concurrent meta update, and a second caller that races to
+// capture the same job is a no-op. It returns the effective conversation id (the
+// existing one if already set, otherwise convID).
+func (s *Store) SetConversationID(id, convID string) (string, error) {
+	// Serialize the read-modify-write so two callers racing to capture the same
+	// job cannot both observe an empty id and have the later write win (TOCTOU).
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, err := s.Load(id)
+	if err != nil {
+		return "", err
+	}
+	if m.ConversationID != "" {
+		return m.ConversationID, nil
+	}
+	m.ConversationID = convID
+	if err := s.UpdateMeta(m); err != nil {
+		return "", err
+	}
+	return convID, nil
 }
 
 // Remove deletes a job's directory and everything in it.

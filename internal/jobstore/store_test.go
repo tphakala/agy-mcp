@@ -80,6 +80,47 @@ func TestUpdateMetaRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetConversationID(t *testing.T) {
+	const first = "conv-1"
+	s := New(t.TempDir())
+	if _, err := s.Create(Meta{ID: "j", PID: 4242, AgyPath: "/usr/bin/agy"}); err != nil {
+		t.Fatal(err)
+	}
+	// Set on an unset job: persists the id and returns it, preserving other fields.
+	got, err := s.SetConversationID("j", first)
+	if err != nil {
+		t.Fatalf("SetConversationID: %v", err)
+	}
+	if got != first {
+		t.Fatalf("returned id = %q, want %q", got, first)
+	}
+	reloaded, err := s.Load("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ConversationID != first {
+		t.Fatalf("persisted id = %q, want %q", reloaded.ConversationID, first)
+	}
+	if reloaded.PID != 4242 || reloaded.AgyPath != "/usr/bin/agy" {
+		t.Fatalf("other fields clobbered: %+v", reloaded)
+	}
+	// Setting again is a no-op: returns the existing id, does not overwrite.
+	got, err = s.SetConversationID("j", "conv-2")
+	if err != nil {
+		t.Fatalf("second SetConversationID: %v", err)
+	}
+	if got != first {
+		t.Fatalf("second set returned %q, want existing %q", got, first)
+	}
+	reloaded, err = s.Load("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ConversationID != first {
+		t.Fatalf("existing id was overwritten: %q", reloaded.ConversationID)
+	}
+}
+
 func TestExitCodeSentinel(t *testing.T) {
 	s := New(t.TempDir())
 	if _, err := s.Create(Meta{ID: "j"}); err != nil {
