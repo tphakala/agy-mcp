@@ -33,11 +33,11 @@ func connect(t *testing.T, mgr *manager.Manager, opts *mcp.ClientOptions) *mcp.C
 }
 
 // newTestManager builds a manager around a fake agy and fake supervisor.
-func newTestManager(t *testing.T, fake testutil.FakeAgy) (*manager.Manager, string) {
+func newTestManager(t *testing.T, fake testutil.FakeAgy) (mgr *manager.Manager, stateDir string) {
 	t.Helper()
 	agy := testutil.WriteFakeAgy(t, fake)
 	sup := writeFakeSupervisor(t, agy)
-	stateDir := t.TempDir()
+	stateDir = t.TempDir()
 	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: stateDir,
 		DefaultTimeout: time.Minute, MaxConcurrency: 4}
 	return manager.New(c), stateDir
@@ -79,7 +79,7 @@ func TestAgyRunSyncCompletesInline(t *testing.T) {
 		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
 	}
 	sc := res.StructuredContent.(map[string]any)
-	if sc["state"] != "done" {
+	if sc["state"] != manager.StateDone {
 		t.Fatalf("state = %v, want done", sc["state"])
 	}
 	if sc["result"] != "REVIEW OK" {
@@ -105,7 +105,7 @@ func TestAgyRunSyncOverrunReturnsJobID(t *testing.T) {
 		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
 	}
 	sc := res.StructuredContent.(map[string]any)
-	if sc["state"] != "running" {
+	if sc["state"] != manager.StateRunning {
 		t.Fatalf("state = %v, want running", sc["state"])
 	}
 	jobID, _ := sc["job_id"].(string)
@@ -145,7 +145,7 @@ func TestAgyRunSyncSendsProgress(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
 	}
-	if sc := res.StructuredContent.(map[string]any); sc["state"] != "done" {
+	if sc := res.StructuredContent.(map[string]any); sc["state"] != manager.StateDone {
 		t.Fatalf("state = %v, want done", sc["state"])
 	}
 

@@ -70,7 +70,7 @@ func TestAgyRunAndStatusOverMCP(t *testing.T) {
 			t.Fatal(err)
 		}
 		sc := s.StructuredContent.(map[string]any)
-		if sc["state"] == "done" {
+		if sc["state"] == manager.StateDone {
 			if sc["result"] != "REVIEW OK" {
 				t.Fatalf("result = %v", sc["result"])
 			}
