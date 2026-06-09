@@ -72,6 +72,16 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 
 	req.Cwd = cwd
+
+	// Resolve continue_latest to a concrete conversation id before computing the
+	// gate key and args, so serialization, the agy --conversation flag, and the
+	// returned conversation id are all deterministic and consistent.
+	if req.ContinueLatest {
+		if cid, ok := resolveLatest(agyCachePath(), cwd); ok {
+			req.ConversationID = cid
+		}
+	}
+
 	key := keyFor(req)
 	if !m.gate.tryAcquire(key) {
 		return Job{}, fmt.Errorf("a conflicting agy job for this conversation or directory is already running")
@@ -88,6 +98,12 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		Prompt:         req.Prompt,
 		StartedAt:      time.Now().UTC(),
 		BootID:         readBootID(),
+	}
+	// For a genuinely fresh run (no conversation, no continue), snapshot the
+	// cwd's current conversation id so a later diff can capture the new
+	// conversation agy creates.
+	if req.ConversationID == "" && !req.ContinueLatest {
+		meta.CwdUUIDBefore = snapshotCwd(agyCachePath(), cwd)
 	}
 	dir, err := m.store.Create(meta)
 	if err != nil {

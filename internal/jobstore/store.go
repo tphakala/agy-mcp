@@ -23,6 +23,7 @@ type Meta struct {
 	StartedAt      time.Time `json:"started_at"`
 	PID            int       `json:"pid"`
 	BootID         string    `json:"boot_id"`
+	CwdUUIDBefore  string    `json:"cwd_uuid_before,omitempty"`
 }
 
 // Store is a directory-backed collection of jobs.
