@@ -71,6 +71,12 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		timeout = m.cfg.DefaultTimeout
 	}
 
+	req.Cwd = cwd
+	key := keyFor(req)
+	if !m.gate.tryAcquire(key) {
+		return Job{}, fmt.Errorf("a conflicting agy job for this conversation or directory is already running")
+	}
+
 	args := buildAgyArgs(req, model, timeout)
 	meta := jobstore.Meta{
 		ID:             id,
@@ -85,6 +91,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 	dir, err := m.store.Create(meta)
 	if err != nil {
+		m.gate.release(key)
 		return Job{}, err
 	}
 
@@ -97,6 +104,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
+		m.gate.release(key)
 		return Job{}, fmt.Errorf("spawn supervisor: %w", err)
 	}
 	// Record the supervisor PID for liveness/cancel, then release it.
@@ -106,7 +114,26 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 	_ = cmd.Process.Release()
 
+	// The gate slot is released by a background watchdog when the job reaches a
+	// terminal state (or after a bounded safety window).
+	go m.releaseWhenDone(key, id, timeout)
+
 	return Job{ID: id, ConversationID: req.ConversationID, State: "running"}, nil
+}
+
+func (m *Manager) releaseWhenDone(key, id string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout + time.Minute)
+	for time.Now().Before(deadline) {
+		if st, err := m.Status(id); err == nil {
+			switch st.State {
+			case "done", "failed", "cancelled":
+				m.gate.release(key)
+				return
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	m.gate.release(key) // safety release after the watchdog window
 }
 
 func buildAgyArgs(req StartRequest, model string, timeout time.Duration) []string {
