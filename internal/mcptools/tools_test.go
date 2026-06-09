@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/manager"
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
@@ -20,7 +19,7 @@ func writeFakeSupervisor(t *testing.T, agy string) string {
 	// liveness check (which compares /proc/<pid>/comm against the supervisor
 	// basename) sees it as alive while it runs, like the real supervisor.
 	script := "#!/usr/bin/env bash\n" +
-		"printf 'fake-sup' > /proc/$$/comm\n" +
+		"printf '%s' \"${0##*/}\" > /proc/$$/comm\n" +
 		"dir=\"$2\"\n" +
 		"\"" + agy + "\" -p x > \"$dir/out\" 2> \"$dir/err\"\n" +
 		"printf '%s' \"$?\" > \"$dir/exit_code\"\n"
@@ -31,24 +30,9 @@ func writeFakeSupervisor(t *testing.T, agy string) string {
 }
 
 func TestAgyRunAndStatusOverMCP(t *testing.T) {
-	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "REVIEW OK", Exit: 0})
-	sup := writeFakeSupervisor(t, agy)
-	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: t.TempDir(),
-		DefaultTimeout: time.Minute, MaxConcurrency: 4}
-	mgr := manager.New(c)
-
-	srv := NewServer(mgr)
-	ct, st := mcp.NewInMemoryTransports()
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "REVIEW OK", Exit: 0})
+	cs := connect(t, mgr, nil)
 	ctx := t.Context()
-	if _, err := srv.Connect(ctx, st, nil); err != nil { // server side
-		t.Fatalf("server connect: %v", err)
-	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
-	cs, err := client.Connect(ctx, ct, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	defer func() { _ = cs.Close() }()
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "agy_run",

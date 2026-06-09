@@ -56,6 +56,18 @@ type statusOutput struct {
 	ConversationID string `json:"conversation_id,omitempty"`
 }
 
+// toStatusOutput converts a manager status into its wire shape, shared by
+// agy_status and agy_run_sync so the two cannot drift.
+func toStatusOutput(st manager.Status) statusOutput {
+	return statusOutput{
+		State:          st.State,
+		Elapsed:        st.Elapsed.Round(time.Second).String(),
+		Result:         st.Result,
+		Error:          st.Error,
+		ConversationID: st.ConversationID,
+	}
+}
+
 type cancelInput struct {
 	JobID string `json:"job_id" jsonschema:"the job id to cancel"`
 }
@@ -103,10 +115,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		if err != nil {
 			return nil, statusOutput{}, err
 		}
-		return nil, statusOutput{
-			State: st.State, Elapsed: st.Elapsed.Round(1e9).String(),
-			Result: st.Result, Error: st.Error, ConversationID: st.ConversationID,
-		}, nil
+		return nil, toStatusOutput(st), nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{

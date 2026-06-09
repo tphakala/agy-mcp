@@ -29,13 +29,9 @@ type runSyncInput struct {
 }
 
 type runSyncOutput struct {
-	JobID          string `json:"job_id"`
-	State          string `json:"state"`
-	Elapsed        string `json:"elapsed"`
-	Result         string `json:"result,omitempty"`
-	Error          string `json:"error,omitempty"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	Note           string `json:"note,omitempty"`
+	JobID string `json:"job_id"`
+	statusOutput
+	Note string `json:"note,omitempty"`
 }
 
 // registerRunSync adds the agy_run_sync tool: start a job, wait inline for it
@@ -68,18 +64,13 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 		deadline := time.Now().Add(wait)
 		ticker := time.NewTicker(syncPollInterval)
 		defer ticker.Stop()
+		lastNotified := time.Duration(-1)
 		for {
 			st, err := mgr.Status(job.ID)
 			if err != nil {
 				return nil, runSyncOutput{}, fmt.Errorf("job %s started but status read failed: %w", job.ID, err)
 			}
-			out := runSyncOutput{
-				JobID: job.ID, State: st.State,
-				Elapsed:        st.Elapsed.Round(time.Second).String(),
-				Result:         st.Result,
-				Error:          st.Error,
-				ConversationID: st.ConversationID,
-			}
+			out := runSyncOutput{JobID: job.ID, statusOutput: toStatusOutput(st)}
 			if st.State != manager.StateRunning {
 				return nil, out, nil
 			}
@@ -89,13 +80,20 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 				out.Note = "wait cap reached; the job is still running, poll it with agy_status"
 				return nil, out, nil
 			}
-			if token != nil {
-				// Best effort: the result, not the notifications, is the contract.
-				_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+			// Notify once per elapsed second, not per poll tick: the message has
+			// whole-second granularity, so finer cadence is pure stream noise.
+			if sec := st.Elapsed.Round(time.Second); token != nil && sec != lastNotified {
+				lastNotified = sec
+				// Best effort: the result, not the notifications, is the
+				// contract. The bounded context keeps a client that stopped
+				// draining the stream from parking the loop past the wait cap.
+				nctx, ncancel := context.WithTimeout(ctx, syncPollInterval)
+				_ = req.Session.NotifyProgress(nctx, &mcp.ProgressNotificationParams{
 					ProgressToken: token,
 					Progress:      st.Elapsed.Seconds(),
-					Message:       fmt.Sprintf("job %s running (%s)", job.ID, st.Elapsed.Round(time.Second)),
+					Message:       fmt.Sprintf("job %s running (%s)", job.ID, sec),
 				})
+				ncancel()
 			}
 			select {
 			case <-ctx.Done():

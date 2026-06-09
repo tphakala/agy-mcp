@@ -48,27 +48,19 @@ func (m *Manager) Status(id string) (Status, error) {
 	}
 
 	if code, ok := m.store.ExitCode(id); ok {
-		switch code {
-		case 0:
-			st.State = StateDone
-			st.Result = readFile(filepath.Join(dir, "out"))
-			st.ConversationID = m.lazyCaptureConversationID(meta)
-		case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
-			st.State = StateCancelled
-		case jobstore.ExitTimeout:
-			st.State = StateFailed
-			st.Error = "job exceeded its timeout and was terminated"
-		default:
-			st.State = StateFailed
-			st.Error = errorSummary(dir, code)
-		}
-		return st, nil
+		return m.statusFromExitCode(dir, meta, st, code), nil
 	}
 
 	// No sentinel: decide running vs interrupted.
 	if m.processAlive(meta) {
 		st.State = StateRunning
 		return st, nil
+	}
+	// The supervisor may have written the sentinel and exited between the two
+	// checks above; re-read once so a job that just finished normally is not
+	// misreported as interrupted.
+	if code, ok := m.store.ExitCode(id); ok {
+		return m.statusFromExitCode(dir, meta, st, code), nil
 	}
 	// Process is gone without a sentinel. If output was captured, recover it.
 	out := readFile(filepath.Join(dir, "out"))
@@ -81,6 +73,25 @@ func (m *Manager) Status(id string) (Status, error) {
 		st.Error = "job process exited without writing a result (interrupted)"
 	}
 	return st, nil
+}
+
+// statusFromExitCode fills st from a recorded exit-code sentinel.
+func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, code int) Status {
+	switch code {
+	case 0:
+		st.State = StateDone
+		st.Result = readFile(filepath.Join(dir, "out"))
+		st.ConversationID = m.lazyCaptureConversationID(meta)
+	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
+		st.State = StateCancelled
+	case jobstore.ExitTimeout:
+		st.State = StateFailed
+		st.Error = "job exceeded its timeout and was terminated"
+	default:
+		st.State = StateFailed
+		st.Error = errorSummary(dir, code)
+	}
+	return st
 }
 
 func readFile(p string) string {

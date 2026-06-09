@@ -2,6 +2,7 @@ package mcptools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -69,7 +70,18 @@ func waitForDone(t *testing.T, mgr *manager.Manager, jobID, want string, timeout
 
 func TestAgyRunSyncCompletesInline(t *testing.T) {
 	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "REVIEW OK", Exit: 0})
-	cs := connect(t, mgr, nil)
+
+	// No progress token is set on the call, so no notification may arrive.
+	var mu sync.Mutex
+	var notified int
+	opts := &mcp.ClientOptions{
+		ProgressNotificationHandler: func(_ context.Context, _ *mcp.ProgressNotificationClientRequest) {
+			mu.Lock()
+			notified++
+			mu.Unlock()
+		},
+	}
+	cs := connect(t, mgr, opts)
 
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      "agy_run_sync",
@@ -87,6 +99,26 @@ func TestAgyRunSyncCompletesInline(t *testing.T) {
 	}
 	if id, _ := sc["job_id"].(string); id == "" {
 		t.Fatal("empty job id")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if notified != 0 {
+		t.Fatalf("got %d progress notifications without a progress token", notified)
+	}
+}
+
+func TestAgyRunSyncRejectsInvalidWait(t *testing.T) {
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "x", Exit: 0})
+	cs := connect(t, mgr, nil)
+
+	for _, wait := range []string{"nope", "-1s", "0"} {
+		res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+			Name:      "agy_run_sync",
+			Arguments: map[string]any{"prompt": "review", "wait": wait},
+		})
+		if err == nil && !res.IsError {
+			t.Errorf("wait %q: expected an error, got %+v", wait, res.StructuredContent)
+		}
 	}
 }
 
@@ -187,13 +219,13 @@ func TestAgyRunSyncClientCancelKeepsJobAlive(t *testing.T) {
 		done <- err
 	}()
 
-	// Wait until the job exists on disk, then cancel the call mid-wait.
-	jobID := waitForJobDir(t, stateDir, 5*time.Second)
+	// Wait until the job is observably running, then cancel the call mid-wait.
+	jobID := waitForRunningJob(t, mgr, stateDir, 5*time.Second)
 	cancel()
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("expected the cancelled call to return an error")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled call returned %v, want context.Canceled", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled call did not return")
@@ -203,19 +235,23 @@ func TestAgyRunSyncClientCancelKeepsJobAlive(t *testing.T) {
 	waitForDone(t, mgr, jobID, "LATE OK", 15*time.Second)
 }
 
-// waitForJobDir polls <stateDir>/jobs until exactly one job directory exists
-// and returns its id.
-func waitForJobDir(t *testing.T, stateDir string, timeout time.Duration) string {
+// waitForRunningJob polls <stateDir>/jobs until a job directory exists AND the
+// manager reports it running, then returns its id. Waiting for the directory
+// alone races StartJob's PID persistence: in that window Status reports a
+// transient "interrupted" failure for a perfectly healthy job.
+func waitForRunningJob(t *testing.T, mgr *manager.Manager, stateDir string, timeout time.Duration) string {
 	t.Helper()
 	jobs := filepath.Join(stateDir, "jobs")
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		entries, err := os.ReadDir(jobs)
-		if err == nil && len(entries) == 1 && entries[0].IsDir() {
-			return entries[0].Name()
+		if entries, err := os.ReadDir(jobs); err == nil && len(entries) == 1 && entries[0].IsDir() {
+			id := entries[0].Name()
+			if st, err := mgr.Status(id); err == nil && st.State == manager.StateRunning {
+				return id
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("job directory did not appear")
+	t.Fatal("job did not reach running")
 	return ""
 }
