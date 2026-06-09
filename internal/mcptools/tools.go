@@ -21,6 +21,23 @@ type runInput struct {
 	Timeout        string   `json:"timeout,omitempty" jsonschema:"max run duration, e.g. 20m"`
 }
 
+// toStartRequest converts the wire input into a manager start request,
+// validating the timeout.
+func (in runInput) toStartRequest() (manager.StartRequest, error) {
+	req := manager.StartRequest{
+		Prompt: in.Prompt, Model: in.Model, Dirs: in.Dirs,
+		ConversationID: in.ConversationID, ContinueLatest: in.ContinueLatest, Cwd: in.Cwd,
+	}
+	if in.Timeout != "" {
+		d, err := time.ParseDuration(in.Timeout)
+		if err != nil {
+			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: %w", in.Timeout, err)
+		}
+		req.Timeout = d
+	}
+	return req, nil
+}
+
 type runOutput struct {
 	JobID          string `json:"job_id"`
 	ConversationID string `json:"conversation_id,omitempty"`
@@ -67,16 +84,9 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        "agy_run",
 		Description: "Start an agy prompt (e.g. a peer review) as an async job. Returns a job_id to poll with agy_status.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
-		req := manager.StartRequest{
-			Prompt: in.Prompt, Model: in.Model, Dirs: in.Dirs,
-			ConversationID: in.ConversationID, ContinueLatest: in.ContinueLatest, Cwd: in.Cwd,
-		}
-		if in.Timeout != "" {
-			d, err := time.ParseDuration(in.Timeout)
-			if err != nil {
-				return nil, runOutput{}, fmt.Errorf("invalid timeout %q: %w", in.Timeout, err)
-			}
-			req.Timeout = d
+		req, err := in.toStartRequest()
+		if err != nil {
+			return nil, runOutput{}, err
 		}
 		job, err := mgr.StartJob(req)
 		if err != nil {
