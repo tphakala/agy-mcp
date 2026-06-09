@@ -28,11 +28,11 @@ func TestGarbageCollectRemovesExpired(t *testing.T) {
 
 func TestGCInterval(t *testing.T) {
 	cases := []struct{ ttl, want time.Duration }{
-		{0, 0},                          // disabled
-		{-time.Second, 0},               // disabled
-		{2 * time.Hour, time.Hour},      // ttl/2
+		{0, 0},                             // disabled
+		{-time.Second, 0},                  // disabled
+		{2 * time.Hour, time.Hour},         // ttl/2
 		{4 * time.Minute, 2 * time.Minute}, // ttl/2, above the floor
-		{time.Second, time.Minute},      // ttl/2 below the floor -> floored to 1m
+		{time.Second, time.Minute},         // ttl/2 below the floor -> floored to 1m
 	}
 	for _, c := range cases {
 		if got := gcInterval(c.ttl); got != c.want {
@@ -47,6 +47,7 @@ func TestRunPeriodicGCCollectsAndStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel() // stop the goroutine even if an assertion below fails early
 	done := make(chan struct{})
 	go func() { m.runPeriodicGC(ctx, 10*time.Millisecond); close(done) }()
 
