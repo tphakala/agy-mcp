@@ -15,9 +15,9 @@ func writeFakeSupervisor(t *testing.T, agy string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "fake-sup")
 	// Mimics `agy-mcp run-job <dir>`: runs the fake agy, captures stdout to out,
-	// writes exit_code. Sets its comm to the script basename so the manager's
-	// liveness check (which compares /proc/<pid>/comm against the supervisor
-	// basename) sees it as alive while it runs, like the real supervisor.
+	// writes exit_code. Sets its comm to the script basename to stay faithful to
+	// the real supervisor for the liveness comm fallback (the primary liveness
+	// signal is the recorded starttime triple, which needs no help).
 	script := "#!/usr/bin/env bash\n" +
 		"printf '%s' \"${0##*/}\" > /proc/$$/comm\n" +
 		"dir=\"$2\"\n" +
