@@ -100,8 +100,10 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 			select {
 			case <-ctx.Done():
 				// The client gave up on the call; the job stays alive under
-				// its detached supervisor for agy_status polling.
-				return nil, runSyncOutput{}, ctx.Err()
+				// its detached supervisor for agy_status polling. Carry the
+				// job id in the error so a gracefully-cancelling client can
+				// still find the job.
+				return nil, runSyncOutput{}, fmt.Errorf("wait cancelled; job %s is still running, poll it with agy_status: %w", job.ID, ctx.Err())
 			case <-ticker.C:
 			}
 		}

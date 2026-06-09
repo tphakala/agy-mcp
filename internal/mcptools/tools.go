@@ -30,8 +30,8 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 	}
 	if in.Timeout != "" {
 		d, err := time.ParseDuration(in.Timeout)
-		if err != nil {
-			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: %w", in.Timeout, err)
+		if err != nil || d <= 0 {
+			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: want a positive Go duration like 20m", in.Timeout)
 		}
 		req.Timeout = d
 	}
