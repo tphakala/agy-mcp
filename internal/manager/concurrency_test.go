@@ -27,3 +27,18 @@ func TestGateBlocksSameKey(t *testing.T) {
 		t.Fatal("acquire after release should succeed")
 	}
 }
+
+func TestGateGlobalCap(t *testing.T) {
+	g := newGate(2)
+	if !g.tryAcquire("conv:a") || !g.tryAcquire("conv:b") {
+		t.Fatal("two distinct keys should fill the cap")
+	}
+	// The cap is full even though the third key is distinct.
+	if g.tryAcquire("conv:c") {
+		t.Fatal("acquire past the global cap must fail")
+	}
+	g.release("conv:a")
+	if !g.tryAcquire("conv:c") {
+		t.Fatal("acquire after a release should succeed")
+	}
+}

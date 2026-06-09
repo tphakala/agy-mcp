@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,16 +9,10 @@ import (
 
 func writeCache(t *testing.T, dir string, kv map[string]string) string {
 	t.Helper()
-	b := []byte("{")
-	first := true
-	for k, v := range kv {
-		if !first {
-			b = append(b, ',')
-		}
-		first = false
-		b = append(b, []byte(`"`+k+`":"`+v+`"`)...)
+	b, err := json.Marshal(kv)
+	if err != nil {
+		t.Fatal(err)
 	}
-	b = append(b, '}')
 	p := filepath.Join(dir, "last_conversations.json")
 	if err := os.WriteFile(p, b, 0o644); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ package manager
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,10 +47,10 @@ func TestStatusTimedOut(t *testing.T) {
 	m := newTestManager(t)
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	_ = os.WriteFile(filepath.Join(dir, "err"), []byte("partial"), 0o644)
-	_ = m.store.WriteExitCode("j", 124)
+	_ = m.store.WriteExitCode("j", jobstore.ExitTimeout)
 
 	st, _ := m.Status("j")
-	if st.State != "failed" || st.Error == "" {
+	if st.State != StateFailed || !strings.Contains(st.Error, "timeout") {
 		t.Fatalf("status = %+v, want failed with a timeout error", st)
 	}
 }
