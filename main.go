@@ -70,6 +70,11 @@ func serve() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Sweep finished jobs periodically, not just at startup, so a long-lived daemon
+	// (especially HTTP serve mode) does not accumulate finished job dirs until the
+	// next restart. Stops when ctx is cancelled on shutdown; no-op if JobTTL<=0.
+	go mgr.RunPeriodicGCFromConfig(ctx)
+
 	if *httpAddr != "" {
 		if err := checkLoopbackAddr(*httpAddr); err != nil {
 			return err

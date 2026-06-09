@@ -14,7 +14,9 @@ import (
 	"time"
 )
 
-// Meta describes a job. It is written once at creation and is immutable.
+// Meta describes a job. The identity fields are set at creation; PID,
+// StartTimeTicks, and ConversationID are filled in afterward by atomic rewrites
+// (UpdateMeta / SetConversationID).
 type Meta struct {
 	ID             string        `json:"id"`
 	AgyPath        string        `json:"agy_path"`
@@ -25,6 +27,7 @@ type Meta struct {
 	Prompt         string        `json:"prompt"`
 	StartedAt      time.Time     `json:"started_at"`
 	PID            int           `json:"pid"`
+	StartTimeTicks uint64        `json:"start_time_ticks,omitempty"` // supervisor /proc start time; 0 = unknown
 	BootID         string        `json:"boot_id"`
 	CwdUUIDBefore  string        `json:"cwd_uuid_before,omitempty"`
 	Timeout        time.Duration `json:"timeout,omitempty"`
@@ -83,6 +86,9 @@ func (s *Store) Create(m Meta) (string, error) {
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o644); err != nil {
+		// Remove the just-created dir so a failed Create leaves no orphan: a dir
+		// without a readable meta.json is skipped forever by GarbageCollect.
+		_ = os.RemoveAll(dir)
 		return "", err
 	}
 	return dir, nil
@@ -123,6 +129,13 @@ func (s *Store) UpdateMeta(m Meta) error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	// Flush the data to disk before the rename so a crash cannot leave a renamed
+	// but zero-length meta.json, which would orphan the job (Load fails, GC skips).
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return err
