@@ -137,6 +137,15 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	return Job{ID: id, ConversationID: req.ConversationID, State: "running"}, nil
 }
 
+// GarbageCollect removes finished jobs older than the configured TTL. It is
+// safe to call at startup. A non-positive TTL disables collection.
+func (m *Manager) GarbageCollect() ([]string, error) {
+	if m.cfg.JobTTL <= 0 {
+		return nil, nil
+	}
+	return m.store.GC(m.cfg.JobTTL)
+}
+
 func (m *Manager) releaseWhenDone(key, id string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout + time.Minute)
 	for time.Now().Before(deadline) {

@@ -43,6 +43,11 @@ func main() {
 		os.Exit(1)
 	}
 	mgr := manager.New(cfg)
+	if removed, err := mgr.GarbageCollect(); err != nil {
+		log.Printf("startup GC: %v", err)
+	} else if len(removed) > 0 {
+		log.Printf("startup GC removed %d expired job(s)", len(removed))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
