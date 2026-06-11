@@ -3,6 +3,7 @@
 package manager
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -44,7 +45,7 @@ func New(c config.Config) *Manager {
 		cfg:                  c,
 		store:                jobstore.New(c.StateDir),
 		gate:                 newGate(c.MaxConcurrency),
-		cacheFile:            agyCachePath(),
+		cacheFile:            cmp.Or(c.ConversationCacheFile, agyCachePath()),
 		captureBudget:        2 * time.Second,
 		capturePoll:          100 * time.Millisecond,
 		restoredPollInterval: 2 * time.Second,

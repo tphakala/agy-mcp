@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tphakala/agy-mcp/internal/config"
 )
 
 func writeCache(t *testing.T, dir string, kv map[string]string) string {
@@ -105,5 +107,13 @@ func TestSnapshotCwdOkOnMissingCache(t *testing.T) {
 	before, ok := snapshotCwd(filepath.Join(t.TempDir(), "absent.json"), "/w")
 	if !ok || before != "" {
 		t.Fatalf("missing cache = valid empty snapshot, got %q,%v", before, ok)
+	}
+}
+
+func TestNewUsesConfiguredCacheFile(t *testing.T) {
+	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 1,
+		ConversationCacheFile: "/tmp/agy-test-cache.json"})
+	if m.cacheFile != "/tmp/agy-test-cache.json" {
+		t.Fatalf("cacheFile = %q, want the configured override", m.cacheFile)
 	}
 }

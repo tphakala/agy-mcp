@@ -19,6 +19,11 @@ type Config struct {
 	MaxConcurrency int           // global cap on concurrent jobs
 	JobTTL         time.Duration // age after which finished jobs are GC'd
 	HTTPToken      string        // optional bearer token for HTTP mode; empty = unauthenticated
+
+	// ConversationCacheFile overrides where agy's conversation cache
+	// (last_conversations.json) is read from. Empty means agy's default
+	// location under the user's home. Primarily a test seam.
+	ConversationCacheFile string
 }
 
 // Resolve builds a Config from environment variables and defaults.
