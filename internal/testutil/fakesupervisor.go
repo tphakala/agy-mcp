@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // FakeSupervisor configures a stand-in supervisor script for tests.
@@ -24,18 +25,26 @@ type FakeSupervisor struct {
 	// Exit is the fixed exit code recorded when AgyPath is empty.
 	Exit int
 	// CachePath, when set, makes the script write CacheJSON to that path
-	// before exit_code, mimicking agy persisting its conversation cache.
+	// after exit_code, mimicking the real ordering: the supervisor writes the
+	// exit sentinel at process exit, and agy's cache daemon flushes the
+	// conversation cache around or after that moment.
 	CachePath string
 	// CacheJSON is the cache payload to write; requires CachePath.
 	CacheJSON string
+	// CacheDelay, when positive, writes the cache from a backgrounded subshell
+	// that sleeps this long first, so the cache lands only after the script
+	// (and its exit_code) is gone. This reproduces the cache-daemon lag that
+	// the manager's capture retry exists for. Requires CachePath.
+	CacheDelay time.Duration
 }
 
 // WriteFakeSupervisor writes an executable shell script that mimics the
 // supervisor (`agy-mcp run-job <jobdir>`) and returns its path. The script is
 // created under t.TempDir(). Fixed out and cache payloads are written to
 // sibling files and reproduced via cat so arbitrary byte content survives
-// shell quoting. exit_code is always written last because the manager treats
-// its presence as job completion.
+// shell quoting. exit_code is written before the cache payload, matching the
+// real ordering the manager must tolerate: job completion (the sentinel) can
+// be observable before the conversation cache has been flushed.
 func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 	t.Helper()
 	if cfg.AgyPath != "" && (cfg.Out != "" || cfg.Exit != 0) {
@@ -43,6 +52,9 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 	}
 	if cfg.CacheJSON != "" && cfg.CachePath == "" {
 		t.Fatal("FakeSupervisor: CacheJSON requires CachePath")
+	}
+	if cfg.CacheDelay > 0 && cfg.CachePath == "" {
+		t.Fatal("FakeSupervisor: CacheDelay requires CachePath")
 	}
 	dir := t.TempDir()
 	// The basename doubles as the comm value; it must stay under the kernel's
@@ -62,14 +74,21 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 		}
 		fmt.Fprintf(&sb, "cat %q > \"$dir/out\"\ncode=%d\n", outPayload, cfg.Exit)
 	}
+	sb.WriteString("printf '%s' \"$code\" > \"$dir/exit_code\"\n")
 	if cfg.CachePath != "" {
 		cachePayload := filepath.Join(dir, "cache-payload.json")
 		if err := os.WriteFile(cachePayload, []byte(cfg.CacheJSON), 0o644); err != nil {
 			t.Fatalf("write fake supervisor cache payload: %v", err)
 		}
-		fmt.Fprintf(&sb, "cat %q > %q\n", cachePayload, cfg.CachePath)
+		if cfg.CacheDelay > 0 {
+			// Backgrounded so the script (the fake supervisor process) exits
+			// first and the cache lands later, like agy's real cache daemon.
+			fmt.Fprintf(&sb, "( sleep %.3f; cat %q > %q ) &\n",
+				cfg.CacheDelay.Seconds(), cachePayload, cfg.CachePath)
+		} else {
+			fmt.Fprintf(&sb, "cat %q > %q\n", cachePayload, cfg.CachePath)
+		}
 	}
-	sb.WriteString("printf '%s' \"$code\" > \"$dir/exit_code\"\n")
 
 	if err := os.WriteFile(path, []byte(sb.String()), 0o755); err != nil {
 		t.Fatalf("write fake supervisor: %v", err)
