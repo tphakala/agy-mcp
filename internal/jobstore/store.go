@@ -30,6 +30,10 @@ type Meta struct {
 	StartTimeTicks uint64        `json:"start_time_ticks,omitempty"` // supervisor /proc start time; 0 = unknown
 	BootID         string        `json:"boot_id"`
 	CwdUUIDBefore  string        `json:"cwd_uuid_before,omitempty"`
+	// CaptureDisabled marks a fresh run whose pre-run cache snapshot could not
+	// be read: without a trustworthy snapshot a post-run cache diff cannot be
+	// attributed safely, so conversation-id capture is skipped for this job.
+	CaptureDisabled bool          `json:"capture_disabled,omitempty"`
 	Timeout        time.Duration `json:"timeout,omitempty"`
 }
 

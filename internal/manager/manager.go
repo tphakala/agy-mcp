@@ -78,7 +78,7 @@ type Job struct {
 // between the snapshot and this capture. A torn or missing cache read yields no
 // capture (the run simply reports no id), never a misattribution.
 func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
-	if meta.ConversationID != "" {
+	if meta.ConversationID != "" || meta.CaptureDisabled {
 		return
 	}
 	deadline := time.Now().Add(m.captureBudget)
@@ -108,6 +108,9 @@ func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
 func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 	if meta.ConversationID != "" {
 		return meta.ConversationID
+	}
+	if meta.CaptureDisabled {
+		return ""
 	}
 	id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore)
 	if !ok {
@@ -183,7 +186,14 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// conversation. Snapshot the cwd's current conversation id so a later diff
 	// can capture the one agy creates.
 	if req.ConversationID == "" {
-		meta.CwdUUIDBefore = snapshotCwd(m.cacheFile, cwd)
+		if before, ok := snapshotCwd(m.cacheFile, cwd); ok {
+			meta.CwdUUIDBefore = before
+		} else {
+			// No trustworthy pre-run snapshot: a post-run diff could attribute
+			// a pre-existing conversation to this run. Report no id instead.
+			meta.CaptureDisabled = true
+			log.Printf("agy-mcp: job %s: conversation cache unreadable; id capture disabled for this run", id)
+		}
 	}
 	dir, err := m.store.Create(meta)
 	if err != nil {

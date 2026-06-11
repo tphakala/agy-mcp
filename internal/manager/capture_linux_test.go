@@ -250,6 +250,55 @@ func TestStatusLazyCaptureNoOpWhenCacheUnchanged(t *testing.T) {
 	}
 }
 
+// A fresh run started while the conversation cache is unreadable must disable
+// capture for that run: even when the cache later becomes readable with a new
+// entry, the id cannot be attributed to this run.
+func TestFreshRunWithCorruptCacheDisablesCapture(t *testing.T) {
+	state := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{"torn`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+
+	c := config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		StateDir:       state,
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	}
+	m := New(c)
+	m.cacheFile = cachePath
+	m.captureBudget = 50 * time.Millisecond
+	m.capturePoll = 10 * time.Millisecond
+
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: cwd})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	meta, err := m.store.Load(job.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !meta.CaptureDisabled {
+		t.Fatal("expected CaptureDisabled for a run started with an unreadable cache")
+	}
+	waitForExitCode(t, m, job.ID)
+
+	// The cache "recovers" with an entry for this cwd; it must not be captured.
+	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, "aaaa1111-2222-3333-4444-555566667777")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := m.Status(job.ID)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.ConversationID != "" {
+		t.Fatalf("capture-disabled run must report no id, got %q", st.ConversationID)
+	}
+}
+
 func waitForCapturedID(t *testing.T, m *Manager, id string, within time.Duration) Status {
 	t.Helper()
 	deadline := time.Now().Add(within)
