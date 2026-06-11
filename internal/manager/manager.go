@@ -30,6 +30,13 @@ type Manager struct {
 	// not finished). Keyed by job id; values are struct{}.
 	pendingCaptures sync.Map
 
+	// settledCapture memoizes job ids whose lazy capture is permanently over
+	// (no id is coming): either the run is long past its timeout with no cache
+	// change, or a later same-cwd run made attribution unsafe. Settled jobs
+	// stop re-reading the cache on every Status poll.
+	settledMu      sync.Mutex
+	settledCapture map[string]struct{}
+
 	// Timing for the fresh-run conversation-id capture and the restored-job
 	// liveness watcher. Fields (not package globals) so tests stay isolated and can
 	// run in parallel. agy's conversation cache is flushed by a separate daemon that
@@ -55,6 +62,7 @@ func New(c config.Config) *Manager {
 		captureBudget:        2 * time.Second,
 		capturePoll:          100 * time.Millisecond,
 		restoredPollInterval: 2 * time.Second,
+		settledCapture:       make(map[string]struct{}),
 	}
 }
 
@@ -107,20 +115,29 @@ func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
 }
 
 // lazyCaptureConversationID best-effort captures a fresh run's conversation id
-// from the cache when the completion goroutine never ran (the manager was
-// restarted while the job ran). It returns an already-known id unchanged. Unlike
-// the completion-goroutine capture, no gate key is held here, so a same-cwd run
-// that started in between may have overwritten the cache entry; in that case
-// nothing is captured and the run reports no id, exactly as before this change.
+// from the cache when no in-process watcher captured it (the manager was
+// restarted after the job ended). It returns an already-known id unchanged.
+//
+// No gate key is held here, so a cache change since the snapshot is not
+// necessarily this job's: a later same-cwd run may have written it. Two guards
+// keep that from becoming a persisted misattribution: a changed entry is not
+// captured while any later same-cwd job exists in the store, and once the run
+// is long enough over that no attributable change can still appear, the
+// capture settles permanently as empty.
 func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 	if meta.ConversationID != "" {
 		return meta.ConversationID
 	}
-	if meta.CaptureDisabled {
+	if meta.CaptureDisabled || m.captureSettled(meta.ID) {
 		return ""
 	}
 	id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore)
 	if !ok {
+		m.maybeSettleCapture(meta)
+		return ""
+	}
+	if m.hasLaterSameCwdRun(meta) {
+		m.settleCapture(meta.ID)
 		return ""
 	}
 	final, err := m.store.SetConversationID(meta.ID, id)
@@ -138,6 +155,59 @@ func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 func (m *Manager) CapturePending(id string) bool {
 	_, ok := m.pendingCaptures.Load(id)
 	return ok
+}
+
+func (m *Manager) captureSettled(id string) bool {
+	m.settledMu.Lock()
+	defer m.settledMu.Unlock()
+	_, ok := m.settledCapture[id]
+	return ok
+}
+
+func (m *Manager) settleCapture(id string) {
+	m.settledMu.Lock()
+	defer m.settledMu.Unlock()
+	m.settledCapture[id] = struct{}{}
+}
+
+// maybeSettleCapture marks a job's lazy capture as permanently over once the
+// run is certainly long finished: the supervisor's hard timeout bounds the run
+// and agy's cache daemon flushes within moments of the exit, so past
+// StartedAt+Timeout+captureBudget no attributable cache change can still
+// appear. Settling stops later polls from re-reading the cache for a job that
+// will never get an id, and keeps a much-later unrelated cache write from
+// being misattributed to this job.
+func (m *Manager) maybeSettleCapture(meta jobstore.Meta) {
+	horizon := meta.Timeout
+	if horizon <= 0 {
+		horizon = time.Hour // old metas without a recorded timeout: stay conservative
+	}
+	if time.Since(meta.StartedAt) > horizon+m.captureBudget {
+		m.settleCapture(meta.ID)
+	}
+}
+
+// hasLaterSameCwdRun reports whether any other stored job shares meta's cwd and
+// started after it. When one exists, a changed cache entry cannot be attributed
+// to meta's run: the later run may be the one that wrote it.
+func (m *Manager) hasLaterSameCwdRun(meta jobstore.Meta) bool {
+	ids, err := m.store.List()
+	if err != nil {
+		return true // cannot prove safety: skip the capture rather than risk misattribution
+	}
+	for _, id := range ids {
+		if id == meta.ID {
+			continue
+		}
+		other, err := m.store.Load(id)
+		if err != nil {
+			continue
+		}
+		if other.Cwd == meta.Cwd && other.StartedAt.After(meta.StartedAt) {
+			return true
+		}
+	}
+	return false
 }
 
 // StartJob persists meta and spawns the detached supervisor.

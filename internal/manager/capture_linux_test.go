@@ -357,3 +357,117 @@ func TestCapturePendingSettles(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A lazily captured id must not be stolen from a later same-cwd run: when
+// another job started in this cwd after this one, a changed cache entry cannot
+// be attributed to this job.
+func TestStatusLazyCaptureSkipsWhenLaterRunExists(t *testing.T) {
+	state := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	cwd := t.TempDir()
+	const laterUUID = "99998888-7777-6666-5555-444433332222"
+	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, laterUUID)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  "/bin/true",
+		StateDir:       state,
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	})
+	m.cacheFile = cachePath
+
+	// Job A: a completed fresh run from a previous manager, id never captured.
+	metaA := jobstore.Meta{
+		ID:            "job-a",
+		Cwd:           cwd,
+		CwdUUIDBefore: "",
+		StartedAt:     time.Now().Add(-2 * time.Minute),
+		Timeout:       time.Hour,
+	}
+	dirA, err := m.store.Create(metaA)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dirA, "out"), []byte("done"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode(metaA.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Job B: a later run in the same cwd; the cache entry is (or may be) B's.
+	metaB := jobstore.Meta{ID: "job-b", Cwd: cwd, StartedAt: time.Now().Add(-time.Minute)}
+	if _, err := m.store.Create(metaB); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	st, err := m.Status(metaA.ID)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.ConversationID != "" {
+		t.Fatalf("must not attribute the later run's id, got %q", st.ConversationID)
+	}
+	reloaded, err := m.store.Load(metaA.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if reloaded.ConversationID != "" {
+		t.Fatalf("misattributed id was persisted: %q", reloaded.ConversationID)
+	}
+}
+
+// Once a job is long past its timeout with no cache change, lazy capture must
+// settle permanently: a cache change appearing afterward belongs to some other
+// (possibly out-of-store) run and must not be captured, and settled jobs must
+// stop re-reading the cache on every poll.
+func TestStatusLazyCaptureSettlesAfterHorizon(t *testing.T) {
+	state := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	cwd := t.TempDir()
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  "/bin/true",
+		StateDir:       state,
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	})
+	m.cacheFile = cachePath
+
+	// Done long ago: StartedAt is far past Timeout + captureBudget.
+	meta := jobstore.Meta{
+		ID:            "job-old",
+		Cwd:           cwd,
+		CwdUUIDBefore: "",
+		StartedAt:     time.Now().Add(-time.Hour),
+		Timeout:       time.Minute,
+	}
+	dir, err := m.store.Create(meta)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "out"), []byte("done"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode(meta.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// First Status: no cache change, and the job is long over, so the capture settles.
+	if st, err := m.Status(meta.ID); err != nil || st.ConversationID != "" {
+		t.Fatalf("first Status: id=%q err=%v", st.ConversationID, err)
+	}
+	// A cache entry appears later (some unrelated run); it must not be captured.
+	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, "abcdef00-1111-2222-3333-444455556666")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := m.Status(meta.ID); err != nil || st.ConversationID != "" {
+		t.Fatalf("settled job captured a late id: id=%q err=%v", st.ConversationID, err)
+	}
+}
