@@ -400,6 +400,11 @@ func (m *Manager) RestoreGate() error {
 		// already holds this key, so it is already watched.
 		key := keyFor(reqFromMeta(meta))
 		if m.gate.forceAcquire(key) {
+			if meta.ConversationID == "" && !meta.CaptureDisabled {
+				// Mirror StartJob: arm the capture so pollers can tell this
+				// restored fresh run's id is still being settled.
+				m.pendingCaptures.Store(meta.ID, struct{}{})
+			}
 			m.watchRestored(meta, key)
 		}
 	}
@@ -430,6 +435,14 @@ func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
 				}
 			}
 		}
+		// Mirror the StartJob completion path: a restored fresh run that exited 0
+		// still needs its conversation id captured, and like there the capture
+		// must happen while the gate key is held, so a new same-cwd run cannot
+		// overwrite the cache entry first.
+		if code, ok := m.store.ExitCode(meta.ID); ok && code == 0 {
+			m.captureFreshConversationID(&meta)
+		}
+		m.pendingCaptures.Delete(meta.ID)
 		m.gate.release(key)
 	}()
 }

@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -210,5 +211,57 @@ func TestRestoreGateSkipsTerminalJobs(t *testing.T) {
 
 	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err != nil {
 		t.Fatalf("a terminal job must not hold a gate key, but the run was blocked: %v", err)
+	}
+}
+
+// A restored fresh run must have its conversation id captured by the watcher
+// when its supervisor finishes, exactly like the StartJob completion path, and
+// the id must land on disk without any Status call (the watcher, not a poller,
+// owns the capture while the gate key is held).
+func TestRestoreGateCapturesConversationIDOnExit(t *testing.T) {
+	pid, exePath := startFakeLiveSupervisor(t)
+	m := newManagerForRestore(t, exePath, 4)
+	m.restoredPollInterval = 20 * time.Millisecond
+
+	cwd := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.cacheFile = cachePath
+
+	createLiveJob(t, m, "restored-fresh", cwd, pid)
+
+	if err := m.RestoreGate(); err != nil {
+		t.Fatalf("RestoreGate: %v", err)
+	}
+	if !m.CapturePending("restored-fresh") {
+		t.Fatal("a restored fresh run must have its capture armed")
+	}
+
+	// The job "finishes": agy's cache gains the new conversation, then the
+	// supervisor records exit 0 (the watcher treats the sentinel as terminal
+	// even while the fake supervisor process lingers).
+	const uuid = "deadbeef-1111-2222-3333-444455556666"
+	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, uuid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode("restored-fresh", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		meta, err := m.store.Load("restored-fresh")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if meta.ConversationID == uuid {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watcher never captured the id; meta.ConversationID = %q", meta.ConversationID)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
