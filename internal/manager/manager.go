@@ -178,6 +178,17 @@ func (m *Manager) settleCapture(id string) {
 	m.settledCapture[id] = struct{}{}
 }
 
+// untrackCapture forgets a job's capture-tracking state once the job is gone
+// (garbage-collected from the store), so neither map grows without bound in a
+// long-running server. pendingCaptures is normally already cleared by the time
+// a job is collectable; deleting both keeps the bookkeeping leak-free.
+func (m *Manager) untrackCapture(id string) {
+	m.pendingCaptures.Delete(id)
+	m.settledMu.Lock()
+	delete(m.settledCapture, id)
+	m.settledMu.Unlock()
+}
+
 // maybeSettleCapture marks a job's lazy capture as permanently over once the
 // run is certainly long finished: the supervisor's hard timeout bounds the run
 // and agy's cache daemon flushes within moments of the exit, so past
@@ -389,6 +400,7 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 		}
 		if err := m.store.Remove(id); err == nil {
 			removed = append(removed, id)
+			m.untrackCapture(id)
 		}
 	}
 	return removed, nil
