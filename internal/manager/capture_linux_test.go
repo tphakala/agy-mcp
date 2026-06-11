@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -284,6 +285,9 @@ func TestFreshRunWithCorruptCacheDisablesCapture(t *testing.T) {
 	if !meta.CaptureDisabled {
 		t.Fatal("expected CaptureDisabled for a run started with an unreadable cache")
 	}
+	if m.CapturePending(job.ID) {
+		t.Fatal("a capture-disabled run must not be armed in pendingCaptures")
+	}
 	waitForExitCode(t, m, job.ID)
 
 	// The cache "recovers" with an entry for this cwd; it must not be captured.
@@ -419,6 +423,89 @@ func TestStatusLazyCaptureSkipsWhenLaterRunExists(t *testing.T) {
 	}
 }
 
+// failListStore wraps a real store but fails List whenever failList is set, to
+// drive the lazy-capture path where the store cannot be scanned to rule out a
+// later same-cwd run.
+type failListStore struct {
+	jobStore
+	failList bool
+}
+
+func (f *failListStore) List() ([]string, error) {
+	if f.failList {
+		return nil, errors.New("injected List failure")
+	}
+	return f.jobStore.List()
+}
+
+// A transient store-scan failure must not permanently settle a lazy capture: the
+// id is skipped for that poll (never misattributed) but the job stays capturable,
+// so once the store is readable again the id is captured.
+func TestStatusLazyCaptureSkipsButDoesNotSettleOnListError(t *testing.T) {
+	state := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	cwd := t.TempDir()
+	const uuid = "abcd0000-1111-2222-3333-444455556666"
+	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, uuid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  "/bin/true",
+		StateDir:       state,
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	})
+	m.cacheFile = cachePath
+	fls := &failListStore{jobStore: m.store}
+	m.store = fls
+
+	// A completed fresh run from a previous manager; id never captured.
+	meta := jobstore.Meta{
+		ID:            "job-listerr",
+		Cwd:           cwd,
+		CwdUUIDBefore: "",
+		StartedAt:     time.Now().Add(-time.Minute),
+		Timeout:       time.Hour,
+	}
+	dir, err := m.store.Create(meta)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "out"), []byte("done"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode(meta.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// With List failing, the capture must be skipped (no misattribution) and the
+	// job must NOT be settled (so a later poll can still capture).
+	fls.failList = true
+	st, err := m.Status(meta.ID)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.ConversationID != "" {
+		t.Fatalf("must not capture while the store scan fails, got %q", st.ConversationID)
+	}
+	if m.captureSettled(meta.ID) {
+		t.Fatal("a transient List error must not permanently settle the capture")
+	}
+
+	// Once the store is scannable again and no later same-cwd run exists, the id
+	// is captured: the earlier failure did not lose it.
+	fls.failList = false
+	st, err = m.Status(meta.ID)
+	if err != nil {
+		t.Fatalf("Status (recovered): %v", err)
+	}
+	if st.ConversationID != uuid {
+		t.Fatalf("id should be captured after the store recovers, got %q", st.ConversationID)
+	}
+}
+
 // Once a job is long past its timeout with no cache change, lazy capture must
 // settle permanently: a cache change appearing afterward belongs to some other
 // (possibly out-of-store) run and must not be captured, and settled jobs must
@@ -465,6 +552,60 @@ func TestStatusLazyCaptureSettlesAfterHorizon(t *testing.T) {
 	}
 	// A cache entry appears later (some unrelated run); it must not be captured.
 	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, "abcdef00-1111-2222-3333-444455556666")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := m.Status(meta.ID); err != nil || st.ConversationID != "" {
+		t.Fatalf("settled job captured a late id: id=%q err=%v", st.ConversationID, err)
+	}
+}
+
+// An old meta with no recorded Timeout (zero value) must still settle once it is
+// past the conservative 1h fallback horizon, so it stops re-reading the cache and
+// cannot capture a much-later unrelated cache write.
+func TestStatusLazyCaptureSettlesViaFallbackHorizonWhenTimeoutZero(t *testing.T) {
+	state := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	cwd := t.TempDir()
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  "/bin/true",
+		StateDir:       state,
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	})
+	m.cacheFile = cachePath
+
+	// No Timeout recorded; StartedAt is well past the 1h fallback horizon.
+	meta := jobstore.Meta{
+		ID:            "job-notimeout",
+		Cwd:           cwd,
+		CwdUUIDBefore: "",
+		StartedAt:     time.Now().Add(-2 * time.Hour),
+	}
+	dir, err := m.store.Create(meta)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "out"), []byte("done"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode(meta.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// First Status: empty cache, long past the fallback horizon, so it settles.
+	if st, err := m.Status(meta.ID); err != nil || st.ConversationID != "" {
+		t.Fatalf("first Status: id=%q err=%v", st.ConversationID, err)
+	}
+	if !m.captureSettled(meta.ID) {
+		t.Fatal("a Timeout==0 job past the 1h fallback horizon must settle")
+	}
+	// A later unrelated cache entry must not be captured.
+	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, "00001111-2222-3333-4444-555566667777")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if st, err := m.Status(meta.ID); err != nil || st.ConversationID != "" {

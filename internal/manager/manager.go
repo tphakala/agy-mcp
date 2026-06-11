@@ -137,7 +137,14 @@ func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 		m.maybeSettleCapture(meta)
 		return ""
 	}
-	if m.hasLaterSameCwdRun(meta) {
+	later, err := m.hasLaterSameCwdRun(meta)
+	if err != nil {
+		// The store could not be scanned to rule out a later same-cwd run. Skip
+		// this attempt without settling, so a transient scan failure does not
+		// permanently lose a still-capturable id; the next poll retries.
+		return ""
+	}
+	if later {
 		m.settleCapture(meta.ID)
 		return ""
 	}
@@ -190,11 +197,14 @@ func (m *Manager) maybeSettleCapture(meta jobstore.Meta) {
 
 // hasLaterSameCwdRun reports whether any other stored job shares meta's cwd and
 // started after it. When one exists, a changed cache entry cannot be attributed
-// to meta's run: the later run may be the one that wrote it.
-func (m *Manager) hasLaterSameCwdRun(meta jobstore.Meta) bool {
+// to meta's run: the later run may be the one that wrote it. A non-nil error
+// means the store could not be scanned; callers must treat that as "unknown"
+// (skip this attempt) rather than "a later run exists", so a transient scan
+// failure does not permanently settle a still-capturable job.
+func (m *Manager) hasLaterSameCwdRun(meta jobstore.Meta) (bool, error) {
 	ids, err := m.store.List()
 	if err != nil {
-		return true // cannot prove safety: skip the capture rather than risk misattribution
+		return false, err
 	}
 	for _, id := range ids {
 		if id == meta.ID {
@@ -205,10 +215,10 @@ func (m *Manager) hasLaterSameCwdRun(meta jobstore.Meta) bool {
 			continue
 		}
 		if other.Cwd == meta.Cwd && other.StartedAt.After(meta.StartedAt) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // StartJob persists meta and spawns the detached supervisor.

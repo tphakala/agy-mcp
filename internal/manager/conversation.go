@@ -66,8 +66,9 @@ func snapshotCwd(cacheFile, cwd string) (string, bool) {
 // captureNewUUID returns the cwd's UUID after a run, but only if it changed
 // from the pre-run snapshot. A failed run leaves the cache untouched, and a
 // torn read yields no capture, so a single call never misattributes an old
-// conversation to this run. Both call sites sit in retry loops, so no internal
-// retry is needed here.
+// conversation to this run. The completion-goroutine call site retries in a
+// loop; the lazy-capture path is best-effort single-shot (re-tried across Status
+// polls), so no internal retry is needed here.
 func captureNewUUID(cacheFile, cwd, before string) (string, bool) {
 	cache, err := loadCache(cacheFile)
 	if err != nil {

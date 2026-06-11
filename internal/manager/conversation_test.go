@@ -52,7 +52,10 @@ func TestCaptureNewUUIDByDiff(t *testing.T) {
 func TestCaptureNoChangeOnFailedRun(t *testing.T) {
 	dir := t.TempDir()
 	cache := writeCache(t, dir, map[string]string{"/w": "old"})
-	before, _ := snapshotCwd(cache, "/w")
+	before, ok := snapshotCwd(cache, "/w")
+	if !ok {
+		t.Fatal("snapshot should be readable")
+	}
 	// agy failed -> cache unchanged.
 	got, changed := captureNewUUID(cache, "/w", before)
 	if changed || got != "" {

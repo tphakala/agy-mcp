@@ -292,6 +292,11 @@ func TestAgyRunSyncReturnsLateCapturedConversationID(t *testing.T) {
 		t.Fatal(err)
 	}
 	const uuid = "12121212-3434-5656-7878-909090909090"
+	// CacheDelay (700ms) must stay below the manager's default captureBudget (2s)
+	// so the completion goroutine is still retrying the capture when the cache
+	// lands; otherwise the id would be lost and this test would pass for the wrong
+	// reason. The mcptools package cannot set the unexported captureBudget, so this
+	// dependency is documented rather than pinned.
 	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
 		AgyPath:    agy,
 		CachePath:  cachePath,
