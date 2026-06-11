@@ -3,6 +3,7 @@ package mcptools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -33,14 +34,34 @@ func connect(t *testing.T, mgr *manager.Manager, opts *mcp.ClientOptions) *mcp.C
 	return cs
 }
 
-// newTestManager builds a manager around a fake agy and fake supervisor.
+// testConversationID is the id the fake supervisor's cache write attributes to
+// fresh runs started by newTestManager.
+const testConversationID = "abcdabcd-1234-5678-9abc-def012345678"
+
+// newTestManager builds a manager around a fake agy and fake supervisor. The
+// fake supervisor writes a conversation cache entry for the test's cwd after
+// the exit sentinel, so fresh runs capture an id the way real runs do, against
+// a test-owned cache file rather than the real agy cache.
 func newTestManager(t *testing.T, fake testutil.FakeAgy) (mgr *manager.Manager, stateDir string) {
 	t.Helper()
 	agy := testutil.WriteFakeAgy(t, fake)
-	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy})
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
+		AgyPath:   agy,
+		CachePath: cachePath,
+		CacheJSON: fmt.Sprintf(`{%q:%q}`, cwd, testConversationID),
+	})
 	stateDir = t.TempDir()
 	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: stateDir,
-		DefaultTimeout: time.Minute, MaxConcurrency: 4}
+		DefaultTimeout: time.Minute, MaxConcurrency: 4,
+		ConversationCacheFile: cachePath}
 	return manager.New(c), stateDir
 }
 
@@ -254,4 +275,53 @@ func waitForRunningJob(t *testing.T, mgr *manager.Manager, stateDir string, time
 	}
 	t.Fatal("job did not reach running")
 	return ""
+}
+
+// A fresh run whose conversation cache lands only after the exit sentinel (the
+// real-world ordering: agy's cache daemon flushes after the process exits) must
+// still return its conversation id from agy_run_sync. Returning done with no id
+// loses the id for good, because a sync caller has no reason to poll again.
+func TestAgyRunSyncReturnsLateCapturedConversationID(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const uuid = "12121212-3434-5656-7878-909090909090"
+	// CacheDelay (700ms) must stay below the manager's default captureBudget (2s)
+	// so the completion goroutine is still retrying the capture when the cache
+	// lands; otherwise the id would be lost and this test would pass for the wrong
+	// reason. The mcptools package cannot set the unexported captureBudget, so this
+	// dependency is documented rather than pinned.
+	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
+		AgyPath:    agy,
+		CachePath:  cachePath,
+		CacheJSON:  fmt.Sprintf(`{%q:%q}`, cwd, uuid),
+		CacheDelay: 700 * time.Millisecond,
+	})
+	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: t.TempDir(),
+		DefaultTimeout: time.Minute, MaxConcurrency: 4,
+		ConversationCacheFile: cachePath}
+	mgr := manager.New(c)
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "agy_run_sync",
+		Arguments: map[string]any{"prompt": "review", "wait": "30s"},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
+	}
+	sc := res.StructuredContent.(map[string]any)
+	if sc["state"] != manager.StateDone {
+		t.Fatalf("state = %v, want done", sc["state"])
+	}
+	if sc["conversation_id"] != uuid {
+		t.Fatalf("conversation_id = %v, want %q (the id must not be lost to cache-flush lag)",
+			sc["conversation_id"], uuid)
+	}
 }

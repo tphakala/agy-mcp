@@ -3,6 +3,7 @@ package mcptools
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,8 @@ import (
 
 func testManager(t *testing.T) *manager.Manager {
 	t.Helper()
-	return manager.New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, DefaultTimeout: time.Minute})
+	return manager.New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, DefaultTimeout: time.Minute,
+		ConversationCacheFile: filepath.Join(t.TempDir(), "last_conversations.json")})
 }
 
 // TestHTTPRejectsCrossOriginPost verifies the Streamable HTTP handler rejects a

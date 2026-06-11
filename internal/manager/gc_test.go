@@ -26,6 +26,30 @@ func TestGarbageCollectRemovesExpired(t *testing.T) {
 	}
 }
 
+func TestGarbageCollectUntracksSettledCapture(t *testing.T) {
+	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	if _, err := m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	// The job's lazy capture settled before it aged out; its memo must not outlive
+	// the job, or settledCapture would grow without bound in a long-running server.
+	m.settleCapture("old")
+	if !m.captureSettled("old") {
+		t.Fatal("precondition: the job should be settled")
+	}
+
+	removed, err := m.GarbageCollect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "old" {
+		t.Fatalf("removed = %v, want [old]", removed)
+	}
+	if m.captureSettled("old") {
+		t.Fatal("GarbageCollect must untrack a collected job's settled-capture memo")
+	}
+}
+
 func TestGCInterval(t *testing.T) {
 	cases := []struct{ ttl, want time.Duration }{
 		{0, 0},                             // disabled

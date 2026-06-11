@@ -3,6 +3,7 @@
 package manager
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/tphakala/agy-mcp/internal/config"
@@ -23,14 +25,27 @@ type Manager struct {
 	gate      *gate    // serializes conflicting jobs and caps total concurrency
 	cacheFile string   // agy conversation cache (last_conversations.json); injectable for tests
 
+	// pendingCaptures holds the job ids of fresh runs whose conversation-id
+	// capture is armed but not yet settled (the post-exit capture attempt has
+	// not finished). Keyed by job id; values are struct{}.
+	pendingCaptures sync.Map
+
+	// settledCapture memoizes job ids whose lazy capture is permanently over
+	// (no id is coming): either the run is long past its timeout with no cache
+	// change, or a later same-cwd run made attribution unsafe. Settled jobs
+	// stop re-reading the cache on every Status poll.
+	settledMu      sync.Mutex
+	settledCapture map[string]struct{}
+
 	// Timing for the fresh-run conversation-id capture and the restored-job
 	// liveness watcher. Fields (not package globals) so tests stay isolated and can
 	// run in parallel. agy's conversation cache is flushed by a separate daemon that
 	// can lag the foreground agy exit, so the capture retries briefly. Verified
 	// against agy 1.0.6: agy rewrites last_conversations.json in place (O_TRUNC, no
-	// file lock), so a concurrent read can be torn; loadCache tolerates that (an
-	// unparsable read yields no capture) and this retry loop re-reads, so no mutex
-	// is needed. agy also ignores a caller-supplied fresh --conversation UUID and
+	// file lock), so a concurrent read can be torn; loadCache reports torn reads
+	// as errors, capture treats them as "no capture yet" and this retry loop
+	// re-reads, and StartJob disables capture when the pre-run snapshot itself is
+	// unreadable, so no mutex is needed. agy also ignores a caller-supplied fresh --conversation UUID and
 	// mints its own, which is why the id must be captured by diffing the cache
 	// rather than generated and passed in.
 	captureBudget        time.Duration
@@ -44,10 +59,11 @@ func New(c config.Config) *Manager {
 		cfg:                  c,
 		store:                jobstore.New(c.StateDir),
 		gate:                 newGate(c.MaxConcurrency),
-		cacheFile:            agyCachePath(),
+		cacheFile:            cmp.Or(c.ConversationCacheFile, agyCachePath()),
 		captureBudget:        2 * time.Second,
 		capturePoll:          100 * time.Millisecond,
 		restoredPollInterval: 2 * time.Second,
+		settledCapture:       make(map[string]struct{}),
 	}
 }
 
@@ -78,7 +94,7 @@ type Job struct {
 // between the snapshot and this capture. A torn or missing cache read yields no
 // capture (the run simply reports no id), never a misattribution.
 func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
-	if meta.ConversationID != "" {
+	if meta.ConversationID != "" || meta.CaptureDisabled {
 		return
 	}
 	deadline := time.Now().Add(m.captureBudget)
@@ -100,17 +116,36 @@ func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
 }
 
 // lazyCaptureConversationID best-effort captures a fresh run's conversation id
-// from the cache when the completion goroutine never ran (the manager was
-// restarted while the job ran). It returns an already-known id unchanged. Unlike
-// the completion-goroutine capture, no gate key is held here, so a same-cwd run
-// that started in between may have overwritten the cache entry; in that case
-// nothing is captured and the run reports no id, exactly as before this change.
+// from the cache when no in-process watcher captured it (the manager was
+// restarted after the job ended). It returns an already-known id unchanged.
+//
+// No gate key is held here, so a cache change since the snapshot is not
+// necessarily this job's: a later same-cwd run may have written it. Two guards
+// keep that from becoming a persisted misattribution: a changed entry is not
+// captured while any later same-cwd job exists in the store, and once the run
+// is long enough over that no attributable change can still appear, the
+// capture settles permanently as empty.
 func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 	if meta.ConversationID != "" {
 		return meta.ConversationID
 	}
+	if meta.CaptureDisabled || m.captureSettled(meta.ID) {
+		return ""
+	}
 	id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore)
 	if !ok {
+		m.maybeSettleCapture(meta)
+		return ""
+	}
+	later, err := m.hasLaterSameCwdRun(meta)
+	if err != nil {
+		// The store could not be scanned to rule out a later same-cwd run. Skip
+		// this attempt without settling, so a transient scan failure does not
+		// permanently lose a still-capturable id; the next poll retries.
+		return ""
+	}
+	if later {
+		m.settleCapture(meta.ID)
 		return ""
 	}
 	final, err := m.store.SetConversationID(meta.ID, id)
@@ -119,6 +154,82 @@ func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 		return id // best-effort: report what we captured even if the persist failed
 	}
 	return final
+}
+
+// CapturePending reports whether a fresh run's conversation-id capture has not
+// yet settled in this process: capture was armed at start (or restore) and the
+// post-exit capture attempt has not finished. Pollers use it to distinguish
+// "done, id still being captured" from "done, no id is coming".
+func (m *Manager) CapturePending(id string) bool {
+	_, ok := m.pendingCaptures.Load(id)
+	return ok
+}
+
+func (m *Manager) captureSettled(id string) bool {
+	m.settledMu.Lock()
+	defer m.settledMu.Unlock()
+	_, ok := m.settledCapture[id]
+	return ok
+}
+
+func (m *Manager) settleCapture(id string) {
+	m.settledMu.Lock()
+	defer m.settledMu.Unlock()
+	m.settledCapture[id] = struct{}{}
+}
+
+// untrackCapture forgets a job's capture-tracking state once the job is gone
+// (garbage-collected from the store), so neither map grows without bound in a
+// long-running server. pendingCaptures is normally already cleared by the time
+// a job is collectable; deleting both keeps the bookkeeping leak-free.
+func (m *Manager) untrackCapture(id string) {
+	m.pendingCaptures.Delete(id)
+	m.settledMu.Lock()
+	delete(m.settledCapture, id)
+	m.settledMu.Unlock()
+}
+
+// maybeSettleCapture marks a job's lazy capture as permanently over once the
+// run is certainly long finished: the supervisor's hard timeout bounds the run
+// and agy's cache daemon flushes within moments of the exit, so past
+// StartedAt+Timeout+captureBudget no attributable cache change can still
+// appear. Settling stops later polls from re-reading the cache for a job that
+// will never get an id, and keeps a much-later unrelated cache write from
+// being misattributed to this job.
+func (m *Manager) maybeSettleCapture(meta jobstore.Meta) {
+	horizon := meta.Timeout
+	if horizon <= 0 {
+		horizon = time.Hour // old metas without a recorded timeout: stay conservative
+	}
+	if time.Since(meta.StartedAt) > horizon+m.captureBudget {
+		m.settleCapture(meta.ID)
+	}
+}
+
+// hasLaterSameCwdRun reports whether any other stored job shares meta's cwd and
+// started after it. When one exists, a changed cache entry cannot be attributed
+// to meta's run: the later run may be the one that wrote it. A non-nil error
+// means the store could not be scanned; callers must treat that as "unknown"
+// (skip this attempt) rather than "a later run exists", so a transient scan
+// failure does not permanently settle a still-capturable job.
+func (m *Manager) hasLaterSameCwdRun(meta jobstore.Meta) (bool, error) {
+	ids, err := m.store.List()
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if id == meta.ID {
+			continue
+		}
+		other, err := m.store.Load(id)
+		if err != nil {
+			continue
+		}
+		if other.Cwd == meta.Cwd && other.StartedAt.After(meta.StartedAt) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // StartJob persists meta and spawns the detached supervisor.
@@ -183,10 +294,19 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// conversation. Snapshot the cwd's current conversation id so a later diff
 	// can capture the one agy creates.
 	if req.ConversationID == "" {
-		meta.CwdUUIDBefore = snapshotCwd(m.cacheFile, cwd)
+		if before, ok := snapshotCwd(m.cacheFile, cwd); ok {
+			meta.CwdUUIDBefore = before
+			m.pendingCaptures.Store(id, struct{}{})
+		} else {
+			// No trustworthy pre-run snapshot: a post-run diff could attribute
+			// a pre-existing conversation to this run. Report no id instead.
+			meta.CaptureDisabled = true
+			log.Printf("agy-mcp: job %s: conversation cache unreadable; id capture disabled for this run", id)
+		}
 	}
 	dir, err := m.store.Create(meta)
 	if err != nil {
+		m.pendingCaptures.Delete(id)
 		m.gate.release(key)
 		return Job{}, err
 	}
@@ -203,6 +323,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// No supervisor was spawned, so the just-created job dir is a never-started
 		// orphan; remove it now rather than leaving it for a later GarbageCollect.
 		_ = m.store.Remove(id)
+		m.pendingCaptures.Delete(id)
 		m.gate.release(key)
 		return Job{}, fmt.Errorf("spawn supervisor: %w", err)
 	}
@@ -225,6 +346,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		go func() {
 			_ = cmd.Wait()
 			_ = m.store.Remove(id)
+			m.pendingCaptures.Delete(id)
 			m.gate.release(key)
 		}()
 		return Job{}, fmt.Errorf("record supervisor pid: %w", err)
@@ -242,6 +364,9 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		if code, ok := m.store.ExitCode(id); ok && code == 0 {
 			m.captureFreshConversationID(&meta)
 		}
+		// Settle the capture (success or give-up) before releasing the key, so
+		// CapturePending=false means the reported status is final.
+		m.pendingCaptures.Delete(id)
 		m.gate.release(key)
 	}()
 
@@ -275,6 +400,7 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 		}
 		if err := m.store.Remove(id); err == nil {
 			removed = append(removed, id)
+			m.untrackCapture(id)
 		}
 	}
 	return removed, nil
@@ -367,6 +493,11 @@ func (m *Manager) RestoreGate() error {
 		// already holds this key, so it is already watched.
 		key := keyFor(reqFromMeta(meta))
 		if m.gate.forceAcquire(key) {
+			if meta.ConversationID == "" && !meta.CaptureDisabled {
+				// Mirror StartJob: arm the capture so pollers can tell this
+				// restored fresh run's id is still being settled.
+				m.pendingCaptures.Store(meta.ID, struct{}{})
+			}
 			m.watchRestored(meta, key)
 		}
 	}
@@ -397,6 +528,14 @@ func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
 				}
 			}
 		}
+		// Mirror the StartJob completion path: a restored fresh run that exited 0
+		// still needs its conversation id captured, and like there the capture
+		// must happen while the gate key is held, so a new same-cwd run cannot
+		// overwrite the cache entry first.
+		if code, ok := m.store.ExitCode(meta.ID); ok && code == 0 {
+			m.captureFreshConversationID(&meta)
+		}
+		m.pendingCaptures.Delete(meta.ID)
 		m.gate.release(key)
 	}()
 }

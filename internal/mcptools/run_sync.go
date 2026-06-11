@@ -72,6 +72,22 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 			}
 			out := runSyncOutput{JobID: job.ID, statusOutput: toStatusOutput(st)}
 			if st.State != manager.StateRunning {
+				// A fresh run's conversation id can lag the exit sentinel: agy's
+				// cache daemon flushes after the process exits, and the manager's
+				// completion goroutine captures the id with a bounded retry. While
+				// that capture is still pending, keep polling instead of returning
+				// done with no id: a sync caller has no reason to poll again after
+				// a terminal result, so an id missing here is lost to the caller.
+				if st.State == manager.StateDone && st.ConversationID == "" &&
+					job.ConversationID == "" && time.Now().Before(deadline) &&
+					mgr.CapturePending(job.ID) {
+					select {
+					case <-ctx.Done():
+						return nil, out, nil
+					case <-ticker.C:
+					}
+					continue
+				}
 				return nil, out, nil
 			}
 			// The cap is approximate: the loop only observes the deadline on a
