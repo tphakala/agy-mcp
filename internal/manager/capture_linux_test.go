@@ -313,3 +313,47 @@ func waitForCapturedID(t *testing.T, m *Manager, id string, within time.Duration
 	}
 	return st
 }
+
+// CapturePending must be armed synchronously by a fresh StartJob and settle
+// once the completion goroutine has captured (or given up on) the id.
+func TestCapturePendingSettles(t *testing.T) {
+	state := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	const newUUID = "55556666-7777-8888-9999-000011112222"
+
+	c := config.Config{
+		AgyPath: "/usr/bin/agy",
+		SupervisorExe: testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
+			Out: "done", CachePath: cachePath, CacheJSON: fmt.Sprintf(`{%q:%q}`, cwd, newUUID),
+		}),
+		StateDir:       state,
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	}
+	m := New(c)
+	m.cacheFile = cachePath
+
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: cwd})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	if !m.CapturePending(job.ID) {
+		t.Fatal("capture must be pending right after a fresh StartJob")
+	}
+
+	st := waitForCapturedID(t, m, job.ID, 3*time.Second)
+	if st.ConversationID != newUUID {
+		t.Fatalf("captured id = %q, want %q", st.ConversationID, newUUID)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for m.CapturePending(job.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("capture never settled after the id was captured")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/tphakala/agy-mcp/internal/config"
@@ -23,6 +24,11 @@ type Manager struct {
 	store     jobStore // *jobstore.Store in production; an interface so tests can inject failures
 	gate      *gate    // serializes conflicting jobs and caps total concurrency
 	cacheFile string   // agy conversation cache (last_conversations.json); injectable for tests
+
+	// pendingCaptures holds the job ids of fresh runs whose conversation-id
+	// capture is armed but not yet settled (the post-exit capture attempt has
+	// not finished). Keyed by job id; values are struct{}.
+	pendingCaptures sync.Map
 
 	// Timing for the fresh-run conversation-id capture and the restored-job
 	// liveness watcher. Fields (not package globals) so tests stay isolated and can
@@ -125,6 +131,15 @@ func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 	return final
 }
 
+// CapturePending reports whether a fresh run's conversation-id capture has not
+// yet settled in this process: capture was armed at start (or restore) and the
+// post-exit capture attempt has not finished. Pollers use it to distinguish
+// "done, id still being captured" from "done, no id is coming".
+func (m *Manager) CapturePending(id string) bool {
+	_, ok := m.pendingCaptures.Load(id)
+	return ok
+}
+
 // StartJob persists meta and spawns the detached supervisor.
 func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// Job supervision needs process groups and /proc, which only exist on Linux. On
@@ -189,6 +204,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if req.ConversationID == "" {
 		if before, ok := snapshotCwd(m.cacheFile, cwd); ok {
 			meta.CwdUUIDBefore = before
+			m.pendingCaptures.Store(id, struct{}{})
 		} else {
 			// No trustworthy pre-run snapshot: a post-run diff could attribute
 			// a pre-existing conversation to this run. Report no id instead.
@@ -198,6 +214,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 	dir, err := m.store.Create(meta)
 	if err != nil {
+		m.pendingCaptures.Delete(id)
 		m.gate.release(key)
 		return Job{}, err
 	}
@@ -214,6 +231,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// No supervisor was spawned, so the just-created job dir is a never-started
 		// orphan; remove it now rather than leaving it for a later GarbageCollect.
 		_ = m.store.Remove(id)
+		m.pendingCaptures.Delete(id)
 		m.gate.release(key)
 		return Job{}, fmt.Errorf("spawn supervisor: %w", err)
 	}
@@ -236,6 +254,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		go func() {
 			_ = cmd.Wait()
 			_ = m.store.Remove(id)
+			m.pendingCaptures.Delete(id)
 			m.gate.release(key)
 		}()
 		return Job{}, fmt.Errorf("record supervisor pid: %w", err)
@@ -253,6 +272,9 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		if code, ok := m.store.ExitCode(id); ok && code == 0 {
 			m.captureFreshConversationID(&meta)
 		}
+		// Settle the capture (success or give-up) before releasing the key, so
+		// CapturePending=false means the reported status is final.
+		m.pendingCaptures.Delete(id)
 		m.gate.release(key)
 	}()
 
