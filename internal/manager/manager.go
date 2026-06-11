@@ -42,9 +42,10 @@ type Manager struct {
 	// run in parallel. agy's conversation cache is flushed by a separate daemon that
 	// can lag the foreground agy exit, so the capture retries briefly. Verified
 	// against agy 1.0.6: agy rewrites last_conversations.json in place (O_TRUNC, no
-	// file lock), so a concurrent read can be torn; loadCache tolerates that (an
-	// unparsable read yields no capture) and this retry loop re-reads, so no mutex
-	// is needed. agy also ignores a caller-supplied fresh --conversation UUID and
+	// file lock), so a concurrent read can be torn; loadCache reports torn reads
+	// as errors, capture treats them as "no capture yet" and this retry loop
+	// re-reads, and StartJob disables capture when the pre-run snapshot itself is
+	// unreadable, so no mutex is needed. agy also ignores a caller-supplied fresh --conversation UUID and
 	// mints its own, which is why the id must be captured by diffing the cache
 	// rather than generated and passed in.
 	captureBudget        time.Duration

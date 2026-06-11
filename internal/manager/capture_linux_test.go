@@ -24,7 +24,7 @@ func TestFreshRunCapturesConversationID(t *testing.T) {
 	const newUUID = "11111111-2222-3333-4444-555555555555"
 
 	c := config.Config{
-		AgyPath:        "/usr/bin/agy",
+		AgyPath: "/usr/bin/agy",
 		SupervisorExe: testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
 			Out: "done", CachePath: cachePath, CacheJSON: fmt.Sprintf(`{%q:%q}`, cwd, newUUID),
 		}),

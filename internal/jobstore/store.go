@@ -18,23 +18,23 @@ import (
 // StartTimeTicks, and ConversationID are filled in afterward by atomic rewrites
 // (UpdateMeta / SetConversationID).
 type Meta struct {
-	ID             string        `json:"id"`
-	AgyPath        string        `json:"agy_path"`
-	Args           []string      `json:"args"`
-	Cwd            string        `json:"cwd"`
-	Model          string        `json:"model,omitempty"`
-	ConversationID string        `json:"conversation_id,omitempty"`
-	Prompt         string        `json:"prompt"`
-	StartedAt      time.Time     `json:"started_at"`
-	PID            int           `json:"pid"`
-	StartTimeTicks uint64        `json:"start_time_ticks,omitempty"` // supervisor /proc start time; 0 = unknown
-	BootID         string        `json:"boot_id"`
-	CwdUUIDBefore  string        `json:"cwd_uuid_before,omitempty"`
+	ID             string    `json:"id"`
+	AgyPath        string    `json:"agy_path"`
+	Args           []string  `json:"args"`
+	Cwd            string    `json:"cwd"`
+	Model          string    `json:"model,omitempty"`
+	ConversationID string    `json:"conversation_id,omitempty"`
+	Prompt         string    `json:"prompt"`
+	StartedAt      time.Time `json:"started_at"`
+	PID            int       `json:"pid"`
+	StartTimeTicks uint64    `json:"start_time_ticks,omitempty"` // supervisor /proc start time; 0 = unknown
+	BootID         string    `json:"boot_id"`
+	CwdUUIDBefore  string    `json:"cwd_uuid_before,omitempty"`
 	// CaptureDisabled marks a fresh run whose pre-run cache snapshot could not
 	// be read: without a trustworthy snapshot a post-run cache diff cannot be
 	// attributed safely, so conversation-id capture is skipped for this job.
 	CaptureDisabled bool          `json:"capture_disabled,omitempty"`
-	Timeout        time.Duration `json:"timeout,omitempty"`
+	Timeout         time.Duration `json:"timeout,omitempty"`
 }
 
 // Exit-code sentinels the supervisor writes to the exit_code file and the
