@@ -21,6 +21,19 @@ func TestListSessionsFromCache(t *testing.T) {
 	}
 }
 
+// A missing cache file is a normal empty cache (fresh agy install, no
+// conversations yet), so readSessions must return no sessions and no error. This
+// locks in the behavior now that readSessions delegates the read to loadCache.
+func TestListSessionsMissingCacheIsEmpty(t *testing.T) {
+	sessions, err := readSessions(filepath.Join(t.TempDir(), "does-not-exist.json"), "")
+	if err != nil {
+		t.Fatalf("a missing cache must not error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("a missing cache must yield no sessions, got %d", len(sessions))
+	}
+}
+
 func TestListSessionsFilteredByDir(t *testing.T) {
 	cache := t.TempDir()
 	data := `{"/home/u/proj":"uuid-1","/home/u/other":"uuid-2"}`
