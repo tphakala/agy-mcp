@@ -15,7 +15,9 @@ import (
 )
 
 // killGrace is how long the supervisor waits after SIGTERM before escalating to
-// SIGKILL when terminating the agy process group on cancel or timeout.
+// SIGKILL when terminating the agy process group on cancel or timeout. Run
+// passes it to run; a test injects a smaller grace to exercise the escalation
+// without a 10s wait.
 const killGrace = 10 * time.Second
 
 // fallbackTimeout bounds a job whose meta records a non-positive timeout (a
@@ -69,6 +71,14 @@ func resolveExitCode(raw int, waitFailed, timedOut, cancelled bool) int {
 // /dev/null, and writes jobDir/exit_code on completion (including on cancel).
 // Run returns an error only for setup failures, not for a non-zero agy exit.
 func Run(jobDir string) error {
+	return run(jobDir, killGrace)
+}
+
+// run is Run with an injectable SIGTERM->SIGKILL grace, so a test can exercise
+// the escalation without the 10s production wait. Passing grace as a parameter
+// (rather than mutating a package global) keeps the timer goroutine's read
+// race-free.
+func run(jobDir string, grace time.Duration) error {
 	if !proc.Supported {
 		// Job supervision needs process groups, signal forwarding, and /proc, which
 		// only exist on Linux. The non-Linux proc.TerminateGroup stub cannot kill agy,
@@ -147,7 +157,7 @@ func Run(jobDir string) error {
 		_ = proc.TerminateGroup(cmd.Process.Pid, syscall.SIGTERM)
 		select {
 		case <-done:
-		case <-time.After(killGrace):
+		case <-time.After(grace):
 			// Do not signal a process group that may have already been reaped
 			// (and whose pgid could be recycled) once Wait has returned.
 			select {

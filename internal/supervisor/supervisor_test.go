@@ -71,6 +71,12 @@ func TestSupervisorCapturesOutputAndSentinel(t *testing.T) {
 	if strings.TrimSpace(string(out)) != "review text" {
 		t.Fatalf("out = %q", out)
 	}
+	// The configured stderr must actually be captured to the err file, not just
+	// configured and ignored.
+	errOut, _ := os.ReadFile(filepath.Join(dir, "err"))
+	if strings.TrimSpace(string(errOut)) != "warn" {
+		t.Fatalf("err = %q, want %q", errOut, "warn")
+	}
 	code, err := os.ReadFile(filepath.Join(dir, "exit_code"))
 	if err != nil || strings.TrimSpace(string(code)) != "0" {
 		t.Fatalf("exit_code = %q, err=%v", code, err)
