@@ -20,6 +20,18 @@ func writeMeta(t *testing.T, dir string, m jobstore.Meta) {
 	}
 }
 
+func TestEffectiveTimeout(t *testing.T) {
+	if got := effectiveTimeout(0); got != fallbackTimeout {
+		t.Errorf("effectiveTimeout(0) = %v, want fallback %v", got, fallbackTimeout)
+	}
+	if got := effectiveTimeout(-5 * time.Second); got != fallbackTimeout {
+		t.Errorf("effectiveTimeout(negative) = %v, want fallback %v", got, fallbackTimeout)
+	}
+	if got := effectiveTimeout(5 * time.Minute); got != 5*time.Minute {
+		t.Errorf("effectiveTimeout(5m) = %v, want passthrough", got)
+	}
+}
+
 func TestSupervisorCapturesOutputAndSentinel(t *testing.T) {
 	dir := t.TempDir()
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "review text", Stderr: "warn", Exit: 0})

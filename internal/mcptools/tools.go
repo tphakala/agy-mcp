@@ -22,6 +22,11 @@ type runInput struct {
 	Timeout        string   `json:"timeout,omitempty" jsonschema:"max run duration, e.g. 20m"`
 }
 
+// maxJobTimeout caps a client-supplied per-job timeout. It bounds both the agy
+// --print-timeout and the supervisor's hard-kill deadline, so a typo like "1000h"
+// cannot leave a hung job uncollectable for weeks.
+const maxJobTimeout = 24 * time.Hour
+
 // toStartRequest converts the wire input into a manager start request,
 // validating the timeout.
 func (in runInput) toStartRequest() (manager.StartRequest, error) {
@@ -33,6 +38,9 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 		d, err := time.ParseDuration(in.Timeout)
 		if err != nil || d <= 0 {
 			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: want a positive Go duration like 20m", in.Timeout)
+		}
+		if d > maxJobTimeout {
+			return manager.StartRequest{}, fmt.Errorf("timeout %q exceeds the maximum of %s", in.Timeout, maxJobTimeout)
 		}
 		req.Timeout = d
 	}
