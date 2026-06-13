@@ -130,7 +130,8 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "agy_cancel", Description: "Cancel a running agy job.",
+		Name:        "agy_cancel",
+		Description: `Cancel a running agy job. Returns the resulting state: "cancelled", or the job's terminal state if it had already finished, or "unknown" if the state could not be read after cancelling.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cancelInput) (*mcp.CallToolResult, cancelOutput, error) {
 		if err := mgr.Cancel(in.JobID); err != nil {
 			return nil, cancelOutput{}, err
