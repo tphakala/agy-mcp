@@ -4,8 +4,8 @@ package gorules
 
 import "github.com/quasilyte/go-ruleguard/dsl"
 
-// MinMaxBuiltin detects manual min/max implementations using if statements
-// or ternary-like patterns and suggests using the built-in min/max functions.
+// MinMaxBuiltin detects the math.Min/math.Max float64-conversion form wrapped
+// in an integer cast and suggests using the built-in min/max functions.
 //
 // Old pattern (only the math.Min/Max-with-conversion form is detected; the
 // if/else form is not matched):
@@ -146,7 +146,7 @@ func RangeOverInteger(m dsl.Matcher) {
 		Where(
 			!m["n"].Text.Matches(`.*\.N$`) &&
 				!m["n"].Text.Matches(`\.(NumField|NumMethod|NumIn|NumOut)\(\)$`) &&
-				!m["body"].Text.Matches(`^\s*\S+\s*=\s*append\(.*\.\.\.\)\s*$`),
+				!m["body"].Text.Matches(`(?s)^\s*\S+\s*=\s*append\(.*?\.\.\.\)\s*$`),
 		).
 		Report("use for $i := range $n instead of for $i := 0; $i < $n; $i++ (Go 1.22+)")
 }

@@ -172,14 +172,14 @@ func BackwardIteration(m dsl.Matcher) {
 	m.Match(
 		`for $i := len($s) - 1; $i >= 0; $i-- { $*body }`,
 	).
-		Where(m["s"].Type.Is(`[]$elem`)).
+		Where(m["s"].Type.Underlying().Is(`[]$elem`)).
 		Report("use slices.Backward($s) for reverse iteration (Go 1.23+)")
 
 	// Pattern: for i := len(s) - 1; i > -1; i--
 	m.Match(
 		`for $i := len($s) - 1; $i > -1; $i-- { $*body }`,
 	).
-		Where(m["s"].Type.Is(`[]$elem`)).
+		Where(m["s"].Type.Underlying().Is(`[]$elem`)).
 		Report("use slices.Backward($s) for reverse iteration (Go 1.23+)")
 }
 
@@ -268,18 +268,24 @@ func SliceRepeat(m dsl.Matcher) {
 		Report("use slices.Repeat($s, $n) instead of manual repetition loop (Go 1.23+); false positive if $s depends on the loop variable")
 
 	// Pattern: range-over-integer form (with variable)
-	// Integer guard: without it, `for i := range items` over a []T (ranging the
-	// slice, not a count) matches and yields a non-compiling slices.Repeat(s, items).
+	// Require exactly int. Without a guard, `for i := range items` over a []T
+	// (ranging the slice, not a count) matches and yields a non-compiling
+	// slices.Repeat(s, items). slices.Repeat's count parameter is exactly int,
+	// so a named int type or int64 would also not compile; Type.Is("int") (not
+	// OfKind, which would match those) keeps the advice to compiling cases.
+	// Note: Type.Is("int") already covers the untyped-constant form `for range 5`
+	// (go/types gives the constant its default type int in range context), so a
+	// separate "untyped int" check is neither needed nor valid as a Type.Is arg.
 	m.Match(
 		`for $i := range $n { $result = append($result, $s...) }`,
 	).
-		Where(m["n"].Type.OfKind("int")).
+		Where(m["n"].Type.Is("int")).
 		Report("use slices.Repeat($s, $n) instead of manual repetition loop (Go 1.23+); false positive if $s depends on the loop variable")
 
 	// Pattern: range-over-integer form (without variable)
 	m.Match(
 		`for range $n { $result = append($result, $s...) }`,
 	).
-		Where(m["n"].Type.OfKind("int")).
+		Where(m["n"].Type.Is("int")).
 		Report("use slices.Repeat($s, $n) instead of manual repetition loop (Go 1.23+)")
 }

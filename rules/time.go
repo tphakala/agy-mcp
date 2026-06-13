@@ -29,11 +29,13 @@ func TimeDateTimeConstants(m dsl.Matcher) {
 	// DateTime: "2006-01-02 15:04:05"
 	// The type guard keeps the Format matches from firing on any value with a
 	// Format(string) method (e.g. a custom formatter), where the time.* constant
-	// is undefined and --fix would emit non-compiling "undefined: time".
+	// is undefined and --fix would emit non-compiling "undefined: time". Both
+	// time.Time and *time.Time are accepted: Format has a value receiver, so it
+	// is also called through a pointer (common for nullable/optional fields).
 	m.Match(
 		`$t.Format("2006-01-02 15:04:05")`,
 	).
-		Where(m["t"].Type.Is("time.Time")).
+		Where(m["t"].Type.Is("time.Time") || m["t"].Type.Is("*time.Time")).
 		Report(`use $t.Format(time.DateTime) instead of magic format string (Go 1.20+)`).
 		Suggest(`$t.Format(time.DateTime)`)
 
@@ -47,7 +49,7 @@ func TimeDateTimeConstants(m dsl.Matcher) {
 	m.Match(
 		`$t.Format("2006-01-02")`,
 	).
-		Where(m["t"].Type.Is("time.Time")).
+		Where(m["t"].Type.Is("time.Time") || m["t"].Type.Is("*time.Time")).
 		Report(`use $t.Format(time.DateOnly) instead of magic format string (Go 1.20+)`).
 		Suggest(`$t.Format(time.DateOnly)`)
 
@@ -61,7 +63,7 @@ func TimeDateTimeConstants(m dsl.Matcher) {
 	m.Match(
 		`$t.Format("15:04:05")`,
 	).
-		Where(m["t"].Type.Is("time.Time")).
+		Where(m["t"].Type.Is("time.Time") || m["t"].Type.Is("*time.Time")).
 		Report(`use $t.Format(time.TimeOnly) instead of magic format string (Go 1.20+)`).
 		Suggest(`$t.Format(time.TimeOnly)`)
 

@@ -69,7 +69,7 @@ func WeakRSAKeySize(m dsl.Matcher) {
 	m.Match(
 		`rsa.GenerateKey($rand, $bits)`,
 	).
-		Where(m["bits"].Value.Int() < 2048).
+		Where(m["bits"].Const && m["bits"].Value.Int() < 2048).
 		Report("RSA keys under 2048 bits are weak (sizes under 1024 are rejected in Go 1.24+); use at least 2048 bits for modern security")
 }
 

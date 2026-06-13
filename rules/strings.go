@@ -97,7 +97,7 @@ func StringsSplitIteration(m dsl.Matcher) {
 	m.Match(
 		`for $_, $part := range bytes.Split($s, $sep) { $*body }`,
 	).
-		Where(!m["sep"].Text.Matches(`\[\]byte\("\\r?\\n"\)`) && !m["sep"].Text.Matches(`\[\]byte\{.*\\n.*\}`)).
+		Where(!m["sep"].Text.Matches(`\[\]byte\("\\(r\\)?n"\)`) && !m["sep"].Text.Matches(`\[\]byte\{.*\\n.*\}`)).
 		Report("use for $part := range bytes.SplitSeq($s, $sep) to avoid intermediate slice allocation (Go 1.24+)")
 }
 
