@@ -88,7 +88,7 @@ func (g *gate) release(key string) {
 		// release, or a release on a key that was never acquired). The clamp keeps
 		// inFlight from going negative and silently raising the cap; log it so the
 		// regression surfaces instead of hiding.
-		log.Printf("agy-mcp: gate release underflow for key %q (released more than acquired)", key)
+		log.Printf("gate release underflow for key %q (released more than acquired)", key)
 	}
 	if key != "" {
 		delete(g.keys, key)

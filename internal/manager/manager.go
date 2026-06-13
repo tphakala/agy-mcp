@@ -166,7 +166,7 @@ func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 func (m *Manager) persistCapturedID(jobID, captured string) string {
 	final, err := m.store.SetConversationID(jobID, captured)
 	if err != nil {
-		log.Printf("agy-mcp: persist captured conversation id for job %s: %v", jobID, err)
+		log.Printf("persist captured conversation id for job %s: %v", jobID, err)
 		return captured
 	}
 	return final
@@ -343,7 +343,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// (notably after a reboot) this job reads as not-alive, so it cannot be
 		// restored across a manager restart and a recycled PID is never mistaken for
 		// it. Surface the unreadable boot_id since it degrades cross-boot liveness.
-		log.Printf("agy-mcp: job %s: kernel boot id unreadable; cross-boot liveness degraded for this job", id)
+		log.Printf("job %s: kernel boot id unreadable; cross-boot liveness degraded for this job", id)
 	}
 	// Whenever the run has no resolved conversation id (a fresh run, or a
 	// continue_latest that found no prior conversation), agy will create a new
@@ -357,7 +357,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 			// No trustworthy pre-run snapshot: a post-run diff could attribute
 			// a pre-existing conversation to this run. Report no id instead.
 			meta.CaptureDisabled = true
-			log.Printf("agy-mcp: job %s: conversation cache unreadable; id capture disabled for this run", id)
+			log.Printf("job %s: conversation cache unreadable; id capture disabled for this run", id)
 		}
 	}
 	dir, err := m.store.Create(meta)
@@ -522,13 +522,13 @@ func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time) bool {
 			// may be a job still mid-Create, so it is kept.
 			if m.orphanExpired(l.id, cutoff) {
 				if rerr := m.store.Remove(l.id); rerr != nil {
-					log.Printf("agy-mcp: GC: remove orphan job dir %s: %v", l.id, rerr)
+					log.Printf("GC: remove orphan job dir %s: %v", l.id, rerr)
 					return false
 				}
 				m.untrackCapture(l.id)
 				return true
 			}
-			log.Printf("agy-mcp: GC: orphan job dir %s (no meta.json) kept until older than the TTL", l.id)
+			log.Printf("GC: orphan job dir %s (no meta.json) kept until older than the TTL", l.id)
 			return false
 		}
 		// meta.json exists but could not be read or parsed: a transient error
@@ -536,7 +536,7 @@ func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time) bool {
 		// be reaped by dir mtime: a valid long-running job's dir mtime is old
 		// (writing to out/err does not bump the directory mtime), so reaping here
 		// could delete a live job. Log and keep; a later sweep retries the Load.
-		log.Printf("agy-mcp: GC: job %s meta unreadable (not reaping, may be transient): %v", l.id, l.metaErr)
+		log.Printf("GC: job %s meta unreadable (not reaping, may be transient): %v", l.id, l.metaErr)
 		return false
 	}
 	if !l.meta.StartedAt.Before(cutoff) {
@@ -568,7 +568,7 @@ func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time) bool {
 		return false
 	}
 	if err := m.store.Remove(l.id); err != nil {
-		log.Printf("agy-mcp: GC: remove expired job %s: %v", l.id, err)
+		log.Printf("GC: remove expired job %s: %v", l.id, err)
 		return false
 	}
 	m.untrackCapture(l.id)
@@ -630,9 +630,9 @@ func (m *Manager) runPeriodicGC(ctx context.Context, interval time.Duration) {
 			return
 		case <-t.C:
 			if removed, err := m.GarbageCollect(); err != nil {
-				log.Printf("agy-mcp: periodic GC: %v", err)
+				log.Printf("periodic GC: %v", err)
 			} else if len(removed) > 0 {
-				log.Printf("agy-mcp: periodic GC removed %d expired job(s)", len(removed))
+				log.Printf("periodic GC removed %d expired job(s)", len(removed))
 			}
 		}
 	}
@@ -660,7 +660,7 @@ func reqFromMeta(meta jobstore.Meta) StartRequest {
 		// under this rare path (a legacy relative cwd plus an os.Getwd failure) the
 		// restored key may not match a new same-directory run's normalized key, the
 		// one inconsistency that can still split serialization for that job.
-		log.Printf("agy-mcp: normalize cwd %q for restored job %s: %v; using raw cwd for gate key", cwd, meta.ID, err)
+		log.Printf("normalize cwd %q for restored job %s: %v; using raw cwd for gate key", cwd, meta.ID, err)
 	}
 	return StartRequest{ConversationID: meta.ConversationID, Cwd: cwd}
 }
@@ -699,7 +699,7 @@ func (m *Manager) restoreEvaluate(l loadedJob) {
 		// skipping silently: if such a job's supervisor is somehow still alive its
 		// gate is not held, the one gap in this method's fail-closed contract.
 		// GarbageCollect reaps the dir once it is older than the TTL.
-		log.Printf("agy-mcp: restore gate: skipping job %s with unreadable meta: %v", l.id, l.metaErr)
+		log.Printf("restore gate: skipping job %s with unreadable meta: %v", l.id, l.metaErr)
 		return
 	}
 	if _, terminal := m.store.ExitCode(l.id); terminal {

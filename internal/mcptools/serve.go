@@ -95,7 +95,7 @@ func ServeHTTP(ctx context.Context, mgr *manager.Manager, addr, token string) er
 		// shutdown error (e.g. in-flight responses outlasting the 5s drain) is worth
 		// surfacing rather than silently dropping.
 		if err := srv.Shutdown(shutCtx); err != nil {
-			log.Printf("agy-mcp: http shutdown: %v", err)
+			log.Printf("http shutdown: %v", err)
 		}
 	}()
 	err := srv.ListenAndServe()

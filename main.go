@@ -23,6 +23,12 @@ func main() {
 	// stdout is reserved for the JSON-RPC stream in stdio mode. Force the
 	// standard logger to stderr so a stray log line cannot corrupt the protocol.
 	log.SetOutput(os.Stderr)
+	// One source of the "agy-mcp: " log prefix, set here before either the serve or
+	// the run-job (supervisor) path runs, so every log line is tagged consistently
+	// and individual messages no longer hardcode the prefix. This does not affect
+	// errors.New strings (e.g. proc.ErrUnsupported) or the fmt.Fprintf stderr writes
+	// below, which are surfaced to callers rather than logged.
+	log.SetPrefix("agy-mcp: ")
 
 	if len(os.Args) >= 2 && os.Args[1] == "run-job" {
 		if len(os.Args) != 3 {
@@ -95,14 +101,14 @@ func serve() error {
 		if cfg.HTTPToken != "" {
 			authNote = "bearer-token auth enabled"
 		}
-		log.Printf("agy-mcp serving Streamable HTTP on %s (%s)", *httpAddr, authNote)
+		log.Printf("serving Streamable HTTP on %s (%s)", *httpAddr, authNote)
 		if err := mcptools.ServeHTTP(ctx, mgr, *httpAddr, cfg.HTTPToken); err != nil {
 			return fmt.Errorf("http serve: %w", err)
 		}
 		return nil
 	}
 
-	log.Print("agy-mcp serving over stdio")
+	log.Print("serving over stdio")
 	if err := mcptools.ServeStdio(ctx, mgr); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("stdio serve: %w", err)
 	}
