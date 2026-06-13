@@ -207,8 +207,15 @@ func DeferredTimeNow(m dsl.Matcher) {
 	).
 		Report("time.Now() is evaluated at defer time, not function exit; wrap in func() if you want exit time")
 
+	// time.Now() as the last argument (with preceding args).
 	m.Match(
 		`defer $fn($*args, time.Now())`,
+	).
+		Report("time.Now() is evaluated at defer time, not function exit; wrap in func() if you want exit time")
+
+	// time.Now() as the first argument (with trailing args).
+	m.Match(
+		`defer $fn(time.Now(), $*args)`,
 	).
 		Report("time.Now() is evaluated at defer time, not function exit; wrap in func() if you want exit time")
 }

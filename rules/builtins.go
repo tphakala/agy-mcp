@@ -7,16 +7,9 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 // MinMaxBuiltin detects manual min/max implementations using if statements
 // or ternary-like patterns and suggests using the built-in min/max functions.
 //
-// Old patterns:
+// Old pattern (only the math.Min/Max-with-conversion form is detected; the
+// if/else form is not matched):
 //
-//	// If-based min
-//	if a < b {
-//	    result = a
-//	} else {
-//	    result = b
-//	}
-//
-//	// math.Min/Max for integers
 //	result := int(math.Min(float64(a), float64(b)))
 //
 // New pattern (Go 1.21+):
@@ -75,22 +68,16 @@ func MinMaxBuiltin(m dsl.Matcher) {
 // ClearBuiltin detects loop-based map/slice clearing patterns and suggests
 // using the built-in clear() function.
 //
-// Old patterns:
+// Old pattern (only map clearing is detected; the slice-zeroing loop is not
+// matched):
 //
-//	// Map clearing
 //	for k := range m {
 //	    delete(m, k)
-//	}
-//
-//	// Slice zeroing
-//	for i := range s {
-//	    s[i] = 0  // or nil, "", etc.
 //	}
 //
 // New pattern (Go 1.21+):
 //
 //	clear(m)  // Deletes all map entries
-//	clear(s)  // Sets all slice elements to zero value
 //
 // Benefits:
 //   - Cleaner, more readable code

@@ -24,7 +24,9 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 // Benefits:
 //   - Cleaner, less error-prone (no Add/Done mismatch)
 //   - Single function call
-//   - Automatic panic handling
+//
+// Note: wg.Go still calls Done on panic (it is deferred), but it does not
+// recover the panic; a panicking task crashes the program just as before.
 //
 // See: https://pkg.go.dev/sync#WaitGroup.Go
 func WaitGroupGo(m dsl.Matcher) {
@@ -37,15 +39,7 @@ func WaitGroupGo(m dsl.Matcher) {
 		Report("use $wg.Go(func() { $body }) instead of manual Add/Done pattern (Go 1.25+)").
 		Suggest("$wg.Go(func() { $body })")
 
-	// Pattern 2: Same but with pointer receiver explicitly
-	m.Match(
-		`$wg.Add(1); go func() { defer $wg.Done(); $*body }()`,
-	).
-		Where(m["wg"].Type.Underlying().Is("sync.WaitGroup")).
-		Report("use $wg.Go(func() { $body }) instead of manual Add/Done pattern (Go 1.25+)").
-		Suggest("$wg.Go(func() { $body })")
-
-	// Pattern 3: When wg is passed by reference to the closure
+	// Pattern 2: When wg is passed by reference to the closure
 	m.Match(
 		`$wg.Add(1); go func($param $typ) { defer $param.Done(); $*body }($wg)`,
 		`$wg.Add(1); go func($param $typ) { defer $param.Done(); $*body }(&$wg)`,
