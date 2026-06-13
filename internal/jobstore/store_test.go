@@ -21,9 +21,23 @@ func TestRejectsUnsafeJobID(t *testing.T) {
 		if err := s.Remove(id); !errors.Is(err, ErrInvalidID) {
 			t.Errorf("Remove(%q) err = %v, want ErrInvalidID", id, err)
 		}
+		if _, err := s.Dir(id); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("Dir(%q) err = %v, want ErrInvalidID", id, err)
+		}
 		if _, ok := s.ExitCode(id); ok {
 			t.Errorf("ExitCode(%q) ok = true, want false", id)
 		}
+	}
+}
+
+func TestDirReturnsJobPathForValidID(t *testing.T) {
+	s := New(t.TempDir())
+	got, err := s.Dir("job123")
+	if err != nil {
+		t.Fatalf("Dir(valid) err = %v, want nil", err)
+	}
+	if want := s.jobDir("job123"); got != want {
+		t.Fatalf("Dir = %q, want %q", got, want)
 	}
 }
 

@@ -54,7 +54,11 @@ var ErrInvalidID = errors.New("invalid job id")
 // Store is a directory-backed collection of jobs.
 type Store struct {
 	root string
-	mu   sync.Mutex // serializes SetConversationID's read-modify-write
+	// mu serializes every meta rewrite (UpdateMeta and SetConversationID). It is
+	// what lets SetConversationID's read-modify-write be atomic: it holds mu across
+	// the Load and the rewrite, and because UpdateMeta also takes mu a concurrent
+	// UpdateMeta cannot land between the two and be clobbered.
+	mu sync.Mutex
 }
 
 // New returns a Store rooted at dir/jobs.
@@ -85,13 +89,13 @@ func (s *Store) Create(m Meta) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o644); err != nil {
+	// Write meta.json with the same temp+rename pattern UpdateMeta uses, so a crash
+	// mid-write can never leave a torn or zero-length meta.json that Load fails to
+	// parse (which would orphan the dir). A unique id is being created, so no other
+	// writer touches this dir and no lock is needed.
+	if err := writeMetaAtomic(dir, m); err != nil {
 		// Remove the just-created dir so a failed Create leaves no orphan: a dir
-		// without a readable meta.json is skipped forever by GarbageCollect.
+		// without a readable meta.json is reaped only after the TTL by GarbageCollect.
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
@@ -114,15 +118,32 @@ func (s *Store) Load(id string) (Meta, error) {
 	return m, nil
 }
 
-// UpdateMeta atomically rewrites a job's meta.json by writing a uniquely-named
-// temp file and renaming it into place, so a concurrent reader (such as the
-// freshly spawned supervisor) never observes a partially written file, and two
-// concurrent writers never corrupt a shared temp file.
+// UpdateMeta atomically rewrites a job's meta.json. It takes s.mu so every meta
+// rewrite is serialized: a concurrent reader (such as the freshly spawned
+// supervisor) never observes a partially written file, and SetConversationID's
+// read-modify-write cannot be clobbered by a concurrent UpdateMeta landing
+// between its Load and its rewrite.
 func (s *Store) UpdateMeta(m Meta) error {
 	if !validJobID(m.ID) {
 		return ErrInvalidID
 	}
-	dir := s.jobDir(m.ID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateMetaLocked(m)
+}
+
+// updateMetaLocked performs the atomic rewrite. The caller must hold s.mu. It is
+// the shared body of UpdateMeta (which acquires the lock) and SetConversationID
+// (which already holds it), so the two never deadlock by re-locking.
+func (s *Store) updateMetaLocked(m Meta) error {
+	return writeMetaAtomic(s.jobDir(m.ID), m)
+}
+
+// writeMetaAtomic writes m to dir/meta.json by writing a uniquely-named temp file
+// and renaming it into place, so a reader never observes a partially written file
+// and a crash mid-write leaves either the old meta.json or none, never a torn one.
+// It assumes the caller has validated m.ID and that dir already exists.
+func writeMetaAtomic(dir string, m Meta) error {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
@@ -177,7 +198,9 @@ func (s *Store) SetConversationID(id, convID string) (string, error) {
 		return m.ConversationID, nil
 	}
 	m.ConversationID = convID
-	if err := s.UpdateMeta(m); err != nil {
+	// Already holding s.mu, so rewrite via the locked variant; calling UpdateMeta
+	// here would re-acquire s.mu and deadlock.
+	if err := s.updateMetaLocked(m); err != nil {
 		return "", err
 	}
 	return convID, nil
@@ -192,7 +215,15 @@ func (s *Store) Remove(id string) error {
 }
 
 // Dir returns the on-disk directory for a job (out, err, exit_code live here).
-func (s *Store) Dir(id string) string { return s.jobDir(id) }
+// Like the other Store methods it guards the id, so a malicious client-supplied
+// job_id can never produce a path that escapes the store root, even for a future
+// caller that does not Load (and thus validate) the id first.
+func (s *Store) Dir(id string) (string, error) {
+	if !validJobID(id) {
+		return "", ErrInvalidID
+	}
+	return s.jobDir(id), nil
+}
 
 // WriteExitCode writes the completion sentinel.
 func (s *Store) WriteExitCode(id string, code int) error {

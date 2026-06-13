@@ -78,6 +78,31 @@ func TestProcessAliveStartTimeCheck(t *testing.T) {
 	}
 }
 
+func TestProcessAliveEmptyBootIDFailsClosed(t *testing.T) {
+	if readBootID() == "" {
+		// boot_id is unreadable host-wide here (e.g. a restricted container). With no
+		// current boot to compare against, an empty recorded boot id correctly falls
+		// through to the PID and start-time checks rather than failing closed, so this
+		// test's premise does not hold. Skip rather than assert a false expectation.
+		t.Skip("boot_id unreadable in this environment; empty-vs-empty correctly falls through")
+	}
+	pid, exePath := startFakeLiveSupervisor(t)
+	m := New(config.Config{SupervisorExe: exePath, StateDir: t.TempDir(), MaxConcurrency: 4})
+	actual, ok := readStartTimeTicks(pid)
+	if !ok {
+		t.Fatalf("could not read start time for live pid %d", pid)
+	}
+	// An empty recorded boot id cannot be confirmed to belong to the current boot
+	// (boot_id was unreadable when the job started). After a reboot a recycled pid
+	// could otherwise pass the kill and start-time checks and read as alive, keeping
+	// the dead job uncollectable and its gate key held forever. Fail closed: an empty
+	// boot id reads as not alive even for a live, exactly-matching pid.
+	meta := jobstore.Meta{PID: pid, BootID: "", StartTimeTicks: actual}
+	if m.processAlive(meta) {
+		t.Error("empty BootID must fail closed (read as not alive)")
+	}
+}
+
 func TestReadStartTimeTicks(t *testing.T) {
 	// Our own pid has a readable, non-zero start time.
 	got, ok := readStartTimeTicks(os.Getpid())
