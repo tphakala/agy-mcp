@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -18,12 +20,45 @@ import (
 
 func jsonMarshalForTest(v any) ([]byte, error) { return json.MarshalIndent(v, "", "  ") }
 
+// builtBin holds the path buildBinary compiled to, so TestMain can remove it
+// after the run. It is written inside the buildBinary once-func (which completes
+// before any test using the binary returns) and read in TestMain only after
+// m.Run, so there is no race.
+var builtBin string
+
+// buildBinary compiles the agy-mcp binary once for the whole package test run and
+// returns its path; the two run-job tests share it instead of each rebuilding.
+// Lazy (built on first use) so a focused run of the pure tests below pays nothing.
+// CreateTemp gives a unique path for this one shared binary; t.TempDir/t.ArtifactDir
+// are per-test and unavailable here (this is package-level, with no *testing.T),
+// so TestMain owns the cleanup instead.
+var buildBinary = sync.OnceValues(func() (string, error) {
+	f, err := os.CreateTemp("", "agy-mcp-*")
+	if err != nil {
+		return "", err
+	}
+	bin := f.Name()
+	_ = f.Close() // go build -o overwrites the placeholder file with the binary
+	builtBin = bin
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		return "", fmt.Errorf("build agy-mcp: %w\n%s", err, out)
+	}
+	return bin, nil
+})
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if builtBin != "" {
+		_ = os.Remove(builtBin)
+	}
+	os.Exit(code)
+}
+
 // Build the binary once and use it as its own supervisor against a fake agy.
 func TestRunJobSubcommandEndToEnd(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "agy-mcp")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
+	bin, err := buildBinary()
+	if err != nil {
+		t.Fatal(err)
 	}
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "E2E OK", Exit: 0})
 
@@ -46,9 +81,9 @@ func TestRunJobSubcommandEndToEnd(t *testing.T) {
 // the signal to agy and writes the SIGTERM sentinel, which Status maps to
 // "cancelled".
 func TestRunJobCancelViaSignal(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "agy-mcp")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
+	bin, err := buildBinary()
+	if err != nil {
+		t.Fatal(err)
 	}
 	// A fake agy that sleeps far longer than the test; with no timeout in meta,
 	// only an external cancel signal can stop it.
@@ -62,12 +97,42 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	// Give the supervisor time to start agy and install its SIGTERM handler.
-	time.Sleep(time.Second)
+	// On any fatal path below (before the happy-path Wait), tear the supervisor
+	// down so neither it nor its 60s fake agy child leaks. SIGTERM lets the
+	// supervisor forward the signal to agy and reap it, unlike a bare Kill.
+	reaped := false
+	t.Cleanup(func() {
+		if !reaped {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			_ = cmd.Wait()
+		}
+	})
+
+	// Wait for the supervisor to create the job's out/err files, which it does
+	// immediately before installing its SIGTERM handler and starting agy. Polling
+	// for that instead of sleeping a fixed interval removes the race where, under
+	// CI load, the supervisor process has not started yet and the SIGTERM lands on
+	// a handlerless process (which would die without writing the sentinel, leaking
+	// the 60s agy and burning the poll below). The window between file creation and
+	// signal.Notify is a few non-blocking calls, so it is microseconds and, unlike
+	// process spawn, does not stretch under load.
+	startDeadline := time.Now().Add(5 * time.Second)
+	for {
+		_, oerr := os.Stat(filepath.Join(jobDir, "out"))
+		_, eerr := os.Stat(filepath.Join(jobDir, "err"))
+		if oerr == nil && eerr == nil {
+			break
+		}
+		if time.Now().After(startDeadline) {
+			t.Fatal("supervisor did not create out/err; cannot safely signal it")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()
+	reaped = true
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
