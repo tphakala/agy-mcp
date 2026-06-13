@@ -3,7 +3,6 @@
 package manager
 
 import (
-	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -59,11 +58,20 @@ type Manager struct {
 
 // New constructs a Manager.
 func New(c config.Config) *Manager {
+	// Prefer an explicitly configured cache path; only fall back to the default
+	// under HOME when none was given. Resolving the fallback here, rather than with
+	// cmp.Or (which evaluates both args), keeps agyCachePath's home-dir lookup and
+	// its failure log from running when an explicit ConversationCacheFile is set, so
+	// that explicit path is never shadowed by a misleading "disabled" log.
+	cacheFile := c.ConversationCacheFile
+	if cacheFile == "" {
+		cacheFile = agyCachePath()
+	}
 	return &Manager{
 		cfg:                  c,
 		store:                jobstore.New(c.StateDir),
 		gate:                 newGate(c.MaxConcurrency),
-		cacheFile:            cmp.Or(c.ConversationCacheFile, agyCachePath()),
+		cacheFile:            cacheFile,
 		captureBudget:        2 * time.Second,
 		capturePoll:          100 * time.Millisecond,
 		restoredPollInterval: 2 * time.Second,
@@ -104,12 +112,7 @@ func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
 	deadline := time.Now().Add(m.captureBudget)
 	for {
 		if id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore); ok {
-			final, err := m.store.SetConversationID(meta.ID, id)
-			if err != nil {
-				log.Printf("agy-mcp: persist captured conversation id for job %s: %v", meta.ID, err)
-				final = id
-			}
-			meta.ConversationID = final
+			meta.ConversationID = m.persistCapturedID(meta.ID, id)
 			return
 		}
 		if !time.Now().Before(deadline) {
@@ -152,10 +155,19 @@ func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
 		m.settleCapture(meta.ID)
 		return ""
 	}
-	final, err := m.store.SetConversationID(meta.ID, id)
+	return m.persistCapturedID(meta.ID, id)
+}
+
+// persistCapturedID stores a captured conversation id to the job's meta and
+// returns the effective id to report. On a persist failure it logs and falls
+// back to the captured id (best-effort: report what was captured even if it
+// could not be saved). Shared by the eager (captureFreshConversationID) and lazy
+// (lazyCaptureConversationID) capture paths.
+func (m *Manager) persistCapturedID(jobID, captured string) string {
+	final, err := m.store.SetConversationID(jobID, captured)
 	if err != nil {
-		log.Printf("agy-mcp: persist captured conversation id for job %s: %v", meta.ID, err)
-		return id // best-effort: report what we captured even if the persist failed
+		log.Printf("agy-mcp: persist captured conversation id for job %s: %v", jobID, err)
+		return captured
 	}
 	return final
 }

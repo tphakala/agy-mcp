@@ -1,9 +1,7 @@
 package manager
 
 import (
-	"encoding/json"
-	"errors"
-	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,10 +13,14 @@ type Session struct {
 	ConversationID string `json:"conversation_id"`
 }
 
-// agyCachePath returns the path to last_conversations.json, honoring HOME.
+// agyCachePath returns the path to last_conversations.json, honoring HOME. An
+// empty return (the home dir is unresolvable) degrades every consumer to "no
+// sessions" and disables conversation-id capture, so log it rather than failing
+// silently; the cause is almost always a missing HOME in a restricted environment.
 func agyCachePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
+		log.Printf("agy-mcp: cannot resolve home dir for agy conversation cache; session listing and conversation-id capture disabled: %v", err)
 		return ""
 	}
 	return filepath.Join(home, ".gemini", "antigravity-cli", "cache", "last_conversations.json")
@@ -32,15 +34,11 @@ func (m *Manager) ListSessions(dir string) ([]Session, error) {
 }
 
 func readSessions(cacheFile, filterDir string) ([]Session, error) {
-	b, err := os.ReadFile(cacheFile)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
+	// loadCache is the single reader for last_conversations.json: it treats a
+	// missing file as an empty cache and reports a torn or corrupt read as an
+	// error, so this no longer duplicates the read+unmarshal (issue #36).
+	raw, err := loadCache(cacheFile)
 	if err != nil {
-		return nil, err
-	}
-	var raw map[string]string
-	if err := json.Unmarshal(b, &raw); err != nil {
 		return nil, err
 	}
 	cleanFilter := ""
