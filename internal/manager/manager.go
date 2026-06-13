@@ -247,20 +247,34 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 	cwd := req.Cwd
 	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
+		wd, err := os.Getwd()
+		if err != nil {
+			// An empty cwd would produce gate key "", which skips serialization
+			// entirely and runs agy in an inherited directory. Fail instead.
+			return Job{}, fmt.Errorf("determine working directory: %w", err)
 		}
+		cwd = wd
 	}
-	model := req.Model
-	if model == "" {
-		model = m.cfg.DefaultModel
+	// Canonicalize the cwd once so the gate key, cache lookups, cmd.Dir, and
+	// persisted meta all share one spelling (see normalizeCwd). Report the
+	// pre-normalization input on failure (normalizeCwd returns "" on error).
+	normalized, err := normalizeCwd(cwd)
+	if err != nil {
+		return Job{}, fmt.Errorf("normalize working directory %q: %w", cwd, err)
 	}
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = m.cfg.DefaultTimeout
-	}
+	cwd = normalized
 
+	// Resolve every value that feeds the gate key, agy args, and persisted meta
+	// back into req, so all three derive from one normalized request; keeping a
+	// resolved value in a separate local while req stays stale risks a later read
+	// of req.Model/req.Timeout silently bypassing the default fallback.
 	req.Cwd = cwd
+	if req.Model == "" {
+		req.Model = m.cfg.DefaultModel
+	}
+	if req.Timeout <= 0 {
+		req.Timeout = m.cfg.DefaultTimeout
+	}
 
 	// Resolve continue_latest to a concrete conversation id before computing the
 	// gate key and args, so serialization, the agy --conversation flag, and the
@@ -276,18 +290,18 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		return Job{}, fmt.Errorf("a conflicting agy job for this conversation or directory is already running")
 	}
 
-	args := buildAgyArgs(req, model, timeout)
+	args := buildAgyArgs(req)
 	meta := jobstore.Meta{
 		ID:             id,
 		AgyPath:        m.cfg.AgyPath,
 		Args:           args,
-		Cwd:            cwd,
-		Model:          model,
+		Cwd:            req.Cwd,
+		Model:          req.Model,
 		ConversationID: req.ConversationID,
 		Prompt:         req.Prompt,
 		StartedAt:      time.Now().UTC(),
 		BootID:         readBootID(),
-		Timeout:        timeout,
+		Timeout:        req.Timeout,
 	}
 	// Whenever the run has no resolved conversation id (a fresh run, or a
 	// continue_latest that found no prior conversation), agy will create a new
@@ -457,8 +471,27 @@ func (m *Manager) runPeriodicGC(ctx context.Context, interval time.Duration) {
 // gate key from its persisted meta. continue_latest is resolved into
 // ConversationID at start time, so ConversationID + Cwd reproduce the same key
 // the original run held.
+//
+// The cwd is re-normalized (best effort) so a job persisted by an older binary,
+// before StartJob canonicalized cwd, restores under the same key a new
+// same-directory run now computes. Without this, across the upgrade a restored
+// legacy job (raw cwd) and a new run (normalized cwd) would hold different keys,
+// fail to serialize, and risk concurrent O_TRUNC writes to the same agy cache
+// entry. For jobs started by the current binary meta.Cwd is already normalized,
+// so this is idempotent.
 func reqFromMeta(meta jobstore.Meta) StartRequest {
-	return StartRequest{ConversationID: meta.ConversationID, Cwd: meta.Cwd}
+	cwd := meta.Cwd
+	if norm, err := normalizeCwd(cwd); err == nil {
+		cwd = norm
+	} else {
+		// Restore stays resilient (unlike StartJob, which fails closed), so a job
+		// whose cwd cannot be normalized keeps its raw cwd for the gate key. Log it:
+		// under this rare path (a legacy relative cwd plus an os.Getwd failure) the
+		// restored key may not match a new same-directory run's normalized key, the
+		// one inconsistency that can still split serialization for that job.
+		log.Printf("agy-mcp: normalize cwd %q for restored job %s: %v; using raw cwd for gate key", cwd, meta.ID, err)
+	}
+	return StartRequest{ConversationID: meta.ConversationID, Cwd: cwd}
 }
 
 // RestoreGate re-acquires gate slots and keys for jobs whose detached supervisor
@@ -540,10 +573,10 @@ func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
 	}()
 }
 
-func buildAgyArgs(req StartRequest, model string, timeout time.Duration) []string {
-	args := []string{"--dangerously-skip-permissions", "--print-timeout", timeout.String()}
-	if model != "" {
-		args = append(args, "--model", model)
+func buildAgyArgs(req StartRequest) []string {
+	args := []string{"--dangerously-skip-permissions", "--print-timeout", req.Timeout.String()}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
 	}
 	for _, d := range req.Dirs {
 		args = append(args, "--add-dir", d)
