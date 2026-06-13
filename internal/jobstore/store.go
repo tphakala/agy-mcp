@@ -86,7 +86,9 @@ func (s *Store) Create(m Meta) (string, error) {
 		return "", ErrInvalidID
 	}
 	dir := s.jobDir(m.ID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 0700: job dirs hold prompts and full agy output (which often embed source
+	// code), so they must not be readable by other users on a multi-user host.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	// Write meta.json with the same temp+rename pattern UpdateMeta uses, so a crash
@@ -169,7 +171,9 @@ func writeMetaAtomic(dir string, m Meta) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	// 0600: meta.json records the prompt and cwd; keep it owner-only. os.CreateTemp
+	// already makes the temp 0600, so this only guards against a future mode change.
+	if err := os.Chmod(tmpName, 0o600); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
@@ -230,7 +234,7 @@ func (s *Store) WriteExitCode(id string, code int) error {
 	if !validJobID(id) {
 		return ErrInvalidID
 	}
-	return os.WriteFile(filepath.Join(s.jobDir(id), "exit_code"), []byte(strconv.Itoa(code)), 0o644)
+	return os.WriteFile(filepath.Join(s.jobDir(id), "exit_code"), []byte(strconv.Itoa(code)), 0o600)
 }
 
 // ExitCode returns the recorded exit code and whether it is present.

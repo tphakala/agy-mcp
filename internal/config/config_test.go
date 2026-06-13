@@ -37,18 +37,67 @@ func TestResolveDefaults(t *testing.T) {
 }
 
 func TestResolveAgyPathOverride(t *testing.T) {
-	t.Setenv("AGY_MCP_AGY_PATH", "/opt/custom/agy")
+	agy := filepath.Join(t.TempDir(), "agy")
+	if err := os.WriteFile(agy, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGY_MCP_AGY_PATH", agy)
 	c, err := Resolve()
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if c.AgyPath != "/opt/custom/agy" {
-		t.Errorf("AgyPath = %q", c.AgyPath)
+	if c.AgyPath != agy {
+		t.Errorf("AgyPath = %q, want %q", c.AgyPath, agy)
+	}
+}
+
+func TestResolveAgyPathOverrideMissing(t *testing.T) {
+	// A typo'd override should fail fast at startup (symmetric with the PATH-lookup
+	// branch) rather than only surfacing as an exec error on the first job.
+	t.Setenv("AGY_MCP_AGY_PATH", filepath.Join(t.TempDir(), "does-not-exist"))
+	if _, err := Resolve(); err == nil {
+		t.Fatal("Resolve should fail when AGY_MCP_AGY_PATH points at a missing file")
+	}
+}
+
+func TestResolveAgyPathOverrideMadeAbsolute(t *testing.T) {
+	// agy runs under the supervisor with cmd.Dir set to the job's cwd, so a
+	// relative AgyPath would resolve against the wrong directory. A relative
+	// override must be made absolute at resolution time.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("AGY_MCP_AGY_PATH", "./agy")
+	c, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !filepath.IsAbs(c.AgyPath) {
+		t.Errorf("AgyPath = %q, want an absolute path", c.AgyPath)
+	}
+}
+
+func TestResolveAgyPathOverrideNotExecutable(t *testing.T) {
+	// An override that exists but is not executable would fail at exec time, so it
+	// must be rejected at startup too (existence alone is not enough).
+	agy := filepath.Join(t.TempDir(), "agy")
+	if err := os.WriteFile(agy, []byte("not a program"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGY_MCP_AGY_PATH", agy)
+	if _, err := Resolve(); err == nil {
+		t.Fatal("Resolve should fail when AGY_MCP_AGY_PATH is not executable")
 	}
 }
 
 func TestResolveHTTPToken(t *testing.T) {
-	t.Setenv("AGY_MCP_AGY_PATH", "/opt/custom/agy") // skip PATH lookup
+	agy := filepath.Join(t.TempDir(), "agy")
+	if err := os.WriteFile(agy, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGY_MCP_AGY_PATH", agy) // skip PATH lookup
 
 	t.Run("default empty", func(t *testing.T) {
 		t.Setenv("AGY_MCP_HTTP_TOKEN", "")

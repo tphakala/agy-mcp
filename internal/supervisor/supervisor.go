@@ -87,12 +87,15 @@ func Run(jobDir string) error {
 		return err
 	}
 
-	outF, err := os.Create(filepath.Join(jobDir, "out"))
+	// 0600: out/err capture full agy output, which often embeds source code, so
+	// they must not be readable by other users on a multi-user host. os.Create would
+	// use 0666 (umask-reduced), so open them explicitly owner-only instead.
+	outF, err := os.OpenFile(filepath.Join(jobDir, "out"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = outF.Close() }()
-	errF, err := os.Create(filepath.Join(jobDir, "err"))
+	errF, err := os.OpenFile(filepath.Join(jobDir, "err"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -186,5 +189,7 @@ func Run(jobDir string) error {
 }
 
 func writeExit(jobDir string, code int) error {
-	return os.WriteFile(filepath.Join(jobDir, "exit_code"), []byte(strconv.Itoa(code)), 0o644)
+	// 0600 to match the other job-dir files; the sentinel itself is not sensitive,
+	// but a consistent owner-only contract is simpler to reason about.
+	return os.WriteFile(filepath.Join(jobDir, "exit_code"), []byte(strconv.Itoa(code)), 0o600)
 }

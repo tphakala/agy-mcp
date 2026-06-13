@@ -114,19 +114,54 @@ func serve() error {
 // non-loopback bind could expose an unauthenticated server. This refuses to do so
 // rather than relying on the user reading the docs (set -http-token to add auth, but
 // the loopback restriction holds regardless).
+//
+// A hostname is re-resolved by net.Listen at bind time, so a hosts-file or DNS
+// change between this check and the bind could in principle bind non-loopback (a
+// TOCTOU). That is not defended here: changing /etc/hosts or DNS requires root,
+// and a root attacker can bypass any loopback restriction anyway. This check
+// guards against an accidental non-loopback bind, not a privileged attacker.
 func checkLoopbackAddr(addr string) error {
+	return checkLoopbackAddrResolved(addr, net.LookupHost)
+}
+
+// checkLoopbackAddrResolved is checkLoopbackAddr with the name resolver injected so
+// it is testable without DNS. A literal IP is checked directly; a hostname (such as
+// "localhost") is resolved and EVERY resolved address must be loopback, so a
+// hosts-file remap of "localhost" to a routable IP cannot silently expose the
+// server (the bare-string "localhost" check this replaces trusted the name blindly).
+func checkLoopbackAddrResolved(addr string, lookup func(string) ([]string, error)) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr // no port; treat the whole value as the host
 	}
+	// A bracketed IPv6 literal with no port (e.g. "[::1]") keeps its brackets after
+	// the no-port fallback above; strip them so net.ParseIP recognizes it (with a
+	// port, SplitHostPort already removed them).
+	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		host = host[1 : len(host)-1]
+	}
 	if host == "" {
 		return fmt.Errorf("http address %q binds all interfaces; specify a loopback host (e.g. 127.0.0.1:8765) for HTTP mode", addr)
 	}
-	if host == "localhost" {
-		return nil
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("http address %q must be loopback only (localhost, 127.0.0.1, or ::1) for HTTP mode", addr)
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return nil
+	// A hostname: resolve it and require every address to be loopback.
+	addrs, err := lookup(host)
+	if err != nil {
+		return fmt.Errorf("resolve http host %q: %w", host, err)
 	}
-	return fmt.Errorf("http address %q must be loopback only (localhost, 127.0.0.1, or ::1) for HTTP mode", addr)
+	if len(addrs) == 0 {
+		return fmt.Errorf("http host %q resolves to no addresses; specify a loopback host for HTTP mode", host)
+	}
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("http host %q resolves to non-loopback address %s; specify a loopback host (e.g. 127.0.0.1:8765) for HTTP mode", host, a)
+		}
+	}
+	return nil
 }
