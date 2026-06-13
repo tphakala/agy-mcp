@@ -22,14 +22,14 @@ func TestKeyForRequest(t *testing.T) {
 
 func TestGateBlocksSameKey(t *testing.T) {
 	g := newGate(4)
-	if !g.tryAcquire("conv:x") {
+	if g.tryAcquire("conv:x") != acquireOK {
 		t.Fatal("first acquire should succeed")
 	}
-	if g.tryAcquire("conv:x") {
-		t.Fatal("second acquire on same key must fail while first is held")
+	if g.tryAcquire("conv:x") != acquireKeyBusy {
+		t.Fatal("second acquire on same key must report acquireKeyBusy while first is held")
 	}
 	g.release("conv:x")
-	if !g.tryAcquire("conv:x") {
+	if g.tryAcquire("conv:x") != acquireOK {
 		t.Fatal("acquire after release should succeed")
 	}
 }
@@ -46,34 +46,54 @@ func TestGateForceAcquire(t *testing.T) {
 	if g.forceAcquire("cwd:c") {
 		t.Fatal("forceAcquire on a held key must return false")
 	}
-	// inFlight is now past the cap, so a new normal run is refused.
-	if g.tryAcquire("cwd:d") {
-		t.Fatal("a new run must be refused while forced jobs exceed the cap")
+	// inFlight is now past the cap, so a new normal run is refused for cap reasons.
+	if g.tryAcquire("cwd:d") != acquireAtCap {
+		t.Fatal("a new run must be refused (acquireAtCap) while forced jobs exceed the cap")
 	}
 	// Drain below the cap; the still-held forced key cwd:c must keep blocking a
 	// same-key run even though a slot is now free (key block, not cap block).
 	g.release("cwd:a")
 	g.release("cwd:b")
-	if g.tryAcquire("cwd:c") {
-		t.Fatal("a forced key must keep blocking a same-key run with a free slot")
+	if g.tryAcquire("cwd:c") != acquireKeyBusy {
+		t.Fatal("a forced key must keep blocking a same-key run (acquireKeyBusy) with a free slot")
 	}
 	// A different key with a free slot is still acquirable.
-	if !g.tryAcquire("cwd:d") {
+	if g.tryAcquire("cwd:d") != acquireOK {
 		t.Fatal("a free key under the cap should be acquirable")
 	}
 }
 
 func TestGateGlobalCap(t *testing.T) {
 	g := newGate(2)
-	if !g.tryAcquire("conv:a") || !g.tryAcquire("conv:b") {
+	if g.tryAcquire("conv:a") != acquireOK || g.tryAcquire("conv:b") != acquireOK {
 		t.Fatal("two distinct keys should fill the cap")
 	}
 	// The cap is full even though the third key is distinct.
-	if g.tryAcquire("conv:c") {
-		t.Fatal("acquire past the global cap must fail")
+	if g.tryAcquire("conv:c") != acquireAtCap {
+		t.Fatal("acquire past the global cap must report acquireAtCap")
 	}
 	g.release("conv:a")
-	if !g.tryAcquire("conv:c") {
+	if g.tryAcquire("conv:c") != acquireOK {
 		t.Fatal("acquire after a release should succeed")
+	}
+}
+
+// TestGateRejectionDistinguishesCause: tryAcquire must report whether a refusal
+// was a per-key conflict or the global cap, so the caller can give a precise
+// error instead of always blaming a conversation/directory conflict. When both
+// apply (cap full and the key already held) the more specific key conflict wins.
+func TestGateRejectionDistinguishesCause(t *testing.T) {
+	g := newGate(1)
+	if g.tryAcquire("conv:a") != acquireOK {
+		t.Fatal("first acquire should succeed")
+	}
+	if got := g.tryAcquire("conv:a"); got != acquireKeyBusy {
+		t.Fatalf("same-key acquire = %v, want acquireKeyBusy even when also at cap", got)
+	}
+	if got := g.tryAcquire("conv:b"); got != acquireAtCap {
+		t.Fatalf("distinct-key acquire at cap = %v, want acquireAtCap", got)
+	}
+	if g.cap() != 1 {
+		t.Fatalf("cap() = %d, want 1", g.cap())
 	}
 }

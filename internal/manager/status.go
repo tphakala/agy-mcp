@@ -40,6 +40,11 @@ type Status struct {
 	Result         string // present when done: captured stdout
 	Error          string // present when failed: stderr tail + exit code
 	ConversationID string
+	// Partial marks a done job whose result was recovered from the out file
+	// without a completion sentinel (the supervisor died before writing one,
+	// e.g. across a reboot). The captured output may be truncated, so a caller
+	// should not treat it as a guaranteed-complete result.
+	Partial bool
 }
 
 // Status derives a job's status from the on-disk store.
@@ -72,7 +77,11 @@ func (m *Manager) Status(id string) (Status, error) {
 	if code, ok := m.store.ExitCode(id); ok {
 		return m.statusFromExitCode(dir, meta, st, code), nil
 	}
-	// Process is gone without a sentinel. If output was captured, recover it.
+	// Process is gone without a sentinel. The job is terminal (no supervisor is
+	// left to write one), so freeze elapsed at the best available end time before
+	// classifying the outcome, so a recovered job's elapsed does not keep growing.
+	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
+	// If output was captured, recover it.
 	out, rerr := readFile(filepath.Join(dir, "out"))
 	switch {
 	case rerr != nil:
@@ -81,6 +90,7 @@ func (m *Manager) Status(id string) (Status, error) {
 	case out != "":
 		st.State = StateDone
 		st.Result = out
+		st.Partial = true // recovered without a sentinel; the output may be truncated
 		st.ConversationID = m.lazyCaptureConversationID(meta)
 	default:
 		st.State = StateFailed
@@ -91,6 +101,9 @@ func (m *Manager) Status(id string) (Status, error) {
 
 // statusFromExitCode fills st from a recorded exit-code sentinel.
 func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, code int) Status {
+	// The job is terminal, so freeze Elapsed at the completion time rather than
+	// letting it grow forever as time.Since(StartedAt).
+	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
 	switch code {
 	case 0:
 		// Capture the conversation id first: a clean exit means the backend
@@ -123,6 +136,65 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		st.Error = errorSummary(dir, code)
 	}
 	return st
+}
+
+// State returns just the job's state, without paying to read its (potentially
+// large) out file when the state can be decided from the exit-code sentinel
+// alone. agy_cancel uses it: every actual cancel leaves a non-zero sentinel
+// (SIGTERM/SIGINT, or a timeout/spawn-fail kill), so the common path reads no
+// out/err at all. State never disagrees with Status: the one terminal case
+// whose done-vs-failed split depends on out readability (a clean exit, code 0)
+// is not fast-pathed but deferred to Status, as is the running/recovery path.
+func (m *Manager) State(id string) (string, error) {
+	// Fast path: a terminal sentinel other than a clean exit decides the state
+	// from the code alone. A clean exit (0) is excluded because Status downgrades
+	// a successful-but-unreadable out to failed, a distinction that requires the
+	// read State is trying to avoid.
+	if code, ok := m.store.ExitCode(id); ok && code != 0 {
+		return stateForCode(code), nil
+	}
+	// Clean exit, or no sentinel yet: defer to Status, which reads the out file to
+	// tell a clean/recovered result (done) from an unreadable or absent one
+	// (failed) and handles the running and post-exit race exactly as the poller
+	// sees it. Deferring here keeps State and Status from ever diverging.
+	st, err := m.Status(id)
+	if err != nil {
+		return "", err
+	}
+	return st.State, nil
+}
+
+// stateForCode maps a terminal exit-code sentinel to a job state. It is the
+// shared source of truth for the code->state mapping; State uses it for the
+// non-zero terminal codes (a clean exit's done-vs-failed split also depends on
+// out readability, so State handles 0 via Status rather than this mapping).
+func stateForCode(code int) string {
+	switch code {
+	case 0:
+		return StateDone
+	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
+		return StateCancelled
+	default: // timeout, spawn-fail, or any other nonzero code
+		return StateFailed
+	}
+}
+
+// frozenElapsed returns a terminal job's run duration measured to its recorded
+// completion time (see jobstore.CompletedAt), so a long-finished job does not
+// report an ever-growing elapsed. It falls back to the passed-in running
+// duration (time.Since(StartedAt)) only when no completion time exists at all;
+// if the completion time implausibly precedes StartedAt (clock skew) it clamps
+// to 0, because the job is terminal and elapsed must stay frozen rather than
+// resume growing.
+func (m *Manager) frozenElapsed(meta jobstore.Meta, running time.Duration) time.Duration {
+	end, ok := m.store.CompletedAt(meta.ID)
+	if !ok {
+		return running
+	}
+	if d := end.Sub(meta.StartedAt); d >= 0 {
+		return d
+	}
+	return 0
 }
 
 // readFile returns the file's contents (trailing newline trimmed), capped at

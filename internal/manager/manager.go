@@ -236,6 +236,14 @@ func (m *Manager) hasLaterSameCwdRun(meta jobstore.Meta) (bool, error) {
 
 // StartJob persists meta and spawns the detached supervisor.
 func (m *Manager) StartJob(req StartRequest) (Job, error) {
+	// conversation_id and continue_latest are mutually exclusive: continue_latest
+	// resolves to a conversation id that would otherwise silently overwrite the
+	// explicit one, and the precedence even flips depending on whether the cache
+	// resolves. Reject the combination outright (before any platform or filesystem
+	// work) so the caller gets a deterministic error instead of a confusing winner.
+	if req.ContinueLatest && req.ConversationID != "" {
+		return Job{}, fmt.Errorf("conversation_id and continue_latest are mutually exclusive: pass one or the other")
+	}
 	// Job supervision needs process groups and /proc, which only exist on Linux. On
 	// other platforms refuse before doing any work, so the failure is a clear error
 	// rather than a half-spawned job. stdio/HTTP serve, list_models, and list_sessions
@@ -288,8 +296,17 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 
 	key := keyFor(req)
-	if !m.gate.tryAcquire(key) {
+	switch outcome := m.gate.tryAcquire(key); outcome {
+	case acquireOK:
+		// Slot reserved; proceed to spawn below.
+	case acquireKeyBusy:
 		return Job{}, fmt.Errorf("a conflicting agy job for this conversation or directory is already running")
+	case acquireAtCap:
+		return Job{}, fmt.Errorf("agy-mcp is at its concurrency cap of %d running job(s); retry once one finishes", m.gate.cap())
+	default:
+		// Fail closed: a future acquireOutcome must never fall through and start a
+		// job without a reserved slot or key.
+		return Job{}, fmt.Errorf("internal admission error: unknown acquire outcome %d", outcome)
 	}
 
 	args := buildAgyArgs(req)
