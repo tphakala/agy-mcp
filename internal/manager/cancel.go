@@ -1,6 +1,11 @@
 package manager
 
-import "fmt"
+import (
+	"fmt"
+	"syscall"
+
+	"github.com/tphakala/agy-mcp/internal/proc"
+)
 
 // Cancel asks the job's supervisor to terminate its agy child. The supervisor
 // forwards SIGTERM to agy and writes the exit-code sentinel, so the job ends in
@@ -13,12 +18,12 @@ func (m *Manager) Cancel(id string) error {
 		return err
 	}
 	// Confirm the recorded PID is still our supervisor (boot id plus /proc comm)
-	// before signaling, so a recycled PID is never sent SIGTERM. signalProcess treats
+	// before signaling, so a recycled PID is never sent SIGTERM. proc.Signal treats
 	// an already-exited pid (ESRCH) as success.
 	if !m.processAlive(meta) {
 		return nil
 	}
-	if err := signalProcess(meta.PID); err != nil {
+	if err := proc.Signal(meta.PID, syscall.SIGTERM); err != nil {
 		return fmt.Errorf("signal supervisor: %w", err)
 	}
 	return nil
