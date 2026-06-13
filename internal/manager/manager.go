@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -303,6 +305,15 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		BootID:         readBootID(),
 		Timeout:        req.Timeout,
 	}
+	if meta.BootID == "" {
+		// boot_id was unreadable, so this job's PID cannot be pinned to a boot. While
+		// boot_id stays unreadable (e.g. a restricted container) liveness still works
+		// via the PID and start-time checks; but if boot_id becomes readable later
+		// (notably after a reboot) this job reads as not-alive, so it cannot be
+		// restored across a manager restart and a recycled PID is never mistaken for
+		// it. Surface the unreadable boot_id since it degrades cross-boot liveness.
+		log.Printf("agy-mcp: job %s: kernel boot id unreadable; cross-boot liveness degraded for this job", id)
+	}
 	// Whenever the run has no resolved conversation id (a fresh run, or a
 	// continue_latest that found no prior conversation), agy will create a new
 	// conversation. Snapshot the cwd's current conversation id so a later diff
@@ -404,20 +415,86 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 	for _, id := range ids {
 		meta, err := m.store.Load(id)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				// meta.json is genuinely missing: an orphan from a crash between
+				// Create's MkdirAll and its meta write, or a partial RemoveAll. It can
+				// never be a live, attributable job (there is no PID or boot id to
+				// check), so the old behavior of skipping it silently and forever let
+				// orphans accumulate without bound. Reap it once it is older than the
+				// TTL, judged by the dir mtime since there is no StartedAt; a fresh one
+				// may be a job still mid-Create, so it is kept.
+				if m.orphanExpired(id, cutoff) {
+					if rerr := m.store.Remove(id); rerr != nil {
+						log.Printf("agy-mcp: GC: remove orphan job dir %s: %v", id, rerr)
+					} else {
+						removed = append(removed, id)
+						m.untrackCapture(id)
+					}
+				} else {
+					log.Printf("agy-mcp: GC: orphan job dir %s (no meta.json) kept until older than the TTL", id)
+				}
+				continue
+			}
+			// meta.json exists but could not be read or parsed: a transient error
+			// (e.g. EMFILE/EIO) or a corrupt write. This is NOT an orphan and must not
+			// be reaped by dir mtime: a valid long-running job's dir mtime is old
+			// (writing to out/err does not bump the directory mtime), so reaping here
+			// could delete a live job. Log and keep; a later sweep retries the Load.
+			log.Printf("agy-mcp: GC: job %s meta unreadable (not reaping, may be transient): %v", id, err)
 			continue
 		}
 		if !meta.StartedAt.Before(cutoff) {
 			continue // too recent to collect
 		}
-		if _, terminal := m.store.ExitCode(id); !terminal && m.processAlive(meta) {
-			continue // still running; keep it
+		_, terminal := m.store.ExitCode(id)
+		if !terminal {
+			if m.processAlive(meta) {
+				continue // still running; keep it
+			}
+			// Not alive and not terminal at the first read. The supervisor may have
+			// written its sentinel and exited between the ExitCode and processAlive
+			// checks above (the same race Status guards against); re-read once. If it
+			// is now terminal the job just finished, so its result is freshly written
+			// and unread; keep it this sweep and collect it on the next one (where the
+			// first read sees the sentinel). This covers runs with no pending capture
+			// (e.g. a continued conversation), which the CapturePending guard below
+			// does not.
+			if _, terminal = m.store.ExitCode(id); terminal {
+				continue
+			}
+		} else if m.CapturePending(id) {
+			// Terminal, but the manager's post-cmd.Wait completion goroutine is still
+			// capturing the conversation id into this dir (the supervisor writes the
+			// sentinel before it exits, so an in-flight capture always sees the
+			// sentinel already present at the first read). Removing the dir now would
+			// make SetConversationID fail with ENOENT and lose the captured id, so
+			// keep the job until the capture settles; the next sweep collects it.
+			continue
 		}
-		if err := m.store.Remove(id); err == nil {
-			removed = append(removed, id)
-			m.untrackCapture(id)
+		if err := m.store.Remove(id); err != nil {
+			log.Printf("agy-mcp: GC: remove expired job %s: %v", id, err)
+			continue
 		}
+		removed = append(removed, id)
+		m.untrackCapture(id)
 	}
 	return removed, nil
+}
+
+// orphanExpired reports whether the job dir for id, whose meta.json is missing,
+// is older than the GC cutoff. It judges age by the directory's mtime because
+// there is no StartedAt to read. A Dir or stat failure returns false, so a
+// transient error never removes a dir that might still be in use.
+func (m *Manager) orphanExpired(id string, cutoff time.Time) bool {
+	dir, err := m.store.Dir(id)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	return info.ModTime().Before(cutoff)
 }
 
 // gcInterval returns how often a long-lived server should sweep finished jobs:
@@ -511,6 +588,12 @@ func (m *Manager) RestoreGate() error {
 	for _, id := range ids {
 		meta, err := m.store.Load(id)
 		if err != nil {
+			// A job whose meta cannot be read cannot have its gate key recomputed or
+			// its liveness checked, so its slot cannot be restored. Log it rather than
+			// skipping silently: if such a job's supervisor is somehow still alive its
+			// gate is not held, the one gap in this method's fail-closed contract.
+			// GarbageCollect reaps the dir once it is older than the TTL.
+			log.Printf("agy-mcp: restore gate: skipping job %s with unreadable meta: %v", id, err)
 			continue
 		}
 		if _, terminal := m.store.ExitCode(id); terminal {

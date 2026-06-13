@@ -48,7 +48,10 @@ func (m *Manager) Status(id string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	dir := m.store.Dir(id)
+	dir, err := m.store.Dir(id)
+	if err != nil {
+		return Status{}, err
+	}
 	st := Status{
 		Elapsed:        time.Since(meta.StartedAt),
 		ConversationID: meta.ConversationID,

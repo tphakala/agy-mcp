@@ -31,8 +31,16 @@ func (m *Manager) processAlive(meta jobstore.Meta) bool {
 	if meta.PID <= 0 {
 		return false
 	}
-	// A PID from a previous boot is meaningless (PID recycling).
-	if meta.BootID != "" && meta.BootID != readBootID() {
+	// The recorded boot id must match the current boot, otherwise the PID is from a
+	// previous boot and meaningless (PID recycling across reboots). This also fails
+	// closed in the issue's scenario: an empty recorded boot id (boot_id was
+	// unreadable at start) does not match a readable current one, so a recycled PID
+	// after a reboot cannot read as alive (which would keep the job uncollectable and
+	// its gate key held). When boot_id is unreadable host-wide (e.g. a restricted
+	// container) both are "" and compare equal, so liveness falls through to the PID
+	// and start-time checks rather than failing every job; there is no boot to
+	// disambiguate there anyway.
+	if meta.BootID != readBootID() {
 		return false
 	}
 	if err := syscall.Kill(meta.PID, 0); err != nil {
