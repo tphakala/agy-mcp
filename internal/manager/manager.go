@@ -14,10 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/internal/proc"
 )
 
 // Manager coordinates jobs backed by an on-disk store.
@@ -248,8 +250,8 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// other platforms refuse before doing any work, so the failure is a clear error
 	// rather than a half-spawned job. stdio/HTTP serve, list_models, and list_sessions
 	// still work everywhere.
-	if !platformSupported {
-		return Job{}, errPlatformUnsupported
+	if !proc.Supported {
+		return Job{}, proc.ErrUnsupported
 	}
 	id, err := newID()
 	if err != nil {
@@ -355,7 +357,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 
 	cmd := exec.Command(m.cfg.SupervisorExe, "run-job", dir)
 	cmd.Env = os.Environ()
-	setProcessGroup(cmd)
+	proc.SetGroup(cmd)
 	// Detach stdio: supervisor must not inherit the manager's stdout (the
 	// JSON-RPC stream in stdio mode).
 	cmd.Stdin = nil
@@ -384,7 +386,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// remove the dir and release the gate. Releasing only after the agy process
 		// group is gone keeps a conflicting same-key run from starting while the
 		// dying agy still holds its session lock.
-		_ = terminateGroup(cmd.Process.Pid)
+		_ = proc.TerminateGroup(cmd.Process.Pid, syscall.SIGTERM)
 		go func() {
 			_ = cmd.Wait()
 			_ = m.store.Remove(id)

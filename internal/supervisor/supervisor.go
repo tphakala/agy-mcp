@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/internal/proc"
 )
 
 // killGrace is how long the supervisor waits after SIGTERM before escalating to
@@ -68,12 +69,12 @@ func resolveExitCode(raw int, waitFailed, timedOut, cancelled bool) int {
 // /dev/null, and writes jobDir/exit_code on completion (including on cancel).
 // Run returns an error only for setup failures, not for a non-zero agy exit.
 func Run(jobDir string) error {
-	if !platformSupported {
+	if !proc.Supported {
 		// Job supervision needs process groups, signal forwarding, and /proc, which
-		// only exist on Linux. The non-Linux terminateGroup stub cannot kill agy, so
-		// the timeout would "fire" without terminating anything and Run would block in
-		// cmd.Wait forever. Refuse here, matching StartJob's guard on the manager side.
-		return errPlatformUnsupported
+		// only exist on Linux. The non-Linux proc.TerminateGroup stub cannot kill agy,
+		// so the timeout would "fire" without terminating anything and Run would block
+		// in cmd.Wait forever. Refuse here, matching StartJob's guard on the manager side.
+		return proc.ErrUnsupported
 	}
 	m, err := jobstore.LoadDir(jobDir)
 	if err != nil {
@@ -106,7 +107,7 @@ func Run(jobDir string) error {
 	cmd.Stdout = outF
 	cmd.Stderr = errF
 	// Put agy in its own process group so we can signal it and its children.
-	setProcessGroup(cmd)
+	proc.SetGroup(cmd)
 
 	// Install the SIGTERM handler BEFORE starting agy. A SIGTERM landing in the
 	// window between Start and Notify would otherwise kill the supervisor with its
@@ -143,7 +144,7 @@ func Run(jobDir string) error {
 		case <-t.C:
 			close(timedOut)
 		}
-		_ = terminateGroup(cmd.Process.Pid, syscall.SIGTERM)
+		_ = proc.TerminateGroup(cmd.Process.Pid, syscall.SIGTERM)
 		select {
 		case <-done:
 		case <-time.After(killGrace):
@@ -152,7 +153,7 @@ func Run(jobDir string) error {
 			select {
 			case <-done:
 			default:
-				_ = terminateGroup(cmd.Process.Pid, syscall.SIGKILL)
+				_ = proc.TerminateGroup(cmd.Process.Pid, syscall.SIGKILL)
 			}
 		}
 	}()
