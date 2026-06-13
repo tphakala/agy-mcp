@@ -76,7 +76,7 @@ func TestStatusDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.State != "done" || st.Result != "the review" {
+	if st.State != StateDone || st.Result != "the review" {
 		t.Fatalf("status = %+v", st)
 	}
 	if st.Partial {
@@ -91,7 +91,7 @@ func TestStatusFailed(t *testing.T) {
 	_ = m.store.WriteExitCode("j", 5)
 
 	st, _ := m.Status("j")
-	if st.State != "failed" || st.Error == "" {
+	if st.State != StateFailed || st.Error == "" {
 		t.Fatalf("status = %+v", st)
 	}
 }
@@ -199,7 +199,7 @@ func TestStatusInterruptedAfterReboot(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("partial"), 0o644)
 
 	st, _ := m.Status("j")
-	if st.State != "done" { // no sentinel, but output present and process cannot be alive
+	if st.State != StateDone { // no sentinel, but output present and process cannot be alive
 		t.Fatalf("state = %q, want done (recovered output)", st.State)
 	}
 	if st.Result != "partial" {

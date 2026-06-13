@@ -65,6 +65,18 @@ func newTestManager(t *testing.T, fake testutil.FakeAgy) (mgr *manager.Manager, 
 	return manager.New(c), stateDir
 }
 
+// structMap returns a tool result's structured content as a map, failing the
+// test (rather than panicking) when the payload is not the expected shape, so a
+// response-shape regression reports cleanly instead of crashing the test.
+func structMap(t *testing.T, sc any) map[string]any {
+	t.Helper()
+	m, ok := sc.(map[string]any)
+	if !ok {
+		t.Fatalf("structured content is %T, want map[string]any: %v", sc, sc)
+	}
+	return m
+}
+
 // waitForDone polls the manager directly until the job reports done with the
 // wanted result, or fails the test at the deadline.
 func waitForDone(t *testing.T, mgr *manager.Manager, jobID, want string, timeout time.Duration) {
@@ -111,7 +123,7 @@ func TestAgyRunSyncCompletesInline(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
 	}
-	sc := res.StructuredContent.(map[string]any)
+	sc := structMap(t, res.StructuredContent)
 	if sc["state"] != manager.StateDone {
 		t.Fatalf("state = %v, want done", sc["state"])
 	}
@@ -157,7 +169,7 @@ func TestAgyRunSyncOverrunReturnsJobID(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
 	}
-	sc := res.StructuredContent.(map[string]any)
+	sc := structMap(t, res.StructuredContent)
 	if sc["state"] != manager.StateRunning {
 		t.Fatalf("state = %v, want running", sc["state"])
 	}
@@ -198,7 +210,7 @@ func TestAgyRunSyncSendsProgress(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
 	}
-	if sc := res.StructuredContent.(map[string]any); sc["state"] != manager.StateDone {
+	if sc := structMap(t, res.StructuredContent); sc["state"] != manager.StateDone {
 		t.Fatalf("state = %v, want done", sc["state"])
 	}
 
@@ -316,7 +328,7 @@ func TestAgyRunSyncReturnsLateCapturedConversationID(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
 	}
-	sc := res.StructuredContent.(map[string]any)
+	sc := structMap(t, res.StructuredContent)
 	if sc["state"] != manager.StateDone {
 		t.Fatalf("state = %v, want done", sc["state"])
 	}

@@ -19,7 +19,10 @@ func TestCancelSignalsSupervisor(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = cmd.Process.Kill() }()
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
 
 	if _, err := m.store.Create(jobstore.Meta{
 		ID: "j", PID: cmd.Process.Pid, BootID: readBootID(), StartedAt: time.Now(),

@@ -74,6 +74,8 @@ func TestResolveAgyNotOnPath(t *testing.T) {
 func TestResolveDefaults(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/tmp/xdgstate")
 	t.Setenv("AGY_MCP_AGY_PATH", "")
+	t.Setenv("AGY_MCP_STATE_DIR", "")
+	t.Setenv("AGY_MCP_DEFAULT_MODEL", "")
 	// Put a fake agy on PATH.
 	dir := t.TempDir()
 	agy := filepath.Join(dir, "agy")
