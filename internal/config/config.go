@@ -37,7 +37,16 @@ func Resolve() (Config, error) {
 	}
 
 	if p := os.Getenv("AGY_MCP_AGY_PATH"); p != "" {
-		c.AgyPath = p
+		// Resolve the override with LookPath, symmetric with the PATH branch below, so
+		// a typo, a non-executable file, or a bad PATH-relative name fails fast at
+		// startup instead of only at exec time on the first job. LookPath also handles
+		// a bare name (PATH lookup) and locks in an absolute path, shrinking the window
+		// for a PATH change between resolution and exec.
+		resolved, err := exec.LookPath(p)
+		if err != nil {
+			return Config{}, fmt.Errorf("AGY_MCP_AGY_PATH %q: %w", p, err)
+		}
+		c.AgyPath = resolved
 	} else {
 		p, err := exec.LookPath("agy")
 		if err != nil {

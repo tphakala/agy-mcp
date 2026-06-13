@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,14 +83,47 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 }
 
 func TestCheckLoopbackAddr(t *testing.T) {
+	// Literal IPs and localhost (resolved via the real /etc/hosts) are loopback;
+	// hostname resolution corner cases are covered hermetically below.
 	for _, addr := range []string{"127.0.0.1:8765", "localhost:8765", "[::1]:8765", "127.0.0.1:0"} {
 		if err := checkLoopbackAddr(addr); err != nil {
 			t.Errorf("checkLoopbackAddr(%q) = %v, want nil", addr, err)
 		}
 	}
-	for _, addr := range []string{":8765", "0.0.0.0:8765", "192.168.1.10:8765", "example.com:8765"} {
+	for _, addr := range []string{":8765", "0.0.0.0:8765", "192.168.1.10:8765"} {
 		if err := checkLoopbackAddr(addr); err == nil {
 			t.Errorf("checkLoopbackAddr(%q) = nil, want error", addr)
 		}
+	}
+}
+
+func TestCheckLoopbackAddrResolvesHostnames(t *testing.T) {
+	loopback := func(string) ([]string, error) { return []string{"127.0.0.1", "::1"}, nil }
+	remapped := func(string) ([]string, error) { return []string{"127.0.0.1", "10.0.0.5"}, nil }
+	failing := func(string) ([]string, error) { return nil, errors.New("no such host") }
+	empty := func(string) ([]string, error) { return nil, nil }
+
+	if err := checkLoopbackAddrResolved("localhost:8765", loopback); err != nil {
+		t.Errorf("localhost resolving to loopback should pass, got %v", err)
+	}
+	// A hosts-file remap of localhost to a routable IP must be rejected even though
+	// one resolved address is still loopback: any non-loopback address exposes it.
+	if err := checkLoopbackAddrResolved("localhost:8765", remapped); err == nil {
+		t.Error("localhost remapped to a non-loopback address must be rejected")
+	}
+	if err := checkLoopbackAddrResolved("localhost:8765", failing); err == nil {
+		t.Error("a resolve failure must be rejected, not silently allowed")
+	}
+	if err := checkLoopbackAddrResolved("localhost:8765", empty); err == nil {
+		t.Error("a host resolving to no addresses must be rejected")
+	}
+	// A literal IP needs no resolution and must not call the resolver.
+	called := false
+	spy := func(string) ([]string, error) { called = true; return nil, nil }
+	if err := checkLoopbackAddrResolved("127.0.0.1:8765", spy); err != nil {
+		t.Errorf("literal loopback IP should pass, got %v", err)
+	}
+	if called {
+		t.Error("a literal IP must not trigger a hostname lookup")
 	}
 }
