@@ -26,7 +26,7 @@ func TestAgyRunAndStatusOverMCP(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("agy_run: err=%v res=%+v", err, res)
 	}
-	jobID := res.StructuredContent.(map[string]any)["job_id"].(string)
+	jobID, _ := structMap(t, res.StructuredContent)["job_id"].(string)
 	if jobID == "" {
 		t.Fatal("empty job id")
 	}
@@ -38,12 +38,17 @@ func TestAgyRunAndStatusOverMCP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sc := s.StructuredContent.(map[string]any)
+		sc := structMap(t, s.StructuredContent)
 		if sc["state"] == manager.StateDone {
 			if sc["result"] != "REVIEW OK" {
 				t.Fatalf("result = %v", sc["result"])
 			}
 			return
+		}
+		// Fail fast on a terminal failure/cancel instead of burning the deadline
+		// and reporting an opaque timeout.
+		if state := sc["state"]; state == manager.StateFailed || state == manager.StateCancelled {
+			t.Fatalf("job reached terminal %v, want done; error=%v", state, sc["error"])
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

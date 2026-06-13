@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ func TestSupervisorHardTimeoutKillsAgy(t *testing.T) {
 		t.Fatalf("Run took %v; the hard timeout did not kill agy", elapsed)
 	}
 	code, _ := os.ReadFile(filepath.Join(dir, "exit_code"))
-	if strings.TrimSpace(string(code)) != "124" {
-		t.Fatalf("exit_code = %q, want 124 (timeout)", code)
+	if got := strings.TrimSpace(string(code)); got != strconv.Itoa(jobstore.ExitTimeout) {
+		t.Fatalf("exit_code = %q, want %d (timeout)", got, jobstore.ExitTimeout)
 	}
 }
