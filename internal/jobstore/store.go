@@ -237,20 +237,24 @@ func (s *Store) WriteExitCode(id string, code int) error {
 	return os.WriteFile(filepath.Join(s.jobDir(id), "exit_code"), []byte(strconv.Itoa(code)), 0o600)
 }
 
-// CompletedAt returns when the supervisor recorded the job's completion, taken
-// from the exit_code sentinel's modification time. The sentinel is written once
-// at exit and never rewritten, so its mtime is a stable end timestamp. ok is
-// false when the sentinel is absent or cannot be stat'd, in which case callers
-// fall back to treating the job as still in progress for timing purposes.
+// CompletedAt returns the best available estimate of when a job finished, as a
+// file modification time. It prefers the exit_code sentinel (written once at a
+// clean exit and never rewritten, so its mtime is a stable end timestamp) and
+// falls back to the out then err file for a job recovered without a sentinel
+// (e.g. a supervisor killed by a reboot), whose last write still bounds when it
+// stopped producing. ok is false only when none of the three exist, in which
+// case callers treat the job as still in progress for timing purposes.
 func (s *Store) CompletedAt(id string) (time.Time, bool) {
 	if !validJobID(id) {
 		return time.Time{}, false
 	}
-	info, err := os.Stat(filepath.Join(s.jobDir(id), "exit_code"))
-	if err != nil {
-		return time.Time{}, false
+	dir := s.jobDir(id)
+	for _, name := range []string{"exit_code", "out", "err"} {
+		if info, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return info.ModTime(), true
+		}
 	}
-	return info.ModTime(), true
+	return time.Time{}, false
 }
 
 // ExitCode returns the recorded exit code and whether it is present.

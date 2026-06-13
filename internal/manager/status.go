@@ -77,7 +77,11 @@ func (m *Manager) Status(id string) (Status, error) {
 	if code, ok := m.store.ExitCode(id); ok {
 		return m.statusFromExitCode(dir, meta, st, code), nil
 	}
-	// Process is gone without a sentinel. If output was captured, recover it.
+	// Process is gone without a sentinel. The job is terminal (no supervisor is
+	// left to write one), so freeze elapsed at the best available end time before
+	// classifying the outcome, so a recovered job's elapsed does not keep growing.
+	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
+	// If output was captured, recover it.
 	out, rerr := readFile(filepath.Join(dir, "out"))
 	switch {
 	case rerr != nil:
@@ -175,11 +179,13 @@ func stateForCode(code int) string {
 	}
 }
 
-// frozenElapsed returns a terminal job's run duration measured to when the
-// supervisor recorded completion (the exit_code sentinel's mtime), so a
-// long-finished job does not report an ever-growing elapsed. It falls back to
-// the passed-in running duration (time.Since(StartedAt)) when the completion
-// time is unavailable or implausibly precedes StartedAt (clock skew).
+// frozenElapsed returns a terminal job's run duration measured to its recorded
+// completion time (see jobstore.CompletedAt), so a long-finished job does not
+// report an ever-growing elapsed. It falls back to the passed-in running
+// duration (time.Since(StartedAt)) only when no completion time exists at all;
+// if the completion time implausibly precedes StartedAt (clock skew) it clamps
+// to 0, because the job is terminal and elapsed must stay frozen rather than
+// resume growing.
 func (m *Manager) frozenElapsed(meta jobstore.Meta, running time.Duration) time.Duration {
 	end, ok := m.store.CompletedAt(meta.ID)
 	if !ok {
@@ -188,7 +194,7 @@ func (m *Manager) frozenElapsed(meta jobstore.Meta, running time.Duration) time.
 	if d := end.Sub(meta.StartedAt); d >= 0 {
 		return d
 	}
-	return running
+	return 0
 }
 
 // readFile returns the file's contents (trailing newline trimmed), capped at

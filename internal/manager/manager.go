@@ -296,13 +296,17 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 
 	key := keyFor(req)
-	switch m.gate.tryAcquire(key) {
+	switch outcome := m.gate.tryAcquire(key); outcome {
 	case acquireOK:
 		// Slot reserved; proceed to spawn below.
 	case acquireKeyBusy:
 		return Job{}, fmt.Errorf("a conflicting agy job for this conversation or directory is already running")
 	case acquireAtCap:
 		return Job{}, fmt.Errorf("agy-mcp is at its concurrency cap of %d running job(s); retry once one finishes", m.gate.cap())
+	default:
+		// Fail closed: a future acquireOutcome must never fall through and start a
+		// job without a reserved slot or key.
+		return Job{}, fmt.Errorf("internal admission error: unknown acquire outcome %d", outcome)
 	}
 
 	args := buildAgyArgs(req)

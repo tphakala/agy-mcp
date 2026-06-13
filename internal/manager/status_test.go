@@ -188,6 +188,55 @@ func TestStatusElapsedFrozenAtCompletion(t *testing.T) {
 	}
 }
 
+// TestStatusRecoveredElapsedFrozen: a job recovered without a completion
+// sentinel (process gone, output present) is terminal, so its elapsed must
+// freeze at the best available end time (the out file's mtime) rather than
+// growing forever as time.Since(StartedAt).
+func TestStatusRecoveredElapsedFrozen(t *testing.T) {
+	m := newTestManager(t)
+	start := time.Now().Add(-time.Hour)
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: start, PID: 999999, BootID: "old-boot"})
+	outPath := filepath.Join(dir, "out")
+	_ = os.WriteFile(outPath, []byte("recovered"), 0o644)
+	// Pin the out mtime to 10 minutes after start; a correct elapsed is ~10m, not
+	// the ~1h time.Since(start) would give for a job that "finished" an hour ago.
+	end := start.Add(10 * time.Minute)
+	if err := os.Chtimes(outPath, end, end); err != nil {
+		t.Fatal(err)
+	}
+
+	st, _ := m.Status("j")
+	if st.State != StateDone || !st.Partial {
+		t.Fatalf("status = %+v, want done+partial", st)
+	}
+	if d := st.Elapsed; d < 9*time.Minute || d > 11*time.Minute {
+		t.Fatalf("elapsed = %v, want ~10m frozen at the recovered end", d)
+	}
+}
+
+// TestStatusElapsedClampedOnClockSkew: when the recorded completion time
+// implausibly precedes StartedAt (clock skew), a terminal job's elapsed must
+// stay frozen (clamped to 0), not fall back to an ever-growing time.Since.
+func TestStatusElapsedClampedOnClockSkew(t *testing.T) {
+	m := newTestManager(t)
+	start := time.Now().Add(-time.Hour)
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: start, BootID: readBootID()})
+	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("done"), 0o644)
+	_ = m.store.WriteExitCode("j", 0)
+	skewed := start.Add(-time.Hour) // sentinel mtime before StartedAt
+	if err := os.Chtimes(filepath.Join(dir, "exit_code"), skewed, skewed); err != nil {
+		t.Fatal(err)
+	}
+
+	st, _ := m.Status("j")
+	if st.State != StateDone {
+		t.Fatalf("state = %q, want done", st.State)
+	}
+	if st.Elapsed != 0 {
+		t.Fatalf("elapsed = %v, want 0 (clamped under clock skew, not time.Since)", st.Elapsed)
+	}
+}
+
 // TestStateMatchesStatusState: the cheap State accessor (used by agy_cancel,
 // which only needs the state and must not pay to read a large out file) must
 // agree with Status's full state across every terminal exit code.
