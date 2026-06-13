@@ -76,6 +76,11 @@ func BenchmarkLoop(m dsl.Matcher) {
 //   - Test cleanup is properly signaled to goroutines
 //   - Resources are released promptly on test failure
 //
+// Caveat: this matches by file name (_test.go), so it also fires inside
+// TestMain(m *testing.M) and any plain helper where no *testing.T or *testing.B
+// is in scope; in those spots neither t.Context() nor b.Context() applies and
+// the suggestion should be ignored.
+//
 // See: https://pkg.go.dev/testing#T.Context
 // See: https://pkg.go.dev/testing#B.Context
 func TestingContext(m dsl.Matcher) {
@@ -85,7 +90,7 @@ func TestingContext(m dsl.Matcher) {
 		`$ctx = context.Background()`,
 	).
 		Where(m.File().Name.Matches(`_test\.go$`)).
-		Report("in tests, use t.Context() instead of context.Background() for automatic cancellation on test completion (Go 1.24+)")
+		Report("in tests, use t.Context() (or b.Context() in benchmarks) instead of context.Background() for automatic cancellation on test completion (Go 1.24+)")
 
 	// Pattern 2: Assigning context.TODO() to a variable
 	m.Match(
@@ -93,21 +98,21 @@ func TestingContext(m dsl.Matcher) {
 		`$ctx = context.TODO()`,
 	).
 		Where(m.File().Name.Matches(`_test\.go$`)).
-		Report("in tests, use t.Context() instead of context.TODO() for automatic cancellation on test completion (Go 1.24+)")
+		Report("in tests, use t.Context() (or b.Context() in benchmarks) instead of context.TODO() for automatic cancellation on test completion (Go 1.24+)")
 
 	// Pattern 3: Passing context.Background() directly to a function
 	m.Match(
 		`$fn(context.Background(), $*args)`,
 	).
 		Where(m.File().Name.Matches(`_test\.go$`)).
-		Report("in tests, use t.Context() instead of context.Background() (Go 1.24+)")
+		Report("in tests, use t.Context() (or b.Context() in benchmarks) instead of context.Background() (Go 1.24+)")
 
 	// Pattern 4: Passing context.TODO() directly to a function
 	m.Match(
 		`$fn(context.TODO(), $*args)`,
 	).
 		Where(m.File().Name.Matches(`_test\.go$`)).
-		Report("in tests, use t.Context() instead of context.TODO() (Go 1.24+)")
+		Report("in tests, use t.Context() (or b.Context() in benchmarks) instead of context.TODO() (Go 1.24+)")
 }
 
 // TestingArtifactDir detects os.MkdirTemp in test files and suggests using

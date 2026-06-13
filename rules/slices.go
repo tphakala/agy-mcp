@@ -65,10 +65,8 @@ func SortInts(m dsl.Matcher) {
 
 // BytesClone detects manual byte slice cloning and suggests bytes.Clone.
 //
-// Old patterns:
-//
-//	clone := make([]byte, len(original))
-//	copy(clone, original)
+// Old patterns (only the append-based forms are detected; the make+copy form
+// is not matched):
 //
 //	clone := append([]byte(nil), original...)
 //	clone := append([]byte{}, original...)
@@ -106,10 +104,8 @@ func BytesClone(m dsl.Matcher) {
 
 // SlicesClone detects manual slice cloning patterns and suggests slices.Clone.
 //
-// Old patterns:
-//
-//	clone := make([]T, len(original))
-//	copy(clone, original)
+// Old patterns (only the append-based forms are detected; the make+copy form
+// is not matched):
 //
 //	clone := append([]T(nil), original...)
 //
@@ -170,15 +166,20 @@ func SlicesClone(m dsl.Matcher) {
 // See: https://pkg.go.dev/slices#Backward
 func BackwardIteration(m dsl.Matcher) {
 	// Pattern: for i := len(s) - 1; i >= 0; i--
+	// Slice-type guard: slices.Backward is defined over []E, so without it the
+	// advice fires on strings (where len/index work but slices.Backward does
+	// not compile).
 	m.Match(
 		`for $i := len($s) - 1; $i >= 0; $i-- { $*body }`,
 	).
+		Where(m["s"].Type.Is(`[]$elem`)).
 		Report("use slices.Backward($s) for reverse iteration (Go 1.23+)")
 
 	// Pattern: for i := len(s) - 1; i > -1; i--
 	m.Match(
 		`for $i := len($s) - 1; $i > -1; $i-- { $*body }`,
 	).
+		Where(m["s"].Type.Is(`[]$elem`)).
 		Report("use slices.Backward($s) for reverse iteration (Go 1.23+)")
 }
 
@@ -267,14 +268,18 @@ func SliceRepeat(m dsl.Matcher) {
 		Report("use slices.Repeat($s, $n) instead of manual repetition loop (Go 1.23+); false positive if $s depends on the loop variable")
 
 	// Pattern: range-over-integer form (with variable)
+	// Integer guard: without it, `for i := range items` over a []T (ranging the
+	// slice, not a count) matches and yields a non-compiling slices.Repeat(s, items).
 	m.Match(
 		`for $i := range $n { $result = append($result, $s...) }`,
 	).
+		Where(m["n"].Type.OfKind("int")).
 		Report("use slices.Repeat($s, $n) instead of manual repetition loop (Go 1.23+); false positive if $s depends on the loop variable")
 
 	// Pattern: range-over-integer form (without variable)
 	m.Match(
 		`for range $n { $result = append($result, $s...) }`,
 	).
+		Where(m["n"].Type.OfKind("int")).
 		Report("use slices.Repeat($s, $n) instead of manual repetition loop (Go 1.23+)")
 }
