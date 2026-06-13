@@ -214,6 +214,62 @@ func TestRestoreGateSkipsTerminalJobs(t *testing.T) {
 	}
 }
 
+// RestoreAndCollect must do both halves in a single startup pass: garbage-collect
+// an expired, finished job while re-occupying the gate for a live job whose
+// supervisor outlived the restart. The live job is itself past the TTL, so this
+// also confirms the fused pass keeps (never collects) a still-alive job, and that
+// removing one job does not disturb restoring another.
+func TestRestoreAndCollectCollectsExpiredAndRestoresLive(t *testing.T) {
+	pid, exePath := startFakeLiveSupervisor(t)
+	m := New(config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  exePath,
+		StateDir:       t.TempDir(),
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+		JobTTL:         time.Hour,
+	})
+	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
+
+	// An expired, finished job: past the TTL with an exit sentinel, so GC removes it.
+	if _, err := m.store.Create(jobstore.Meta{ID: "old-done", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode("old-done", 0); err != nil {
+		t.Fatal(err)
+	}
+	// A live job whose supervisor survived the restart, itself past the TTL: GC must
+	// keep it (alive), and the gate must re-occupy its key.
+	liveCwd := t.TempDir()
+	if _, err := m.store.Create(jobstore.Meta{
+		ID:        "live-1",
+		Cwd:       liveCwd,
+		PID:       pid,
+		BootID:    readBootID(),
+		StartedAt: time.Now().Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := m.RestoreAndCollect()
+	if err != nil {
+		t.Fatalf("RestoreAndCollect: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "old-done" {
+		t.Fatalf("removed = %v, want [old-done]", removed)
+	}
+	if _, err := m.store.Load("old-done"); err == nil {
+		t.Fatal("the expired finished job should have been removed")
+	}
+	if _, err := m.store.Load("live-1"); err != nil {
+		t.Fatalf("the expired-but-alive job must be kept: %v", err)
+	}
+	// The live job's gate key is held, so a same-cwd run is blocked.
+	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: liveCwd}); err == nil {
+		t.Fatal("the restored live job must block a same-cwd run")
+	}
+}
+
 // A restored fresh run must have its conversation id captured by the watcher
 // when its supervisor finishes, exactly like the StartJob completion path, and
 // the id must land on disk without any Status call (the watcher, not a poller,

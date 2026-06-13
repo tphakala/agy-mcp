@@ -417,6 +417,79 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	return Job{ID: id, ConversationID: req.ConversationID, State: StateRunning}, nil
 }
 
+// loadedJob is one job's meta from a single meta.json read, the shared input the
+// GC and gate-restore decisions both need. Loading it once lets the fused startup
+// pass (RestoreAndCollect) make both decisions without re-reading every job dir.
+type loadedJob struct {
+	id      string
+	meta    jobstore.Meta
+	metaErr error // non-nil if meta.json could not be loaded (missing, corrupt, or transient)
+}
+
+// loadJob reads one job's meta with a single store.Load.
+func (m *Manager) loadJob(id string) loadedJob {
+	meta, err := m.store.Load(id)
+	return loadedJob{id: id, meta: meta, metaErr: err}
+}
+
+// terminalChecker returns a memoized predicate reporting whether job id has an
+// exit_code sentinel, reading it from the store at most once. Both the GC and the
+// restore decisions need this fact; memoizing lets the fused startup pass share a
+// single read while each standalone caller (GarbageCollect, RestoreGate) still
+// reads the sentinel at most once. The closure is used within a single loop
+// iteration, so it needs no synchronization. The GC re-read race deliberately
+// bypasses this memo with a fresh store.ExitCode call (see gcEvaluate).
+func (m *Manager) terminalChecker(id string) func() bool {
+	var (
+		read     bool
+		terminal bool
+	)
+	return func() bool {
+		if !read {
+			_, terminal = m.store.ExitCode(id)
+			read = true
+		}
+		return terminal
+	}
+}
+
+// RestoreAndCollect runs startup garbage collection and concurrency-gate
+// restoration in a single job-store scan, halving the meta.json + exit_code reads
+// versus calling GarbageCollect and RestoreGate back to back. Each job's
+// keep/remove and restore decisions are independent and mutually exclusive (GC
+// only removes terminal or dead jobs; restore only re-occupies the gate for live
+// ones), so one pass produces the same result as the two sequential scans it
+// replaces.
+//
+// It fails closed like RestoreGate: if the jobs cannot be scanned the gate cannot
+// be made safe, so it returns an error and startup should refuse rather than serve
+// with an unrestored gate (a stricter contract than GarbageCollect alone, whose
+// scan failure was previously only logged). The returned ids are the jobs GC
+// removed (empty when JobTTL disables collection). Intended to run once at startup.
+func (m *Manager) RestoreAndCollect() (removed []string, err error) {
+	ids, err := m.store.List()
+	if err != nil {
+		return nil, fmt.Errorf("scan jobs for startup recovery: %w", err)
+	}
+	// Mirror GarbageCollect's JobTTL<=0 short-circuit: collection is disabled, but
+	// the gate still must be restored, so the scan continues with GC skipped.
+	gcEnabled := m.cfg.JobTTL > 0
+	var cutoff time.Time
+	if gcEnabled {
+		cutoff = time.Now().Add(-m.cfg.JobTTL)
+	}
+	for _, id := range ids {
+		l := m.loadJob(id)
+		terminal := m.terminalChecker(id)
+		if gcEnabled && m.gcEvaluate(l, cutoff, terminal) {
+			removed = append(removed, id)
+			continue // removed; nothing to restore (a removed job was terminal or dead)
+		}
+		m.restoreEvaluate(l, terminal)
+	}
+	return removed, nil
+}
+
 // GarbageCollect removes jobs older than the configured TTL. A job whose
 // supervisor is still alive (including one that survived a manager restart) is
 // never removed, even past the TTL, so a live job is never deleted out from
@@ -432,72 +505,82 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 	cutoff := time.Now().Add(-m.cfg.JobTTL)
 	var removed []string
 	for _, id := range ids {
-		meta, err := m.store.Load(id)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				// meta.json is genuinely missing: an orphan from a crash between
-				// Create's MkdirAll and its meta write, or a partial RemoveAll. It can
-				// never be a live, attributable job (there is no PID or boot id to
-				// check), so the old behavior of skipping it silently and forever let
-				// orphans accumulate without bound. Reap it once it is older than the
-				// TTL, judged by the dir mtime since there is no StartedAt; a fresh one
-				// may be a job still mid-Create, so it is kept.
-				if m.orphanExpired(id, cutoff) {
-					if rerr := m.store.Remove(id); rerr != nil {
-						log.Printf("agy-mcp: GC: remove orphan job dir %s: %v", id, rerr)
-					} else {
-						removed = append(removed, id)
-						m.untrackCapture(id)
-					}
-				} else {
-					log.Printf("agy-mcp: GC: orphan job dir %s (no meta.json) kept until older than the TTL", id)
-				}
-				continue
-			}
-			// meta.json exists but could not be read or parsed: a transient error
-			// (e.g. EMFILE/EIO) or a corrupt write. This is NOT an orphan and must not
-			// be reaped by dir mtime: a valid long-running job's dir mtime is old
-			// (writing to out/err does not bump the directory mtime), so reaping here
-			// could delete a live job. Log and keep; a later sweep retries the Load.
-			log.Printf("agy-mcp: GC: job %s meta unreadable (not reaping, may be transient): %v", id, err)
-			continue
+		if m.gcEvaluate(m.loadJob(id), cutoff, m.terminalChecker(id)) {
+			removed = append(removed, id)
 		}
-		if !meta.StartedAt.Before(cutoff) {
-			continue // too recent to collect
-		}
-		_, terminal := m.store.ExitCode(id)
-		if !terminal {
-			if m.processAlive(meta) {
-				continue // still running; keep it
-			}
-			// Not alive and not terminal at the first read. The supervisor may have
-			// written its sentinel and exited between the ExitCode and processAlive
-			// checks above (the same race Status guards against); re-read once. If it
-			// is now terminal the job just finished, so its result is freshly written
-			// and unread; keep it this sweep and collect it on the next one (where the
-			// first read sees the sentinel). This covers runs with no pending capture
-			// (e.g. a continued conversation), which the CapturePending guard below
-			// does not.
-			if _, terminal = m.store.ExitCode(id); terminal {
-				continue
-			}
-		} else if m.CapturePending(id) {
-			// Terminal, but the manager's post-cmd.Wait completion goroutine is still
-			// capturing the conversation id into this dir (the supervisor writes the
-			// sentinel before it exits, so an in-flight capture always sees the
-			// sentinel already present at the first read). Removing the dir now would
-			// make SetConversationID fail with ENOENT and lose the captured id, so
-			// keep the job until the capture settles; the next sweep collects it.
-			continue
-		}
-		if err := m.store.Remove(id); err != nil {
-			log.Printf("agy-mcp: GC: remove expired job %s: %v", id, err)
-			continue
-		}
-		removed = append(removed, id)
-		m.untrackCapture(id)
 	}
 	return removed, nil
+}
+
+// gcEvaluate applies the keep-or-remove decision to one already-loaded job,
+// removing its dir when collectable and reporting whether it did. cutoff is
+// now-TTL; terminal is the memoized exit_code predicate from terminalChecker.
+// Callers must already have established JobTTL>0. It is the body of
+// GarbageCollect's loop, factored out so the fused startup pass can reuse it
+// without re-reading the job dir.
+func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time, terminal func() bool) bool {
+	if l.metaErr != nil {
+		if errors.Is(l.metaErr, fs.ErrNotExist) {
+			// meta.json is genuinely missing: an orphan from a crash between
+			// Create's MkdirAll and its meta write, or a partial RemoveAll. It can
+			// never be a live, attributable job (there is no PID or boot id to
+			// check), so the old behavior of skipping it silently and forever let
+			// orphans accumulate without bound. Reap it once it is older than the
+			// TTL, judged by the dir mtime since there is no StartedAt; a fresh one
+			// may be a job still mid-Create, so it is kept.
+			if m.orphanExpired(l.id, cutoff) {
+				if rerr := m.store.Remove(l.id); rerr != nil {
+					log.Printf("agy-mcp: GC: remove orphan job dir %s: %v", l.id, rerr)
+					return false
+				}
+				m.untrackCapture(l.id)
+				return true
+			}
+			log.Printf("agy-mcp: GC: orphan job dir %s (no meta.json) kept until older than the TTL", l.id)
+			return false
+		}
+		// meta.json exists but could not be read or parsed: a transient error
+		// (e.g. EMFILE/EIO) or a corrupt write. This is NOT an orphan and must not
+		// be reaped by dir mtime: a valid long-running job's dir mtime is old
+		// (writing to out/err does not bump the directory mtime), so reaping here
+		// could delete a live job. Log and keep; a later sweep retries the Load.
+		log.Printf("agy-mcp: GC: job %s meta unreadable (not reaping, may be transient): %v", l.id, l.metaErr)
+		return false
+	}
+	if !l.meta.StartedAt.Before(cutoff) {
+		return false // too recent to collect (and so the exit_code sentinel is never read)
+	}
+	if !terminal() {
+		if m.processAlive(l.meta) {
+			return false // still running; keep it
+		}
+		// Not alive and not terminal at the first read. The supervisor may have
+		// written its sentinel and exited between the ExitCode and processAlive
+		// checks above (the same race Status guards against); re-read once with a
+		// fresh store call (not the memo, which would return the stale first read).
+		// If it is now terminal the job just finished, so its result is freshly
+		// written and unread; keep it this sweep and collect it on the next one
+		// (where the first read sees the sentinel). This covers runs with no
+		// pending capture (e.g. a continued conversation), which the CapturePending
+		// guard below does not.
+		if _, t := m.store.ExitCode(l.id); t {
+			return false
+		}
+	} else if m.CapturePending(l.id) {
+		// Terminal, but the manager's post-cmd.Wait completion goroutine is still
+		// capturing the conversation id into this dir (the supervisor writes the
+		// sentinel before it exits, so an in-flight capture always sees the
+		// sentinel already present at the first read). Removing the dir now would
+		// make SetConversationID fail with ENOENT and lose the captured id, so
+		// keep the job until the capture settles; the next sweep collects it.
+		return false
+	}
+	if err := m.store.Remove(l.id); err != nil {
+		log.Printf("agy-mcp: GC: remove expired job %s: %v", l.id, err)
+		return false
+	}
+	m.untrackCapture(l.id)
+	return true
 }
 
 // orphanExpired reports whether the job dir for id, whose meta.json is missing,
@@ -594,7 +677,9 @@ func reqFromMeta(meta jobstore.Meta) StartRequest {
 // survived a manager restart, so a new agy_run is serialized against them and the
 // global cap accounts for them. Without this, a restored job is invisible to the
 // gate and the cap could be bypassed, re-exposing the session-lock hang the gate
-// prevents. Intended to run once at startup, after GarbageCollect.
+// prevents. The startup path uses RestoreAndCollect, which fuses this with
+// GarbageCollect into one scan; this method remains for restore-only use and is
+// exercised directly by tests.
 //
 // It fails closed: if the on-disk jobs cannot be scanned the gate cannot be made
 // safe, so it returns an error and the caller should refuse to start rather than
@@ -605,38 +690,45 @@ func (m *Manager) RestoreGate() error {
 		return fmt.Errorf("scan jobs to restore concurrency gate: %w", err)
 	}
 	for _, id := range ids {
-		meta, err := m.store.Load(id)
-		if err != nil {
-			// A job whose meta cannot be read cannot have its gate key recomputed or
-			// its liveness checked, so its slot cannot be restored. Log it rather than
-			// skipping silently: if such a job's supervisor is somehow still alive its
-			// gate is not held, the one gap in this method's fail-closed contract.
-			// GarbageCollect reaps the dir once it is older than the TTL.
-			log.Printf("agy-mcp: restore gate: skipping job %s with unreadable meta: %v", id, err)
-			continue
-		}
-		if _, terminal := m.store.ExitCode(id); terminal {
-			continue // already finished; nothing to hold
-		}
-		if !m.processAlive(meta) {
-			continue // supervisor gone; GarbageCollect will reap it
-		}
-		// forceAcquire counts the job and holds its key unconditionally: a restored
-		// job is already running, so it must be tracked even past the cap (otherwise a
-		// new same-key run could start once a slot frees and run concurrently with it,
-		// the bypass this method prevents). A false return means another restored job
-		// already holds this key, so it is already watched.
-		key := keyFor(reqFromMeta(meta))
-		if m.gate.forceAcquire(key) {
-			if meta.ConversationID == "" && !meta.CaptureDisabled {
-				// Mirror StartJob: arm the capture so pollers can tell this
-				// restored fresh run's id is still being settled.
-				m.pendingCaptures.Store(meta.ID, struct{}{})
-			}
-			m.watchRestored(meta, key)
-		}
+		m.restoreEvaluate(m.loadJob(id), m.terminalChecker(id))
 	}
 	return nil
+}
+
+// restoreEvaluate re-occupies the gate for one already-loaded job whose detached
+// supervisor outlived a manager restart. terminal is the memoized exit_code
+// predicate from terminalChecker. It is the body of RestoreGate's loop, factored
+// out so the fused startup pass can reuse it without re-reading the job dir.
+func (m *Manager) restoreEvaluate(l loadedJob, terminal func() bool) {
+	if l.metaErr != nil {
+		// A job whose meta cannot be read cannot have its gate key recomputed or
+		// its liveness checked, so its slot cannot be restored. Log it rather than
+		// skipping silently: if such a job's supervisor is somehow still alive its
+		// gate is not held, the one gap in this method's fail-closed contract.
+		// GarbageCollect reaps the dir once it is older than the TTL.
+		log.Printf("agy-mcp: restore gate: skipping job %s with unreadable meta: %v", l.id, l.metaErr)
+		return
+	}
+	if terminal() {
+		return // already finished; nothing to hold
+	}
+	if !m.processAlive(l.meta) {
+		return // supervisor gone; GarbageCollect will reap it
+	}
+	// forceAcquire counts the job and holds its key unconditionally: a restored
+	// job is already running, so it must be tracked even past the cap (otherwise a
+	// new same-key run could start once a slot frees and run concurrently with it,
+	// the bypass this method prevents). A false return means another restored job
+	// already holds this key, so it is already watched.
+	key := keyFor(reqFromMeta(l.meta))
+	if m.gate.forceAcquire(key) {
+		if l.meta.ConversationID == "" && !l.meta.CaptureDisabled {
+			// Mirror StartJob: arm the capture so pollers can tell this
+			// restored fresh run's id is still being settled.
+			m.pendingCaptures.Store(l.meta.ID, struct{}{})
+		}
+		m.watchRestored(l.meta, key)
+	}
 }
 
 // watchRestored releases a restored job's gate key once its detached supervisor
