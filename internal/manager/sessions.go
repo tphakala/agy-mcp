@@ -45,7 +45,17 @@ func readSessions(cacheFile, filterDir string) ([]Session, error) {
 	}
 	cleanFilter := ""
 	if filterDir != "" {
-		cleanFilter = filepath.Clean(filterDir)
+		// Canonicalize the filter the same way StartJob canonicalizes a run's cwd
+		// (filepath.Abs + best-effort EvalSymlinks; see normalizeCwd), so the filter
+		// matches the resolved paths agy keys its cache by. A symlinked or relative
+		// filter would otherwise never match a stored entry. normalizeCwd only errors
+		// when Abs fails (a relative path with no working directory); fall back to
+		// Clean so a filter is still applied.
+		if norm, nerr := normalizeCwd(filterDir); nerr == nil {
+			cleanFilter = norm
+		} else {
+			cleanFilter = filepath.Clean(filterDir)
+		}
 	}
 	var out []Session
 	for ws, id := range raw {
