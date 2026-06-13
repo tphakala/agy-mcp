@@ -45,7 +45,7 @@ type Manager struct {
 	// liveness watcher. Fields (not package globals) so tests stay isolated and can
 	// run in parallel. agy's conversation cache is flushed by a separate daemon that
 	// can lag the foreground agy exit, so the capture retries briefly. Verified
-	// against agy 1.0.6: agy rewrites last_conversations.json in place (O_TRUNC, no
+	// against agy 1.0.7: agy rewrites last_conversations.json in place (O_TRUNC, no
 	// file lock), so a concurrent read can be torn; loadCache reports torn reads
 	// as errors, capture treats them as "no capture yet" and this retry loop
 	// re-reads, and StartJob disables capture when the pre-run snapshot itself is
@@ -255,7 +255,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 	id, err := newID()
 	if err != nil {
-		return Job{}, err
+		return Job{}, fmt.Errorf("generate job id: %w", err)
 	}
 	cwd := req.Cwd
 	if cwd == "" {
@@ -352,7 +352,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if err != nil {
 		m.pendingCaptures.Delete(id)
 		m.gate.release(key)
-		return Job{}, err
+		return Job{}, fmt.Errorf("create job store entry: %w", err)
 	}
 
 	cmd := exec.Command(m.cfg.SupervisorExe, "run-job", dir)

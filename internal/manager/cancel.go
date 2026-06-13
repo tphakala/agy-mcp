@@ -15,7 +15,7 @@ import (
 func (m *Manager) Cancel(id string) error {
 	meta, err := m.store.Load(id)
 	if err != nil {
-		return err
+		return fmt.Errorf("load job %s to cancel: %w", id, err)
 	}
 	// Confirm the recorded PID is still our supervisor (boot id plus /proc comm)
 	// before signaling, so a recycled PID is never sent SIGTERM. proc.Signal treats

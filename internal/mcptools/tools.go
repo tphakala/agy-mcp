@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -104,12 +105,14 @@ type sessionsOutput struct {
 // serverVersion reports the module version the Go toolchain stamped into the
 // binary (e.g. v1.0.0 for a tagged `go install`, a pseudo-version for builds
 // past a tag), or "dev" when no version was stamped (plain `go test` binaries).
-func serverVersion() string {
+// It is memoized with sync.OnceValue: the build info is fixed for a process's
+// life, but NewServer (and thus this) is called once per HTTP session.
+var serverVersion = sync.OnceValue(func() string {
 	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 		return bi.Main.Version
 	}
 	return "dev"
-}
+})
 
 // NewServer builds an MCP server with all agy tools registered.
 func NewServer(mgr *manager.Manager) *mcp.Server {

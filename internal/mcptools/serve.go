@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -90,7 +91,12 @@ func ServeHTTP(ctx context.Context, mgr *manager.Manager, addr, token string) er
 		<-ctx.Done()
 		shutCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
 		defer c()
-		_ = srv.Shutdown(shutCtx)
+		// HTTP mode, so logging to stderr is safe (no stdio JSON-RPC stream). A
+		// shutdown error (e.g. in-flight responses outlasting the 5s drain) is worth
+		// surfacing rather than silently dropping.
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Printf("agy-mcp: http shutdown: %v", err)
+		}
 	}()
 	err := srv.ListenAndServe()
 	cancel() // unblock the shutdown goroutine when ListenAndServe returns first
