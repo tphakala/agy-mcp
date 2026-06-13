@@ -108,14 +108,14 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 		}
 	})
 
-	// Wait for the supervisor to create the job's out/err files, which it does
-	// immediately before installing its SIGTERM handler and starting agy. Polling
-	// for that instead of sleeping a fixed interval removes the race where, under
-	// CI load, the supervisor process has not started yet and the SIGTERM lands on
-	// a handlerless process (which would die without writing the sentinel, leaking
-	// the 60s agy and burning the poll below). The window between file creation and
-	// signal.Notify is a few non-blocking calls, so it is microseconds and, unlike
-	// process spawn, does not stretch under load.
+	// Wait for the supervisor to create the job's out/err files before signalling.
+	// The supervisor installs its SIGTERM handler before it creates these files
+	// (see supervisor.run), so once they exist the handler is guaranteed to be in
+	// place and the SIGTERM cannot land on a handlerless process. Polling for this
+	// instead of sleeping a fixed interval also removes the race where, under CI
+	// load, the supervisor process has not started yet and the signal would hit a
+	// process that is not running (dying without writing the sentinel, leaking the
+	// 60s agy and burning the poll below).
 	startDeadline := time.Now().Add(5 * time.Second)
 	for {
 		_, oerr := os.Stat(jobstore.OutPath(jobDir))
