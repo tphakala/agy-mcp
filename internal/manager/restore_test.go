@@ -33,11 +33,13 @@ func (c *countingStore) ExitCode(id string) (int, bool) {
 	return c.jobStore.ExitCode(id)
 }
 
-// RestoreAndCollect must read each job's meta.json once and its exit_code at most
-// once, the IO win it exists for: the two scans it replaces read meta.json twice
-// (once per scan) and, for an old terminal job, exit_code twice as well. Terminal
-// jobs keep this test pure (no processAlive / proc dependency), so it runs on every
-// platform.
+// RestoreAndCollect must read each job's meta.json exactly once, the IO win it
+// exists for: the two scans it replaces loaded every job's meta twice (once per
+// scan). The single loadJob result is shared by the GC and restore decisions. Each
+// decision still reads the exit_code sentinel itself; for these two job categories
+// (an expired job GC removes, and a recent job restore inspects) that is one read
+// each, which this also asserts. Terminal jobs keep the test pure (no processAlive
+// / proc dependency), so it runs on every platform.
 func TestRestoreAndCollectScansEachJobOnce(t *testing.T) {
 	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
 	// An expired terminal job (GC removes it) and a recent terminal job (kept).

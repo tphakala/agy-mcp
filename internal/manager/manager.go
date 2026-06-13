@@ -432,33 +432,15 @@ func (m *Manager) loadJob(id string) loadedJob {
 	return loadedJob{id: id, meta: meta, metaErr: err}
 }
 
-// terminalChecker returns a memoized predicate reporting whether job id has an
-// exit_code sentinel, reading it from the store at most once. Both the GC and the
-// restore decisions need this fact; memoizing lets the fused startup pass share a
-// single read while each standalone caller (GarbageCollect, RestoreGate) still
-// reads the sentinel at most once. The closure is used within a single loop
-// iteration, so it needs no synchronization. The GC re-read race deliberately
-// bypasses this memo with a fresh store.ExitCode call (see gcEvaluate).
-func (m *Manager) terminalChecker(id string) func() bool {
-	var (
-		read     bool
-		terminal bool
-	)
-	return func() bool {
-		if !read {
-			_, terminal = m.store.ExitCode(id)
-			read = true
-		}
-		return terminal
-	}
-}
-
 // RestoreAndCollect runs startup garbage collection and concurrency-gate
-// restoration in a single job-store scan, halving the meta.json + exit_code reads
-// versus calling GarbageCollect and RestoreGate back to back. Each job's
-// keep/remove and restore decisions are independent and mutually exclusive (GC
-// only removes terminal or dead jobs; restore only re-occupies the gate for live
-// ones), so one pass produces the same result as the two sequential scans it
+// restoration in a single job-store scan, halving the meta.json reads versus
+// calling GarbageCollect and RestoreGate back to back (each previously loaded
+// every job's meta). The single loadJob result is shared by both decisions; each
+// still reads the exit_code sentinel itself, fresh, exactly as the two methods
+// did standalone, so the sentinel's read count and freshness are unchanged. Each
+// job's keep/remove and restore decisions are independent and mutually exclusive
+// (GC only removes terminal or dead jobs; restore only re-occupies the gate for
+// live ones), so one pass produces the same result as the two sequential scans it
 // replaces.
 //
 // It fails closed like RestoreGate: if the jobs cannot be scanned the gate cannot
@@ -480,12 +462,11 @@ func (m *Manager) RestoreAndCollect() (removed []string, err error) {
 	}
 	for _, id := range ids {
 		l := m.loadJob(id)
-		terminal := m.terminalChecker(id)
-		if gcEnabled && m.gcEvaluate(l, cutoff, terminal) {
+		if gcEnabled && m.gcEvaluate(l, cutoff) {
 			removed = append(removed, id)
 			continue // removed; nothing to restore (a removed job was terminal or dead)
 		}
-		m.restoreEvaluate(l, terminal)
+		m.restoreEvaluate(l)
 	}
 	return removed, nil
 }
@@ -505,7 +486,7 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 	cutoff := time.Now().Add(-m.cfg.JobTTL)
 	var removed []string
 	for _, id := range ids {
-		if m.gcEvaluate(m.loadJob(id), cutoff, m.terminalChecker(id)) {
+		if m.gcEvaluate(m.loadJob(id), cutoff) {
 			removed = append(removed, id)
 		}
 	}
@@ -514,11 +495,10 @@ func (m *Manager) GarbageCollect() ([]string, error) {
 
 // gcEvaluate applies the keep-or-remove decision to one already-loaded job,
 // removing its dir when collectable and reporting whether it did. cutoff is
-// now-TTL; terminal is the memoized exit_code predicate from terminalChecker.
-// Callers must already have established JobTTL>0. It is the body of
-// GarbageCollect's loop, factored out so the fused startup pass can reuse it
-// without re-reading the job dir.
-func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time, terminal func() bool) bool {
+// now-TTL. Callers must already have established JobTTL>0. It is the body of
+// GarbageCollect's loop, factored out so the fused startup pass can reuse the one
+// loadJob result without re-reading meta.json.
+func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time) bool {
 	if l.metaErr != nil {
 		if errors.Is(l.metaErr, fs.ErrNotExist) {
 			// meta.json is genuinely missing: an orphan from a crash between
@@ -550,19 +530,19 @@ func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time, terminal func() bool
 	if !l.meta.StartedAt.Before(cutoff) {
 		return false // too recent to collect (and so the exit_code sentinel is never read)
 	}
-	if !terminal() {
+	_, terminal := m.store.ExitCode(l.id)
+	if !terminal {
 		if m.processAlive(l.meta) {
 			return false // still running; keep it
 		}
 		// Not alive and not terminal at the first read. The supervisor may have
 		// written its sentinel and exited between the ExitCode and processAlive
-		// checks above (the same race Status guards against); re-read once with a
-		// fresh store call (not the memo, which would return the stale first read).
-		// If it is now terminal the job just finished, so its result is freshly
-		// written and unread; keep it this sweep and collect it on the next one
-		// (where the first read sees the sentinel). This covers runs with no
-		// pending capture (e.g. a continued conversation), which the CapturePending
-		// guard below does not.
+		// checks above (the same race Status guards against); re-read once. If it
+		// is now terminal the job just finished, so its result is freshly written
+		// and unread; keep it this sweep and collect it on the next one (where the
+		// first read sees the sentinel). This covers runs with no pending capture
+		// (e.g. a continued conversation), which the CapturePending guard below
+		// does not.
 		if _, t := m.store.ExitCode(l.id); t {
 			return false
 		}
@@ -690,16 +670,17 @@ func (m *Manager) RestoreGate() error {
 		return fmt.Errorf("scan jobs to restore concurrency gate: %w", err)
 	}
 	for _, id := range ids {
-		m.restoreEvaluate(m.loadJob(id), m.terminalChecker(id))
+		m.restoreEvaluate(m.loadJob(id))
 	}
 	return nil
 }
 
 // restoreEvaluate re-occupies the gate for one already-loaded job whose detached
-// supervisor outlived a manager restart. terminal is the memoized exit_code
-// predicate from terminalChecker. It is the body of RestoreGate's loop, factored
-// out so the fused startup pass can reuse it without re-reading the job dir.
-func (m *Manager) restoreEvaluate(l loadedJob, terminal func() bool) {
+// supervisor outlived a manager restart. It is the body of RestoreGate's loop,
+// factored out so the fused startup pass can reuse the one loadJob result without
+// re-reading meta.json. It reads the exit_code sentinel itself, fresh, so a job
+// that finished since the meta was loaded is not restored into the gate.
+func (m *Manager) restoreEvaluate(l loadedJob) {
 	if l.metaErr != nil {
 		// A job whose meta cannot be read cannot have its gate key recomputed or
 		// its liveness checked, so its slot cannot be restored. Log it rather than
@@ -709,7 +690,7 @@ func (m *Manager) restoreEvaluate(l loadedJob, terminal func() bool) {
 		log.Printf("agy-mcp: restore gate: skipping job %s with unreadable meta: %v", l.id, l.metaErr)
 		return
 	}
-	if terminal() {
+	if _, terminal := m.store.ExitCode(l.id); terminal {
 		return // already finished; nothing to hold
 	}
 	if !m.processAlive(l.meta) {
