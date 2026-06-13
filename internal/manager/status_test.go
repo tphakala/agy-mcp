@@ -7,10 +7,59 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 )
+
+// TestStatusInterruptedNoOutput: a job whose process is gone with no sentinel
+// and no out file is a genuine interruption, reported failed (not done). This
+// is the branch TestStatusInterruptedAfterReboot does not cover (that one has
+// recovered output and asserts done).
+func TestStatusInterruptedNoOutput(t *testing.T) {
+	m := newTestManager(t)
+	// Dead PID from a previous boot, and no out/err/exit_code files at all.
+	if _, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, _ := m.Status("j")
+	if st.State != StateFailed {
+		t.Fatalf("state = %q, want failed (interrupted, no output)", st.State)
+	}
+	if !strings.Contains(st.Error, "interrupted") {
+		t.Fatalf("error = %q, want it to mention the interruption", st.Error)
+	}
+	if st.Partial {
+		t.Fatalf("a no-output interruption is not a partial result: %+v", st)
+	}
+}
+
+// TestErrorSummaryTruncatesOnUTF8Boundary: when the trailing stderr is larger
+// than errTailBytes and the cut falls mid-rune, the reported error is advanced
+// to a valid UTF-8 boundary rather than emitting a split multi-byte rune.
+func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
+	m := newTestManager(t)
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	// 3-byte runes so the last errTailBytes window starts mid-rune (2000 % 3 != 0).
+	content := strings.Repeat("€", 1000) // 3000 bytes
+	if err := os.WriteFile(filepath.Join(dir, "err"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.store.WriteExitCode("j", 5)
+
+	st, _ := m.Status("j")
+	if st.State != StateFailed {
+		t.Fatalf("state = %q, want failed", st.State)
+	}
+	if !utf8.ValidString(st.Error) {
+		t.Fatalf("error is not valid UTF-8 (tail split mid-rune): %q", st.Error)
+	}
+	if len(st.Error) > len("exit 5: ")+errTailBytes {
+		t.Fatalf("error length %d exceeds the tail bound", len(st.Error))
+	}
+}
 
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()

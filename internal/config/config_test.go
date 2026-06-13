@@ -3,9 +3,68 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// fakeAgyOnPath puts an executable named "agy" on PATH and clears the path
+// override, so Resolve's PATH lookup succeeds without depending on a real agy.
+func fakeAgyOnPath(t *testing.T) {
+	t.Helper()
+	t.Setenv("AGY_MCP_AGY_PATH", "")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// TestResolveStateDirOverride: AGY_MCP_STATE_DIR is used verbatim and takes
+// precedence over the XDG fallback (no "/agy-mcp" suffix is appended).
+func TestResolveStateDirOverride(t *testing.T) {
+	t.Setenv("AGY_MCP_STATE_DIR", "/custom/state")
+	t.Setenv("XDG_STATE_HOME", "/should/be/ignored")
+	fakeAgyOnPath(t)
+
+	c, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.StateDir != "/custom/state" {
+		t.Errorf("StateDir = %q, want the AGY_MCP_STATE_DIR override verbatim", c.StateDir)
+	}
+}
+
+// TestResolveDefaultModelAndJobTTL: AGY_MCP_DEFAULT_MODEL flows into the config,
+// and JobTTL defaults to 24h (a regression to 0 would silently disable GC).
+func TestResolveDefaultModelAndJobTTL(t *testing.T) {
+	t.Setenv("AGY_MCP_DEFAULT_MODEL", "Gemini 3.1 Pro (High)")
+	t.Setenv("AGY_MCP_STATE_DIR", t.TempDir())
+	fakeAgyOnPath(t)
+
+	c, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DefaultModel != "Gemini 3.1 Pro (High)" {
+		t.Errorf("DefaultModel = %q, want the AGY_MCP_DEFAULT_MODEL value", c.DefaultModel)
+	}
+	if c.JobTTL != 24*time.Hour {
+		t.Errorf("JobTTL = %v, want the 24h default", c.JobTTL)
+	}
+}
+
+// TestResolveAgyNotOnPath: with no override and no agy on PATH, Resolve fails
+// fast with a clear error rather than deferring to exec time.
+func TestResolveAgyNotOnPath(t *testing.T) {
+	t.Setenv("AGY_MCP_AGY_PATH", "")
+	t.Setenv("PATH", t.TempDir()) // empty dir: no agy anywhere on PATH
+
+	if _, err := Resolve(); err == nil || !strings.Contains(err.Error(), "agy not found on PATH") {
+		t.Fatalf("err = %v, want an 'agy not found on PATH' error", err)
+	}
+}
 
 func TestResolveDefaults(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/tmp/xdgstate")
