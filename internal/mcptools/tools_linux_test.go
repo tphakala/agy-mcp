@@ -14,6 +14,43 @@ import (
 // validation, HTTP serving) live in tools_test.go / serve_http_test.go so
 // `go test ./...` stays green on macOS and Windows.
 
+// TestListModelsOverMCP exercises the list_models tool end to end: the handler
+// runs `agy models` (the fake agy prints two lines) and returns them on the
+// wire. This handler had no MCP-layer test.
+func TestListModelsOverMCP(t *testing.T) {
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "Model A\nModel B"})
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_models"})
+	if err != nil || res.IsError {
+		t.Fatalf("list_models: err=%v res=%+v", err, res)
+	}
+	models, _ := structMap(t, res.StructuredContent)["models"].([]any)
+	if len(models) != 2 || models[0] != "Model A" || models[1] != "Model B" {
+		t.Fatalf("models = %v, want [Model A, Model B]", models)
+	}
+}
+
+// TestListSessionsOverMCP exercises the list_sessions tool: with an empty cache
+// the handler must return a non-nil empty array on the wire (not null), and the
+// tool must be registered and wired. This handler had no MCP-layer test.
+func TestListSessionsOverMCP(t *testing.T) {
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "x"})
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_sessions"})
+	if err != nil || res.IsError {
+		t.Fatalf("list_sessions: err=%v res=%+v", err, res)
+	}
+	sessions, ok := structMap(t, res.StructuredContent)["sessions"].([]any)
+	if !ok {
+		t.Fatalf("sessions field is not an array: %v", res.StructuredContent)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("sessions = %v, want empty for an empty cache", sessions)
+	}
+}
+
 func TestAgyRunAndStatusOverMCP(t *testing.T) {
 	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "REVIEW OK", Exit: 0})
 	cs := connect(t, mgr, nil)
