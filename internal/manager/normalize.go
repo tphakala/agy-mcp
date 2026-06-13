@@ -14,6 +14,13 @@ import "path/filepath"
 // supervisor sets cmd.Dir to this value, so agy's own getcwd returns the
 // symlink-resolved path and keys last_conversations.json by that.
 func normalizeCwd(cwd string) (string, error) {
+	if cwd == "" {
+		// filepath.Abs("") resolves to the process working directory, which would
+		// turn an empty cwd (a legacy job persisted with no cwd, or any caller that
+		// means "no directory") into a bogus, unrelated gate key. An empty cwd has
+		// no canonical form; keep it empty so keyFor yields the no-key behavior.
+		return "", nil
+	}
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		return "", err

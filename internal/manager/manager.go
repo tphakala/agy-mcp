@@ -256,11 +256,13 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		cwd = wd
 	}
 	// Canonicalize the cwd once so the gate key, cache lookups, cmd.Dir, and
-	// persisted meta all share one spelling (see normalizeCwd).
-	cwd, err = normalizeCwd(cwd)
+	// persisted meta all share one spelling (see normalizeCwd). Report the
+	// pre-normalization input on failure (normalizeCwd returns "" on error).
+	normalized, err := normalizeCwd(cwd)
 	if err != nil {
-		return Job{}, fmt.Errorf("normalize working directory %q: %w", req.Cwd, err)
+		return Job{}, fmt.Errorf("normalize working directory %q: %w", cwd, err)
 	}
+	cwd = normalized
 
 	// Resolve every value that feeds the gate key, agy args, and persisted meta
 	// back into req, so all three derive from one normalized request; keeping a

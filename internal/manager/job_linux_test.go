@@ -171,7 +171,9 @@ func TestStartJobSerializesEquivalentCwdSpellings(t *testing.T) {
 	// regardless of how the test exits; the fake supervisor does not forward
 	// signals, so Cancel alone would leave the sleep running.
 	t.Cleanup(func() {
-		if meta, lerr := m.store.Load(job1.ID); lerr == nil {
+		// Guard the PID: syscall.Kill(-0, ...) would signal the test runner's own
+		// process group, and a negative target needs a real group leader.
+		if meta, lerr := m.store.Load(job1.ID); lerr == nil && meta.PID > 0 {
 			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
 		}
 	})

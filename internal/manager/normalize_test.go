@@ -74,6 +74,27 @@ func TestReqFromMetaNormalizesLegacyCwd(t *testing.T) {
 	}
 }
 
+// TestNormalizeCwdPreservesEmpty locks the empty-cwd guard: filepath.Abs("")
+// resolves to the process working directory, which would turn a legacy job's
+// empty meta.Cwd into a bogus, unrelated gate key. An empty cwd must stay empty.
+func TestNormalizeCwdPreservesEmpty(t *testing.T) {
+	got, err := normalizeCwd("")
+	if err != nil {
+		t.Fatalf("normalizeCwd(empty): %v", err)
+	}
+	if got != "" {
+		t.Errorf("normalizeCwd(empty) = %q, want empty", got)
+	}
+}
+
+// TestReqFromMetaPreservesEmptyCwd verifies a legacy job persisted with no cwd
+// restores under the no-key behavior, not under the manager's working directory.
+func TestReqFromMetaPreservesEmptyCwd(t *testing.T) {
+	if k := keyFor(reqFromMeta(jobstore.Meta{Cwd: ""})); k != "" {
+		t.Errorf("restored gate key for empty cwd = %q, want empty", k)
+	}
+}
+
 // TestNormalizeCwdKeepsAbsoluteFormWhenUnresolvable verifies the best-effort
 // symlink step does not fail the run for a path that does not exist yet: it
 // falls back to the cleaned absolute form (agy itself will fail on a bad cwd).
