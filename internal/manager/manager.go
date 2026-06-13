@@ -483,6 +483,13 @@ func reqFromMeta(meta jobstore.Meta) StartRequest {
 	cwd := meta.Cwd
 	if norm, err := normalizeCwd(cwd); err == nil {
 		cwd = norm
+	} else {
+		// Restore stays resilient (unlike StartJob, which fails closed), so a job
+		// whose cwd cannot be normalized keeps its raw cwd for the gate key. Log it:
+		// under this rare path (a legacy relative cwd plus an os.Getwd failure) the
+		// restored key may not match a new same-directory run's normalized key, the
+		// one inconsistency that can still split serialization for that job.
+		log.Printf("agy-mcp: normalize cwd %q for restored job %s: %v; using raw cwd for gate key", cwd, meta.ID, err)
 	}
 	return StartRequest{ConversationID: meta.ConversationID, Cwd: cwd}
 }
