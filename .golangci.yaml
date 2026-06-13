@@ -39,9 +39,8 @@ linters:
     - testifylint
     - thelper
     - unconvert
-    - wastedassign
-  disable:
     - unused
+    - wastedassign
   settings:
     gocognit:
       min-complexity: 50
