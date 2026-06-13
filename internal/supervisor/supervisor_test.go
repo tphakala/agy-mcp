@@ -72,8 +72,11 @@ func TestSupervisorCapturesOutputAndSentinel(t *testing.T) {
 		t.Fatalf("out = %q", out)
 	}
 	// The configured stderr must actually be captured to the err file, not just
-	// configured and ignored.
-	errOut, _ := os.ReadFile(filepath.Join(dir, "err"))
+	// configured and ignored. Use the shared job-dir path contract.
+	errOut, err := os.ReadFile(jobstore.ErrPath(dir))
+	if err != nil {
+		t.Fatalf("read err file: %v", err)
+	}
 	if strings.TrimSpace(string(errOut)) != "warn" {
 		t.Fatalf("err = %q, want %q", errOut, "warn")
 	}
