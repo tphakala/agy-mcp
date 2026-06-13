@@ -3,6 +3,7 @@ package manager
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,9 @@ func TestStatusDone(t *testing.T) {
 	}
 	if st.State != "done" || st.Result != "the review" {
 		t.Fatalf("status = %+v", st)
+	}
+	if st.Partial {
+		t.Fatalf("a cleanly-exited job must not be marked partial: %+v", st)
 	}
 }
 
@@ -151,5 +155,97 @@ func TestStatusInterruptedAfterReboot(t *testing.T) {
 	}
 	if st.Result != "partial" {
 		t.Fatalf("result = %q", st.Result)
+	}
+	// The supervisor never wrote a sentinel, so the recovered output may be
+	// truncated; it must be flagged so a caller does not treat it as complete.
+	if !st.Partial {
+		t.Fatalf("recovered output without a sentinel must be marked partial: %+v", st)
+	}
+}
+
+// TestStatusElapsedFrozenAtCompletion: a terminal job's elapsed must reflect the
+// run's real duration (start to the sentinel's completion time), not an
+// ever-growing time.Since(StartedAt) for a job that finished long ago.
+func TestStatusElapsedFrozenAtCompletion(t *testing.T) {
+	m := newTestManager(t)
+	start := time.Now().Add(-time.Hour)
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: start, BootID: readBootID()})
+	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("done"), 0o644)
+	_ = m.store.WriteExitCode("j", 0)
+	// Pin the sentinel mtime to 10 minutes after start: completion is well in the
+	// past, so a correct Elapsed is ~10m, not the ~1h time.Since(start) would give.
+	end := start.Add(10 * time.Minute)
+	if err := os.Chtimes(filepath.Join(dir, "exit_code"), end, end); err != nil {
+		t.Fatal(err)
+	}
+
+	st, _ := m.Status("j")
+	if st.State != StateDone {
+		t.Fatalf("state = %q, want done", st.State)
+	}
+	if d := st.Elapsed; d < 9*time.Minute || d > 11*time.Minute {
+		t.Fatalf("elapsed = %v, want ~10m frozen at completion (not time.Since start)", d)
+	}
+}
+
+// TestStateMatchesStatusState: the cheap State accessor (used by agy_cancel,
+// which only needs the state and must not pay to read a large out file) must
+// agree with Status's full state across every terminal exit code.
+func TestStateMatchesStatusState(t *testing.T) {
+	cases := []struct {
+		code int
+		want string
+	}{
+		{0, StateDone},
+		{jobstore.ExitSIGTERM, StateCancelled},
+		{jobstore.ExitSIGINT, StateCancelled},
+		{jobstore.ExitTimeout, StateFailed},
+		{jobstore.ExitSpawnFail, StateFailed},
+		{5, StateFailed},
+	}
+	m := newTestManager(t)
+	for _, c := range cases {
+		id := "code-" + strconv.Itoa(c.code)
+		dir, _ := m.store.Create(jobstore.Meta{ID: id, StartedAt: time.Now(), BootID: readBootID()})
+		_ = os.WriteFile(filepath.Join(dir, "out"), []byte("x"), 0o644)
+		_ = m.store.WriteExitCode(id, c.code)
+
+		gotState, err := m.State(id)
+		if err != nil {
+			t.Fatalf("State(%d): %v", c.code, err)
+		}
+		if gotState != c.want {
+			t.Fatalf("State for exit %d = %q, want %q", c.code, gotState, c.want)
+		}
+		st, _ := m.Status(id)
+		if gotState != st.State {
+			t.Fatalf("State %q disagrees with Status.State %q for exit %d", gotState, st.State, c.code)
+		}
+	}
+}
+
+// TestStateMatchesStatusOnUnreadableCleanExit pins the one edge case where a
+// naive cheap path would diverge: a job that exited 0 but whose out file cannot
+// be read. Status downgrades that to failed (an unreadable success is not a
+// success), and State must report the same, not a bare "done" from the code.
+// Making out a directory lets os.Open succeed while the read fails.
+func TestStateMatchesStatusOnUnreadableCleanExit(t *testing.T) {
+	m := newTestManager(t)
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	if err := os.Mkdir(filepath.Join(dir, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.store.WriteExitCode("j", 0)
+
+	gotState, err := m.State("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := m.Status("j")
+	if gotState != StateFailed {
+		t.Fatalf("State = %q, want failed when a clean exit's output is unreadable", gotState)
+	}
+	if gotState != st.State {
+		t.Fatalf("State %q disagrees with Status.State %q", gotState, st.State)
 	}
 }

@@ -19,23 +19,41 @@ func newGate(maxJobs int) *gate {
 	return &gate{max: maxJobs, keys: map[string]bool{}}
 }
 
+// acquireOutcome reports whether tryAcquire reserved a slot and, when it did
+// not, why. The caller turns the cause into a precise error instead of always
+// blaming a conversation/directory conflict (a refusal can also be the global
+// cap, which is a different thing to tell the user).
+type acquireOutcome int
+
+const (
+	acquireOK      acquireOutcome = iota // slot reserved
+	acquireKeyBusy                       // another job already holds this conversation/cwd key
+	acquireAtCap                         // the global concurrency cap is reached
+)
+
 // tryAcquire reserves a slot. An empty key skips per-key serialization but still
-// counts against the global cap.
-func (g *gate) tryAcquire(key string) bool {
+// counts against the global cap. The per-key check comes first so that when both
+// causes apply (the cap is full and this key is already held) the more specific
+// key conflict is reported.
+func (g *gate) tryAcquire(key string) acquireOutcome {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.inFlight >= g.max {
-		return false
-	}
 	if key != "" && g.keys[key] {
-		return false
+		return acquireKeyBusy
+	}
+	if g.inFlight >= g.max {
+		return acquireAtCap
 	}
 	g.inFlight++
 	if key != "" {
 		g.keys[key] = true
 	}
-	return true
+	return acquireOK
 }
+
+// cap returns the configured global concurrency cap, so callers can name the
+// limit in an at-capacity error. It is set once in newGate and never mutated.
+func (g *gate) cap() int { return g.max }
 
 // forceAcquire reserves a slot and key for a job that is already running (a
 // restored job whose agy session exists regardless of the gate), so the gate

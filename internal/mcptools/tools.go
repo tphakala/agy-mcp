@@ -63,6 +63,9 @@ type statusOutput struct {
 	Result         string `json:"result,omitempty"`
 	Error          string `json:"error,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`
+	// Partial is set when a done job's result was recovered without a completion
+	// sentinel and so may be truncated; see manager.Status.Partial.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // toStatusOutput converts a manager status into its wire shape, shared by
@@ -74,6 +77,7 @@ func toStatusOutput(st manager.Status) statusOutput {
 		Result:         st.Result,
 		Error:          st.Error,
 		ConversationID: st.ConversationID,
+		Partial:        st.Partial,
 	}
 }
 
@@ -128,7 +132,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "agy_status",
-		Description: "Poll an agy job. Returns running, done (with result), failed, or cancelled.",
+		Description: `Poll an agy job. Returns running, done (with result), failed, or cancelled. A done result with "partial": true was recovered without a completion sentinel and may be truncated.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in statusInput) (*mcp.CallToolResult, statusOutput, error) {
 		st, err := mgr.Status(in.JobID)
 		if err != nil {
@@ -145,10 +149,12 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 			return nil, cancelOutput{}, err
 		}
 		// Cancel itself succeeded; report the resulting state, or "unknown" if the
-		// job state is no longer readable.
+		// job state is no longer readable. State (not Status) is used here: the
+		// follow-up only needs the state, and reading the full result would mean
+		// loading a potentially large out file just to discard it.
 		state := "unknown"
-		if st, err := mgr.Status(in.JobID); err == nil {
-			state = st.State
+		if s, err := mgr.State(in.JobID); err == nil {
+			state = s
 		}
 		return nil, cancelOutput{State: state}, nil
 	})

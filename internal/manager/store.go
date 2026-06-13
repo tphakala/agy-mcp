@@ -1,6 +1,10 @@
 package manager
 
-import "github.com/tphakala/agy-mcp/internal/jobstore"
+import (
+	"time"
+
+	"github.com/tphakala/agy-mcp/internal/jobstore"
+)
 
 // jobStore is the subset of *jobstore.Store that the Manager depends on. It is an
 // interface (not the concrete type) so tests can inject a store whose methods fail
@@ -20,5 +24,6 @@ type jobStore interface {
 	Dir(id string) (string, error)
 	WriteExitCode(id string, code int) error
 	ExitCode(id string) (int, bool)
+	CompletedAt(id string) (time.Time, bool)
 	List() ([]string, error)
 }
