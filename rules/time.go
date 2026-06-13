@@ -27,9 +27,13 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 // See: https://pkg.go.dev/time#pkg-constants (DateTime, DateOnly, TimeOnly)
 func TimeDateTimeConstants(m dsl.Matcher) {
 	// DateTime: "2006-01-02 15:04:05"
+	// The type guard keeps the Format matches from firing on any value with a
+	// Format(string) method (e.g. a custom formatter), where the time.* constant
+	// is undefined and --fix would emit non-compiling "undefined: time".
 	m.Match(
 		`$t.Format("2006-01-02 15:04:05")`,
 	).
+		Where(m["t"].Type.Is("time.Time")).
 		Report(`use $t.Format(time.DateTime) instead of magic format string (Go 1.20+)`).
 		Suggest(`$t.Format(time.DateTime)`)
 
@@ -43,6 +47,7 @@ func TimeDateTimeConstants(m dsl.Matcher) {
 	m.Match(
 		`$t.Format("2006-01-02")`,
 	).
+		Where(m["t"].Type.Is("time.Time")).
 		Report(`use $t.Format(time.DateOnly) instead of magic format string (Go 1.20+)`).
 		Suggest(`$t.Format(time.DateOnly)`)
 
@@ -56,6 +61,7 @@ func TimeDateTimeConstants(m dsl.Matcher) {
 	m.Match(
 		`$t.Format("15:04:05")`,
 	).
+		Where(m["t"].Type.Is("time.Time")).
 		Report(`use $t.Format(time.TimeOnly) instead of magic format string (Go 1.20+)`).
 		Suggest(`$t.Format(time.TimeOnly)`)
 
