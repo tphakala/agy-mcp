@@ -24,7 +24,11 @@ func TestGarbageCollectKeepsExpiredButAliveJob(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = cmd.Process.Kill() }()
+	// Kill and reap (Wait) so the sleeper does not linger as a zombie.
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
 
 	// Expired (StartedAt well before the TTL cutoff) but its supervisor is alive.
 	if _, err := m.store.Create(jobstore.Meta{
