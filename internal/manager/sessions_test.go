@@ -34,6 +34,20 @@ func TestListSessionsMissingCacheIsEmpty(t *testing.T) {
 	}
 }
 
+// A malformed cache (a torn or corrupt write) must surface as an error, not be
+// mistaken for an empty cache: agy rewrites last_conversations.json in place, so a
+// concurrent read can be torn. This covers the error side of the loadCache
+// contract that readSessions now relies on.
+func TestListSessionsMalformedCacheErrors(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cache, []byte("{ not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSessions(cache, ""); err == nil {
+		t.Fatal("a malformed cache must return an error, not an empty session list")
+	}
+}
+
 func TestListSessionsFilteredByDir(t *testing.T) {
 	cache := t.TempDir()
 	data := `{"/home/u/proj":"uuid-1","/home/u/other":"uuid-2"}`
