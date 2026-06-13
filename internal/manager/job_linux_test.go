@@ -21,6 +21,9 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 		MaxConcurrency: 4,
 	}
 	m := New(c)
+	// Inject a test-owned cache file so the fresh run's id capture does not read
+	// the developer's real agy cache or leak a capture goroutine racing cleanup.
+	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
 
 	job, err := m.StartJob(StartRequest{Prompt: "review main.go", Model: "Gemini 3.1 Pro (High)"})
 	if err != nil {
@@ -58,6 +61,40 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	}
 }
 
+// TestStartJobWiresConversationID covers the continue-a-conversation path that
+// no other StartJob test drives: an explicit conversation id must be threaded
+// into the returned job, the persisted meta, and the agy --conversation arg.
+func TestStartJobWiresConversationID(t *testing.T) {
+	c := config.Config{
+		AgyPath:        "/usr/bin/agy",
+		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		StateDir:       t.TempDir(),
+		DefaultTimeout: time.Minute,
+		MaxConcurrency: 4,
+	}
+	m := New(c)
+	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
+
+	const convID = "11111111-2222-3333-4444-555555555555"
+	job, err := m.StartJob(StartRequest{Prompt: "follow up", ConversationID: convID, Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	if job.ConversationID != convID {
+		t.Errorf("returned conversation id = %q, want %q", job.ConversationID, convID)
+	}
+	meta, err := m.store.Load(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ConversationID != convID {
+		t.Errorf("meta conversation id = %q, want %q", meta.ConversationID, convID)
+	}
+	if !hasArg(meta.Args, "--conversation", convID) {
+		t.Errorf("args missing --conversation %s: %v", convID, meta.Args)
+	}
+}
+
 func TestStartJobCleansUpDirOnSpawnFailure(t *testing.T) {
 	c := config.Config{
 		AgyPath:        "/usr/bin/agy",
@@ -67,6 +104,7 @@ func TestStartJobCleansUpDirOnSpawnFailure(t *testing.T) {
 		MaxConcurrency: 4,
 	}
 	m := New(c)
+	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
 	cwd := t.TempDir()
 
 	_, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd})
