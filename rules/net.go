@@ -83,7 +83,7 @@ func FilepathIsLocal(m dsl.Matcher) {
 //	    },
 //	}
 //
-// New pattern (Go 1.26+):
+// New pattern (Go 1.20+):
 //
 //	proxy := &httputil.ReverseProxy{
 //	    Rewrite: func(r *httputil.ProxyRequest) {
@@ -105,13 +105,13 @@ func DeprecatedReverseProxyDirector(m dsl.Matcher) {
 	m.Match(
 		`httputil.ReverseProxy{$*_, Director: $_, $*_}`,
 	).
-		Report("httputil.ReverseProxy.Director is deprecated in Go 1.26: Director is vulnerable to hop-by-hop header abuse; use Rewrite instead for safe header handling")
+		Report("httputil.ReverseProxy.Director is deprecated in Go 1.20: Director is vulnerable to hop-by-hop header abuse; use Rewrite instead for safe header handling")
 
 	m.Match(
 		`$proxy.Director = $_`,
 	).
 		Where(m["proxy"].Type.Is("*httputil.ReverseProxy")).
-		Report("httputil.ReverseProxy.Director is deprecated in Go 1.26: Director is vulnerable to hop-by-hop header abuse; use Rewrite instead for safe header handling")
+		Report("httputil.ReverseProxy.Director is deprecated in Go 1.20: Director is vulnerable to hop-by-hop header abuse; use Rewrite instead for safe header handling")
 }
 
 // ErrorBeforeUse detects potential nil pointer dereference before error check.

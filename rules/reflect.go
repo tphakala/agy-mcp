@@ -68,10 +68,14 @@ func ReflectPtrTo(m dsl.Matcher) {
 //
 // See: https://pkg.go.dev/reflect#TypeFor
 func ReflectTypeOf(m dsl.Matcher) {
+	// Autofix is safe here: the rewrite stays inside the reflect package, which
+	// the matched expression already imports, so --fix cannot leave a dangling
+	// reference (unlike rewrites that introduce a new import).
 	m.Match(
 		`reflect.TypeOf((*$typ)(nil)).Elem()`,
 	).
-		Report("use reflect.TypeFor[$typ]() instead of reflect.TypeOf((*$typ)(nil)).Elem() (Go 1.22+)")
+		Report("use reflect.TypeFor[$typ]() instead of reflect.TypeOf((*$typ)(nil)).Elem() (Go 1.22+)").
+		Suggest("reflect.TypeFor[$typ]()")
 }
 
 // DeprecatedReflectHeaders detects deprecated reflect.SliceHeader and

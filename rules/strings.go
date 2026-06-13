@@ -12,7 +12,7 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 //	    process(line)
 //	}
 //
-// New pattern (Go 1.23+):
+// New pattern (Go 1.24+):
 //
 //	for line := range strings.Lines(s) {
 //	    process(line)
@@ -25,29 +25,38 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 //
 // See: https://pkg.go.dev/strings#Lines
 // See: https://pkg.go.dev/bytes#Lines
+// Note: strings.Lines is not a drop-in value-equivalent of ranging over
+// strings.Split: Lines keeps the line terminator (the trailing \n, and \r\n)
+// on each yielded line, whereas Split strips the separator. Callers that
+// compare or trim lines must account for that, so this stays Report-only.
 func StringsLinesIteration(m dsl.Matcher) {
 	// Pattern: for _, line := range strings.Split(s, "\n")
 	m.Match(
 		`for $_, $line := range strings.Split($s, "\n") { $*body }`,
 	).
-		Report(`use for $line := range strings.Lines($s) instead of ranging over strings.Split($s, "\n") (Go 1.23+); note: Lines() handles both \n and \r\n`)
+		Report(`use for $line := range strings.Lines($s) instead of ranging over strings.Split($s, "\n") (Go 1.24+); not value-equivalent: Lines keeps the trailing newline on each line, Split strips it`)
 
 	// Pattern: for _, line := range strings.Split(s, "\r\n")
 	m.Match(
 		`for $_, $line := range strings.Split($s, "\r\n") { $*body }`,
 	).
-		Report(`use for $line := range strings.Lines($s) instead of ranging over strings.Split($s, "\r\n") (Go 1.23+)`)
+		Report(`use for $line := range strings.Lines($s) instead of ranging over strings.Split($s, "\r\n") (Go 1.24+); not value-equivalent: Lines keeps the line terminator, Split strips it`)
 
 	// Also detect bytes.Split for line iteration
 	m.Match(
 		`for $_, $line := range bytes.Split($s, []byte("\n")) { $*body }`,
 	).
-		Report(`use for $line := range bytes.Lines($s) instead of ranging over bytes.Split($s, []byte("\n")) (Go 1.23+)`)
+		Report(`use for $line := range bytes.Lines($s) instead of ranging over bytes.Split($s, []byte("\n")) (Go 1.24+); not value-equivalent: Lines keeps the trailing newline, Split strips it`)
+
+	m.Match(
+		`for $_, $line := range bytes.Split($s, []byte("\r\n")) { $*body }`,
+	).
+		Report(`use for $line := range bytes.Lines($s) instead of ranging over bytes.Split($s, []byte("\r\n")) (Go 1.24+); not value-equivalent: Lines keeps the line terminator, Split strips it`)
 
 	m.Match(
 		`for $_, $line := range bytes.Split($s, []byte{'\n'}) { $*body }`,
 	).
-		Report(`use for $line := range bytes.Lines($s) instead of ranging over bytes.Split (Go 1.23+)`)
+		Report(`use for $line := range bytes.Lines($s) instead of ranging over bytes.Split (Go 1.24+); not value-equivalent: Lines keeps the trailing newline, Split strips it`)
 }
 
 // StringsSplitIteration detects strings.Split used only for iteration
@@ -59,7 +68,7 @@ func StringsLinesIteration(m dsl.Matcher) {
 //	    process(part)
 //	}
 //
-// New pattern (Go 1.23+):
+// New pattern (Go 1.24+):
 //
 //	for part := range strings.SplitSeq(s, ",") {
 //	    process(part)
@@ -82,14 +91,14 @@ func StringsSplitIteration(m dsl.Matcher) {
 		`for $_, $part := range strings.Split($s, $sep) { $*body }`,
 	).
 		Where(!m["sep"].Text.Matches(`^"\\n"$`) && !m["sep"].Text.Matches(`^"\\r\\n"$`)).
-		Report("use for $part := range strings.SplitSeq($s, $sep) to avoid intermediate slice allocation (Go 1.23+)")
+		Report("use for $part := range strings.SplitSeq($s, $sep) to avoid intermediate slice allocation (Go 1.24+)")
 
 	// bytes.Split pattern
 	m.Match(
 		`for $_, $part := range bytes.Split($s, $sep) { $*body }`,
 	).
-		Where(!m["sep"].Text.Matches(`\[\]byte\("\\n"\)`) && !m["sep"].Text.Matches(`\[\]byte\{.*\\n.*\}`)).
-		Report("use for $part := range bytes.SplitSeq($s, $sep) to avoid intermediate slice allocation (Go 1.23+)")
+		Where(!m["sep"].Text.Matches(`\[\]byte\("\\(r\\)?n"\)`) && !m["sep"].Text.Matches(`\[\]byte\{.*\\n.*\}`)).
+		Report("use for $part := range bytes.SplitSeq($s, $sep) to avoid intermediate slice allocation (Go 1.24+)")
 }
 
 // StringsFieldsIteration detects strings.Fields used only for iteration
@@ -101,7 +110,7 @@ func StringsSplitIteration(m dsl.Matcher) {
 //	    process(field)
 //	}
 //
-// New pattern (Go 1.23+):
+// New pattern (Go 1.24+):
 //
 //	for field := range strings.FieldsSeq(s) {
 //	    process(field)
@@ -113,12 +122,12 @@ func StringsFieldsIteration(m dsl.Matcher) {
 	m.Match(
 		`for $_, $field := range strings.Fields($s) { $*body }`,
 	).
-		Report("use for $field := range strings.FieldsSeq($s) to avoid intermediate slice allocation (Go 1.23+)")
+		Report("use for $field := range strings.FieldsSeq($s) to avoid intermediate slice allocation (Go 1.24+)")
 
 	m.Match(
 		`for $_, $field := range bytes.Fields($s) { $*body }`,
 	).
-		Report("use for $field := range bytes.FieldsSeq($s) to avoid intermediate slice allocation (Go 1.23+)")
+		Report("use for $field := range bytes.FieldsSeq($s) to avoid intermediate slice allocation (Go 1.24+)")
 }
 
 // StringsFieldsFuncIteration detects strings.FieldsFunc used only for iteration
@@ -130,7 +139,7 @@ func StringsFieldsIteration(m dsl.Matcher) {
 //	    process(field)
 //	}
 //
-// New pattern (Go 1.23+):
+// New pattern (Go 1.24+):
 //
 //	for field := range strings.FieldsFuncSeq(s, f) {
 //	    process(field)
@@ -142,10 +151,10 @@ func StringsFieldsFuncIteration(m dsl.Matcher) {
 	m.Match(
 		`for $_, $field := range strings.FieldsFunc($s, $f) { $*body }`,
 	).
-		Report("use for $field := range strings.FieldsFuncSeq($s, $f) to avoid intermediate slice allocation (Go 1.23+)")
+		Report("use for $field := range strings.FieldsFuncSeq($s, $f) to avoid intermediate slice allocation (Go 1.24+)")
 
 	m.Match(
 		`for $_, $field := range bytes.FieldsFunc($s, $f) { $*body }`,
 	).
-		Report("use for $field := range bytes.FieldsFuncSeq($s, $f) to avoid intermediate slice allocation (Go 1.23+)")
+		Report("use for $field := range bytes.FieldsFuncSeq($s, $f) to avoid intermediate slice allocation (Go 1.24+)")
 }

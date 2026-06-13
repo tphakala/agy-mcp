@@ -63,18 +63,14 @@ func DeprecatedCipherModes(m dsl.Matcher) {
 //
 // See: https://pkg.go.dev/crypto/rsa#GenerateKey
 func WeakRSAKeySize(m dsl.Matcher) {
-	// Flag 1024-bit keys (allowed but weak)
+	// One value predicate covers every weak constant size (512/768/1024/...)
+	// instead of enumerating literals; sizes under 1024 are also rejected
+	// outright in Go 1.24+. A non-constant bits argument is left alone.
 	m.Match(
-		`rsa.GenerateKey($rand, 1024)`,
+		`rsa.GenerateKey($rand, $bits)`,
 	).
-		Report("RSA 1024-bit keys are considered weak; use at least 2048 bits for modern security")
-
-	// Flag explicitly small keys (will error in Go 1.24+)
-	m.Match(
-		`rsa.GenerateKey($rand, 512)`,
-		`rsa.GenerateKey($rand, 768)`,
-	).
-		Report("RSA keys smaller than 1024 bits are rejected in Go 1.24+; use at least 2048 bits")
+		Where(m["bits"].Const && m["bits"].Value.Int() < 2048).
+		Report("RSA keys under 2048 bits are weak (sizes under 1024 are rejected in Go 1.24+); use at least 2048 bits for modern security")
 }
 
 // DeprecatedElliptic detects deprecated crypto/elliptic usage and suggests

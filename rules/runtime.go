@@ -4,7 +4,11 @@ package gorules
 
 import "github.com/quasilyte/go-ruleguard/dsl"
 
-// SetFinalizerDeprecated detects runtime.SetFinalizer and suggests runtime.AddCleanup.
+// PreferAddCleanup detects runtime.SetFinalizer and suggests runtime.AddCleanup.
+//
+// runtime.SetFinalizer is NOT deprecated (no Deprecated: tag as of Go 1.26), so
+// this is an advisory preference, not a deprecation warning. AddCleanup (Go 1.24)
+// is the recommended API for new code.
 //
 // The old pattern:
 //
@@ -22,7 +26,7 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 //   - Cleaner API with explicit cleanup argument
 //
 // See: https://pkg.go.dev/runtime#AddCleanup
-func SetFinalizerDeprecated(m dsl.Matcher) {
+func PreferAddCleanup(m dsl.Matcher) {
 	m.Match(
 		`runtime.SetFinalizer($obj, $fn)`,
 	).

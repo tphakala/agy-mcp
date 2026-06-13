@@ -29,8 +29,11 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 func ErrorsAsType(m dsl.Matcher) {
 	// Pattern: errors.As(err, &target)
 	// This catches all errors.As calls with address-of second argument
+	// The message uses a literal T placeholder rather than interpolating $target:
+	// $target binds the destination variable, not its type, so embedding it in the
+	// type-parameter slot would emit nonsense like "errors.AsType[pathErr](err)".
 	m.Match(
 		`errors.As($err, &$target)`,
 	).
-		Report("use errors.AsType[$target]($err) instead of errors.As for type-safe, faster error assertion (Go 1.26+)")
+		Report("use errors.AsType[T]($err), where T is $target's type, instead of errors.As for type-safe, faster error assertion (Go 1.26+)")
 }
