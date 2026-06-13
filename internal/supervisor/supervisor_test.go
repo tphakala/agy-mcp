@@ -20,6 +20,32 @@ func writeMeta(t *testing.T, dir string, m jobstore.Meta) {
 	}
 }
 
+func TestResolveExitCode(t *testing.T) {
+	cases := []struct {
+		name       string
+		raw        int
+		waitFailed bool
+		timedOut   bool
+		cancelled  bool
+		want       int
+	}{
+		{"natural success is untouched", 0, false, false, false, 0},
+		{"natural failure is untouched", 5, true, false, false, 5},
+		{"crash with no supervisor termination stays a failure", 128 + 11, true, false, false, 128 + 11},
+		{"timeout that died by SIGTERM reports timeout", jobstore.ExitSIGTERM, true, true, false, jobstore.ExitTimeout},
+		{"timeout that escalated to SIGKILL reports timeout", 128 + 9, true, true, false, jobstore.ExitTimeout},
+		{"cancel that died by SIGTERM reports cancel", jobstore.ExitSIGTERM, true, false, true, jobstore.ExitSIGTERM},
+		{"cancel that escalated to SIGKILL still reports cancel", 128 + 9, true, false, true, jobstore.ExitSIGTERM},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveExitCode(tc.raw, tc.waitFailed, tc.timedOut, tc.cancelled); got != tc.want {
+				t.Errorf("resolveExitCode = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEffectiveTimeout(t *testing.T) {
 	if got := effectiveTimeout(0); got != fallbackTimeout {
 		t.Errorf("effectiveTimeout(0) = %v, want fallback %v", got, fallbackTimeout)

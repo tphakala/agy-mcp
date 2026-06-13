@@ -35,6 +35,37 @@ func effectiveTimeout(d time.Duration) time.Duration {
 	return d
 }
 
+// closed reports whether ch is already closed, without blocking.
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveExitCode applies the supervisor's termination overrides to the raw exit
+// code derived from agy's wait status. A supervisor-initiated termination keeps
+// its own meaning even when it escalated to SIGKILL: agy that ignores SIGTERM and
+// is then SIGKILLed dies with signal 9 (raw 137), but the job was timed out or
+// cancelled, not crashed, so it must report ExitTimeout or ExitSIGTERM rather
+// than the raw signal failure. A natural exit (waitFailed false, or neither flag
+// set) keeps its raw code. Timeout takes precedence; in practice only one flag is
+// ever set.
+func resolveExitCode(raw int, waitFailed, timedOut, cancelled bool) int {
+	if !waitFailed {
+		return raw
+	}
+	switch {
+	case timedOut:
+		return jobstore.ExitTimeout
+	case cancelled:
+		return jobstore.ExitSIGTERM
+	}
+	return raw
+}
+
 // Run executes the agy process described by jobDir/meta.json. It captures
 // stdout to jobDir/out and stderr to jobDir/err, redirects agy stdin from
 // /dev/null, and writes jobDir/exit_code on completion (including on cancel).
@@ -103,6 +134,7 @@ func Run(jobDir string) error {
 	// effectiveTimeout floors a non-positive meta timeout so the deadline always fires.
 	done := make(chan struct{})
 	timedOut := make(chan struct{})
+	cancelled := make(chan struct{})
 
 	go func() {
 		t := time.NewTimer(effectiveTimeout(m.Timeout))
@@ -111,7 +143,7 @@ func Run(jobDir string) error {
 		case <-done:
 			return
 		case <-sig:
-			// Cancel requested by the manager.
+			close(cancelled) // cancel requested by the manager
 		case <-t.C:
 			close(timedOut)
 		}
@@ -145,19 +177,12 @@ func Run(jobDir string) error {
 			code = 1
 		}
 	}
-	// If the hard timeout fired, record the timeout sentinel so Status can report
-	// a timeout distinctly from a user cancel. Guard on waitErr so a job that
-	// finished naturally at the exact instant the timer fired is not mislabeled
-	// as a timeout (a natural success has waitErr == nil). timedOut is closed
-	// before the kill, so it is observable by the time Wait returns.
-	if waitErr != nil {
-		select {
-		case <-timedOut:
-			code = jobstore.ExitTimeout
-		default:
-		}
-	}
-	return writeExit(jobDir, code)
+	// Apply the supervisor's termination overrides: a timeout or a cancel keeps its
+	// meaning even when it escalated to SIGKILL (raw 137). timedOut/cancelled are
+	// closed before the kill, so they are observable by the time Wait returns.
+	// Guarding on waitErr != nil keeps a job that finished naturally at the instant
+	// the timer fired (a natural success has waitErr == nil) from being mislabeled.
+	return writeExit(jobDir, resolveExitCode(code, waitErr != nil, closed(timedOut), closed(cancelled)))
 }
 
 func writeExit(jobDir string, code int) error {
