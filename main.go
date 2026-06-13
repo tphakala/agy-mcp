@@ -66,17 +66,17 @@ func serve() error {
 		}
 	})
 	mgr := manager.New(cfg)
-	if removed, err := mgr.GarbageCollect(); err != nil {
-		log.Printf("startup GC: %v", err)
-	} else if len(removed) > 0 {
-		log.Printf("startup GC removed %d expired job(s)", len(removed))
+	// Run startup garbage collection and concurrency-gate restoration in one
+	// job-store scan (RestoreAndCollect), instead of two back-to-back scans that
+	// each opened every meta.json and exit_code. It fails closed: serving with an
+	// unrestored gate could bypass the cap and re-expose the agy session-lock hang
+	// the gate prevents, so a scan failure refuses to start rather than logging on.
+	removed, err := mgr.RestoreAndCollect()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
 	}
-	// Re-occupy the concurrency gate for jobs whose detached supervisor outlived a
-	// previous manager, so a new run is serialized against them and the cap holds.
-	// Fail closed: serving with an unrestored gate could bypass the cap and
-	// re-expose the agy session-lock hang the gate prevents.
-	if err := mgr.RestoreGate(); err != nil {
-		return fmt.Errorf("restore concurrency gate: %w", err)
+	if len(removed) > 0 {
+		log.Printf("startup GC removed %d expired job(s)", len(removed))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
