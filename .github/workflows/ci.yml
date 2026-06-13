@@ -1,11 +1,18 @@
 name: ci
 on:
+  # Filter push to main so a push to a PR branch does not run the matrix twice
+  # (once for push, once for pull_request); pull_request already covers PR branches.
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read
+# Cancel superseded runs on the same ref so a rapid re-push does not pile up
+# duplicate in-flight runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 env:
-  GO_VERSION: '1.26'
   # Pinned to match the local toolchain so local runs and CI use the same
   # linter version (and the same ruleguard behavior).
   GOLANGCI_LINT_VERSION: 'v2.11.4'
@@ -20,7 +27,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
       # build + vet on every OS proves the package compiles cross-platform (macOS gets
       # the unsupported-platform stubs). Tests run job supervision, which is Linux only,
       # so they (and the Windows cross-compile check) run on the ubuntu job.
@@ -39,8 +46,14 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
+      # The ruleguard matchers in rules/*.go carry the //go:build ruleguard tag, so a
+      # syntax error in one compiles clean under the normal toolchain and silently
+      # disables the entire ruleguard layer while golangci-lint still reports 0 issues.
+      # Compile them explicitly so a broken rule fails CI instead of going unnoticed.
+      - name: Ruleguard rules compile
+        run: go build -tags ruleguard ./rules/
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
