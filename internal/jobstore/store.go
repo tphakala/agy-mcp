@@ -85,11 +85,47 @@ func LoadDir(dir string) (Meta, error) {
 
 // WriteExitCodeDir writes the completion sentinel into a job directory. It is
 // the single implementation shared by the supervisor (which knows only the dir)
-// and Store.WriteExitCode (which resolves an id to its dir). 0600 matches the
-// rest of the job-dir contract: the sentinel is not sensitive, but a uniform
-// owner-only mode is simpler to reason about.
+// and Store.WriteExitCode (which resolves an id to its dir).
+//
+// The write is atomic (temp file + rename), mirroring writeMetaAtomic: a plain
+// os.WriteFile truncates before writing, so a manager polling ExitCode in that
+// window would read an empty file, fail to parse it, and misclassify a finished
+// or cancelled job as still running or interrupted. A rename makes the sentinel
+// appear in one step, never empty. 0600 matches the rest of the job-dir
+// contract: the sentinel is not sensitive, but a uniform owner-only mode is
+// simpler to reason about.
 func WriteExitCodeDir(dir string, code int) error {
-	return os.WriteFile(ExitCodePath(dir), []byte(strconv.Itoa(code)), 0o600)
+	tmp, err := os.CreateTemp(dir, "exit_code-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(strconv.Itoa(code)); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	// Flush before the rename so a crash cannot leave a renamed but empty sentinel.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	// os.CreateTemp already makes the temp 0600, so this only guards a future
+	// change to its default mode.
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, ExitCodePath(dir)); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // ErrInvalidID is returned when a job id is not a safe path segment.
