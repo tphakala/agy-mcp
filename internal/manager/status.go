@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -82,7 +81,7 @@ func (m *Manager) Status(id string) (Status, error) {
 	// classifying the outcome, so a recovered job's elapsed does not keep growing.
 	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
 	// If output was captured, recover it.
-	out, rerr := readFile(filepath.Join(dir, "out"))
+	out, rerr := readFile(jobstore.OutPath(dir))
 	switch {
 	case rerr != nil:
 		st.State = StateFailed
@@ -110,7 +109,7 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// conversation advanced, so even if the local out file cannot be read the
 		// caller still needs the id to continue the conversation.
 		st.ConversationID = m.lazyCaptureConversationID(meta)
-		out, err := readFile(filepath.Join(dir, "out"))
+		out, err := readFile(jobstore.OutPath(dir))
 		if err != nil {
 			// The job exited cleanly but we cannot read what it produced. Report
 			// that as a failure rather than a successful empty result.
@@ -254,7 +253,7 @@ func tailFile(path string, n int64) (string, error) {
 // trailing newline trimmed and starting on a valid UTF-8 boundary), or "" when
 // there is none.
 func cleanTail(dir string) (string, error) {
-	tail, err := tailFile(filepath.Join(dir, "err"), errTailBytes)
+	tail, err := tailFile(jobstore.ErrPath(dir), errTailBytes)
 	if err != nil {
 		return "", err
 	}

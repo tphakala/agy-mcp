@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tphakala/agy-mcp/internal/jobstore"
 )
 
 // FakeSupervisor configures a stand-in supervisor script for tests.
@@ -66,15 +68,15 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 	sb.WriteString("printf '%s' \"${0##*/}\" > /proc/$$/comm\n")
 	sb.WriteString("dir=\"$2\"\n")
 	if cfg.AgyPath != "" {
-		fmt.Fprintf(&sb, "%q -p x > \"$dir/out\" 2> \"$dir/err\"\ncode=$?\n", cfg.AgyPath)
+		fmt.Fprintf(&sb, "%q -p x > \"$dir/%s\" 2> \"$dir/%s\"\ncode=$?\n", cfg.AgyPath, jobstore.OutFile, jobstore.ErrFile)
 	} else {
 		outPayload := filepath.Join(dir, "out-payload")
 		if err := os.WriteFile(outPayload, []byte(cfg.Out), 0o644); err != nil {
 			t.Fatalf("write fake supervisor out payload: %v", err)
 		}
-		fmt.Fprintf(&sb, "cat %q > \"$dir/out\"\ncode=%d\n", outPayload, cfg.Exit)
+		fmt.Fprintf(&sb, "cat %q > \"$dir/%s\"\ncode=%d\n", outPayload, jobstore.OutFile, cfg.Exit)
 	}
-	sb.WriteString("printf '%s' \"$code\" > \"$dir/exit_code\"\n")
+	fmt.Fprintf(&sb, "printf '%%s' \"$code\" > \"$dir/%s\"\n", jobstore.ExitCodeFile)
 	if cfg.CachePath != "" {
 		cachePayload := filepath.Join(dir, "cache-payload.json")
 		if err := os.WriteFile(cachePayload, []byte(cfg.CacheJSON), 0o644); err != nil {

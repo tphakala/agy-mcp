@@ -3,13 +3,10 @@
 package supervisor
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -78,24 +75,20 @@ func Run(jobDir string) error {
 		// cmd.Wait forever. Refuse here, matching StartJob's guard on the manager side.
 		return errPlatformUnsupported
 	}
-	var m jobstore.Meta
-	b, err := os.ReadFile(filepath.Join(jobDir, "meta.json"))
+	m, err := jobstore.LoadDir(jobDir)
 	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(b, &m); err != nil {
 		return err
 	}
 
 	// 0600: out/err capture full agy output, which often embeds source code, so
 	// they must not be readable by other users on a multi-user host. os.Create would
 	// use 0666 (umask-reduced), so open them explicitly owner-only instead.
-	outF, err := os.OpenFile(filepath.Join(jobDir, "out"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	outF, err := os.OpenFile(jobstore.OutPath(jobDir), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = outF.Close() }()
-	errF, err := os.OpenFile(filepath.Join(jobDir, "err"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	errF, err := os.OpenFile(jobstore.ErrPath(jobDir), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -126,7 +119,7 @@ func Run(jobDir string) error {
 	defer signal.Stop(sig)
 
 	if err := cmd.Start(); err != nil {
-		_ = writeExit(jobDir, jobstore.ExitSpawnFail)
+		_ = jobstore.WriteExitCodeDir(jobDir, jobstore.ExitSpawnFail)
 		return err
 	}
 
@@ -185,11 +178,5 @@ func Run(jobDir string) error {
 	// closed before the kill, so they are observable by the time Wait returns.
 	// Guarding on waitErr != nil keeps a job that finished naturally at the instant
 	// the timer fired (a natural success has waitErr == nil) from being mislabeled.
-	return writeExit(jobDir, resolveExitCode(code, waitErr != nil, closed(timedOut), closed(cancelled)))
-}
-
-func writeExit(jobDir string, code int) error {
-	// 0600 to match the other job-dir files; the sentinel itself is not sensitive,
-	// but a consistent owner-only contract is simpler to reason about.
-	return os.WriteFile(filepath.Join(jobDir, "exit_code"), []byte(strconv.Itoa(code)), 0o600)
+	return jobstore.WriteExitCodeDir(jobDir, resolveExitCode(code, waitErr != nil, closed(timedOut), closed(cancelled)))
 }

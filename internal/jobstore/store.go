@@ -48,6 +48,50 @@ const (
 	ExitSIGTERM   = 143 // agy terminated by SIGTERM (128+15); cancel or timeout kill
 )
 
+// Job-directory file contract. Every package that touches a job dir (jobstore,
+// supervisor, manager, and the test fakes) must reference these names rather
+// than spelling the literals, so renaming a file is a single edit that the
+// compiler propagates instead of a silent skew caught only at integration time.
+const (
+	MetaFile     = "meta.json" // job metadata (atomic rewrite)
+	OutFile      = "out"       // captured agy stdout
+	ErrFile      = "err"       // captured agy stderr
+	ExitCodeFile = "exit_code" // completion sentinel
+)
+
+// MetaPath, OutPath, ErrPath, and ExitCodePath join a job directory with the
+// corresponding file name. They are the shared spelling for callers that hold
+// only the directory (the supervisor, the manager's status reader) rather than
+// a store id.
+func MetaPath(dir string) string     { return filepath.Join(dir, MetaFile) }
+func OutPath(dir string) string      { return filepath.Join(dir, OutFile) }
+func ErrPath(dir string) string      { return filepath.Join(dir, ErrFile) }
+func ExitCodePath(dir string) string { return filepath.Join(dir, ExitCodeFile) }
+
+// LoadDir reads and parses meta.json directly from a job directory. The
+// supervisor knows only the job dir (not the store root or the id), so this
+// lets it share Load's real read+unmarshal instead of re-implementing it.
+func LoadDir(dir string) (Meta, error) {
+	var m Meta
+	b, err := os.ReadFile(MetaPath(dir))
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return m, err
+	}
+	return m, nil
+}
+
+// WriteExitCodeDir writes the completion sentinel into a job directory. It is
+// the single implementation shared by the supervisor (which knows only the dir)
+// and Store.WriteExitCode (which resolves an id to its dir). 0600 matches the
+// rest of the job-dir contract: the sentinel is not sensitive, but a uniform
+// owner-only mode is simpler to reason about.
+func WriteExitCodeDir(dir string, code int) error {
+	return os.WriteFile(ExitCodePath(dir), []byte(strconv.Itoa(code)), 0o600)
+}
+
 // ErrInvalidID is returned when a job id is not a safe path segment.
 var ErrInvalidID = errors.New("invalid job id")
 
@@ -106,18 +150,10 @@ func (s *Store) Create(m Meta) (string, error) {
 
 // Load reads a job's Meta.
 func (s *Store) Load(id string) (Meta, error) {
-	var m Meta
 	if !validJobID(id) {
-		return m, ErrInvalidID
+		return Meta{}, ErrInvalidID
 	}
-	b, err := os.ReadFile(filepath.Join(s.jobDir(id), "meta.json"))
-	if err != nil {
-		return m, err
-	}
-	if err := json.Unmarshal(b, &m); err != nil {
-		return m, err
-	}
-	return m, nil
+	return LoadDir(s.jobDir(id))
 }
 
 // UpdateMeta atomically rewrites a job's meta.json. It takes s.mu so every meta
@@ -177,7 +213,7 @@ func writeMetaAtomic(dir string, m Meta) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, filepath.Join(dir, "meta.json")); err != nil {
+	if err := os.Rename(tmpName, MetaPath(dir)); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
@@ -229,12 +265,16 @@ func (s *Store) Dir(id string) (string, error) {
 	return s.jobDir(id), nil
 }
 
-// WriteExitCode writes the completion sentinel.
+// WriteExitCode writes the completion sentinel for a job id. Production writes
+// the sentinel from the supervisor (which holds only the dir, via
+// WriteExitCodeDir); this id-based form is the seam tests use to stage a
+// terminal job. Both share WriteExitCodeDir so the on-disk contract is one
+// implementation.
 func (s *Store) WriteExitCode(id string, code int) error {
 	if !validJobID(id) {
 		return ErrInvalidID
 	}
-	return os.WriteFile(filepath.Join(s.jobDir(id), "exit_code"), []byte(strconv.Itoa(code)), 0o600)
+	return WriteExitCodeDir(s.jobDir(id), code)
 }
 
 // CompletedAt returns the best available estimate of when a job finished, as a
@@ -249,7 +289,7 @@ func (s *Store) CompletedAt(id string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	dir := s.jobDir(id)
-	for _, name := range []string{"exit_code", "out", "err"} {
+	for _, name := range []string{ExitCodeFile, OutFile, ErrFile} {
 		if info, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return info.ModTime(), true
 		}
@@ -262,7 +302,7 @@ func (s *Store) ExitCode(id string) (int, bool) {
 	if !validJobID(id) {
 		return 0, false
 	}
-	b, err := os.ReadFile(filepath.Join(s.jobDir(id), "exit_code"))
+	b, err := os.ReadFile(ExitCodePath(s.jobDir(id)))
 	if err != nil {
 		return 0, false
 	}

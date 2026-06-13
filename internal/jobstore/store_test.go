@@ -203,6 +203,42 @@ func TestExitCodeSentinel(t *testing.T) {
 	}
 }
 
+// TestDirContractSharedByStoreAndHelpers pins the centralized job-dir file
+// contract: the dir-based helpers (LoadDir, WriteExitCodeDir, the *Path
+// helpers) operate on the exact files the id-based Store methods read and
+// write, so the supervisor (which holds only the dir) and the manager (which
+// goes through Store by id) cannot drift apart.
+func TestDirContractSharedByStoreAndHelpers(t *testing.T) {
+	s := New(t.TempDir())
+	dir, err := s.Create(Meta{ID: "j", AgyPath: "/bin/agy", Prompt: "hi", StartedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create wrote meta.json where LoadDir reads it.
+	if got, err := LoadDir(dir); err != nil || got.ID != "j" || got.Prompt != "hi" {
+		t.Fatalf("LoadDir(dir) = %+v, %v; want the meta Store.Create wrote", got, err)
+	}
+	if MetaPath(dir) != filepath.Join(dir, "meta.json") {
+		t.Fatalf("MetaPath(dir) = %q, want it under the job dir", MetaPath(dir))
+	}
+
+	// The supervisor's WriteExitCodeDir is observed by the manager's Store.ExitCode.
+	if err := WriteExitCodeDir(dir, 42); err != nil {
+		t.Fatal(err)
+	}
+	if code, ok := s.ExitCode("j"); !ok || code != 42 {
+		t.Fatalf("ExitCode after WriteExitCodeDir = %d, %v; want 42, true", code, ok)
+	}
+	// And the reverse: Store.WriteExitCode (id path) is read back at ExitCodePath (dir path).
+	if err := s.WriteExitCode("j", 7); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(ExitCodePath(dir)); err != nil || string(b) != "7" {
+		t.Fatalf("ExitCodePath content = %q, %v; want \"7\"", b, err)
+	}
+}
+
 func TestListAndRemove(t *testing.T) {
 	s := New(t.TempDir())
 	_, _ = s.Create(Meta{ID: "a", StartedAt: time.Unix(0, 0)})
