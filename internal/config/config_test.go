@@ -60,6 +60,25 @@ func TestResolveAgyPathOverrideMissing(t *testing.T) {
 	}
 }
 
+func TestResolveAgyPathOverrideMadeAbsolute(t *testing.T) {
+	// agy runs under the supervisor with cmd.Dir set to the job's cwd, so a
+	// relative AgyPath would resolve against the wrong directory. A relative
+	// override must be made absolute at resolution time.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("AGY_MCP_AGY_PATH", "./agy")
+	c, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !filepath.IsAbs(c.AgyPath) {
+		t.Errorf("AgyPath = %q, want an absolute path", c.AgyPath)
+	}
+}
+
 func TestResolveAgyPathOverrideNotExecutable(t *testing.T) {
 	// An override that exists but is not executable would fail at exec time, so it
 	// must be rejected at startup too (existence alone is not enough).

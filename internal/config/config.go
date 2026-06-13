@@ -40,8 +40,7 @@ func Resolve() (Config, error) {
 		// Resolve the override with LookPath, symmetric with the PATH branch below, so
 		// a typo, a non-executable file, or a bad PATH-relative name fails fast at
 		// startup instead of only at exec time on the first job. LookPath also handles
-		// a bare name (PATH lookup) and locks in an absolute path, shrinking the window
-		// for a PATH change between resolution and exec.
+		// a bare name (PATH lookup).
 		resolved, err := exec.LookPath(p)
 		if err != nil {
 			return Config{}, fmt.Errorf("AGY_MCP_AGY_PATH %q: %w", p, err)
@@ -54,6 +53,15 @@ func Resolve() (Config, error) {
 		}
 		c.AgyPath = p
 	}
+	// agy runs under the supervisor with cmd.Dir set to the job's cwd, so AgyPath
+	// must be absolute or it would resolve against the wrong directory; LookPath can
+	// return a relative path (a relative override, or a relative PATH entry). Report
+	// the pre-Abs value on failure since Abs returns "" then.
+	abs, err := filepath.Abs(c.AgyPath)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve agy path %q: %w", c.AgyPath, err)
+	}
+	c.AgyPath = abs
 
 	self, err := os.Executable()
 	if err != nil {

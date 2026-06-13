@@ -85,7 +85,7 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 func TestCheckLoopbackAddr(t *testing.T) {
 	// Literal IPs and localhost (resolved via the real /etc/hosts) are loopback;
 	// hostname resolution corner cases are covered hermetically below.
-	for _, addr := range []string{"127.0.0.1:8765", "localhost:8765", "[::1]:8765", "127.0.0.1:0"} {
+	for _, addr := range []string{"127.0.0.1:8765", "localhost:8765", "[::1]:8765", "127.0.0.1:0", "[::1]"} {
 		if err := checkLoopbackAddr(addr); err != nil {
 			t.Errorf("checkLoopbackAddr(%q) = %v, want nil", addr, err)
 		}
