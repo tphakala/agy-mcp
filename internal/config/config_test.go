@@ -17,6 +17,11 @@ func fakeAgyOnPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// On Windows exec.LookPath resolves via PATHEXT, so a bare "agy" is not found;
+	// the extra agy.exe makes the helper work there too and is ignored on Unix.
+	if err := os.WriteFile(filepath.Join(dir, "agy.exe"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", dir)
 }
 
