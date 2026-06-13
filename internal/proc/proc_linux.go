@@ -1,10 +1,5 @@
 //go:build linux
 
-// Package proc holds the process-group primitives shared by the manager (which
-// spawns and signals the supervisor) and the supervisor (which spawns and
-// signals agy). They are meaningful only on Linux; other platforms get the
-// no-op/error stubs in proc_other.go so both callers build everywhere and
-// refuse early via Supported.
 package proc
 
 import (
@@ -17,14 +12,14 @@ import (
 // check it and refuse before spawning on platforms where the stubs apply.
 const Supported = true
 
-// ErrUnsupported is what the off-Linux stubs return. It is nil on Linux; the
-// symbol exists on every platform so a caller's shared guard compiles.
-var ErrUnsupported error
-
 // SetGroup puts the spawned process in its own process group, so the whole
-// group (the child and its descendants) can be signaled together.
+// group (the child and its descendants) can be signaled together. It sets only
+// Setpgid, preserving any other SysProcAttr fields a caller configured first.
 func SetGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
 }
 
 // TerminateGroup sends sig to the entire process group led by pid. A

@@ -3,7 +3,6 @@
 package proc
 
 import (
-	"errors"
 	"os/exec"
 	"syscall"
 )
@@ -14,9 +13,6 @@ import (
 
 // Supported is false off Linux: supervision relies on process groups and /proc.
 const Supported = false
-
-// ErrUnsupported is returned by the stubs and by callers that refuse early.
-var ErrUnsupported = errors.New("agy-mcp: process supervision is only supported on Linux")
 
 func SetGroup(_ *exec.Cmd) {}
 

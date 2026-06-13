@@ -17,6 +17,29 @@ func TestSetGroupRequestsNewProcessGroup(t *testing.T) {
 	}
 }
 
+// TestSetGroupPreservesExistingAttrs: SetGroup must set only Setpgid, leaving
+// any SysProcAttr fields a caller configured first intact.
+func TestSetGroupPreservesExistingAttrs(t *testing.T) {
+	cmd := exec.Command("true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	SetGroup(cmd)
+	if !cmd.SysProcAttr.Setpgid {
+		t.Error("SetGroup must set Setpgid")
+	}
+	if !cmd.SysProcAttr.Setsid {
+		t.Error("SetGroup must preserve a pre-existing SysProcAttr field (Setsid)")
+	}
+}
+
+// TestErrUnsupportedIsNonNil: ErrUnsupported must be a non-nil sentinel even on
+// Linux, so a caller comparing a (nil) success error against it never gets a
+// false match (errors.Is(nil, nil) is true).
+func TestErrUnsupportedIsNonNil(t *testing.T) {
+	if ErrUnsupported == nil {
+		t.Fatal("ErrUnsupported must be a non-nil sentinel on every platform")
+	}
+}
+
 // TestNonPositivePidRejected: syscall.Kill(-pid, ...) with pid <= 0 targets the
 // caller's own process group, so signaling a non-positive pid would terminate
 // the manager/supervisor itself. Both helpers must reject it.
