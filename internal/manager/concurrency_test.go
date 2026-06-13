@@ -34,6 +34,41 @@ func TestGateBlocksSameKey(t *testing.T) {
 	}
 }
 
+// TestNewGateClampsNonPositive: a non-positive cap is clamped to 1, so a
+// misconfigured MaxConcurrency cannot disable the gate (which would let every
+// run proceed concurrently and re-expose the session-lock hang).
+func TestNewGateClampsNonPositive(t *testing.T) {
+	for _, max := range []int{0, -1, -100} {
+		g := newGate(max)
+		if g.cap() != 1 {
+			t.Fatalf("newGate(%d).cap() = %d, want 1", max, g.cap())
+		}
+		if g.tryAcquire("a") != acquireOK {
+			t.Fatalf("newGate(%d): first acquire should succeed", max)
+		}
+		if g.tryAcquire("b") != acquireAtCap {
+			t.Fatalf("newGate(%d): a second distinct key must hit the clamped cap of 1", max)
+		}
+	}
+}
+
+// TestGateReleaseUnderflow: releasing more than was acquired must not drive
+// inFlight negative (which would silently raise the effective cap). An extra
+// release is absorbed, and the cap accounting stays correct afterward.
+func TestGateReleaseUnderflow(t *testing.T) {
+	g := newGate(1)
+	g.release("never-acquired") // underflow: inFlight is already 0
+	g.release("")               // and again with an empty key
+
+	// The cap is still 1: one acquire works, the next is refused.
+	if g.tryAcquire("a") != acquireOK {
+		t.Fatal("acquire after underflow releases should succeed")
+	}
+	if g.tryAcquire("b") != acquireAtCap {
+		t.Fatal("cap must still be 1 after underflow releases (inFlight not negative)")
+	}
+}
+
 func TestGateForceAcquire(t *testing.T) {
 	g := newGate(2)
 	// A restored job is already running, so forceAcquire tracks it even past the cap.

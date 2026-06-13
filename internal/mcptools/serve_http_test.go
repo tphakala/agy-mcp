@@ -156,7 +156,19 @@ func TestHTTPServeListsTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(tools.Tools) < 5 {
-		t.Fatalf("expected >=5 tools, got %d", len(tools.Tools))
+	// Assert the exact registered set, not a lower bound: a dropped or renamed
+	// tool is a wire-contract regression that "len >= 5" would miss.
+	got := make(map[string]bool, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		got[tool.Name] = true
+	}
+	want := []string{"agy_run", "agy_status", "agy_cancel", "agy_run_sync", "list_models", "list_sessions"}
+	if len(tools.Tools) != len(want) {
+		t.Fatalf("registered %d tools, want %d (%v)", len(tools.Tools), len(want), want)
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("tool %q is not registered", name)
+		}
 	}
 }
