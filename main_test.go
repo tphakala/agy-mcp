@@ -65,13 +65,13 @@ func TestRunJobSubcommandEndToEnd(t *testing.T) {
 	jobDir := t.TempDir()
 	meta := jobstore.Meta{ID: filepath.Base(jobDir), AgyPath: agy, Args: []string{"-p", "x"}}
 	b, _ := jsonMarshalForTest(meta)
-	_ = os.WriteFile(filepath.Join(jobDir, "meta.json"), b, 0o644)
+	_ = os.WriteFile(jobstore.MetaPath(jobDir), b, 0o644)
 
 	cmd := exec.Command(bin, "run-job", jobDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run-job: %v\n%s", err, out)
 	}
-	out, _ := os.ReadFile(filepath.Join(jobDir, "out"))
+	out, _ := os.ReadFile(jobstore.OutPath(jobDir))
 	if strings.TrimSpace(string(out)) != "E2E OK" {
 		t.Fatalf("out = %q", out)
 	}
@@ -91,7 +91,7 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 	jobDir := t.TempDir()
 	meta := jobstore.Meta{ID: filepath.Base(jobDir), AgyPath: agy, Args: []string{"-p", "x"}}
 	b, _ := jsonMarshalForTest(meta)
-	_ = os.WriteFile(filepath.Join(jobDir, "meta.json"), b, 0o644)
+	_ = os.WriteFile(jobstore.MetaPath(jobDir), b, 0o644)
 
 	cmd := exec.Command(bin, "run-job", jobDir)
 	if err := cmd.Start(); err != nil {
@@ -118,8 +118,8 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 	// process spawn, does not stretch under load.
 	startDeadline := time.Now().Add(5 * time.Second)
 	for {
-		_, oerr := os.Stat(filepath.Join(jobDir, "out"))
-		_, eerr := os.Stat(filepath.Join(jobDir, "err"))
+		_, oerr := os.Stat(jobstore.OutPath(jobDir))
+		_, eerr := os.Stat(jobstore.ErrPath(jobDir))
 		if oerr == nil && eerr == nil {
 			break
 		}
@@ -136,12 +136,12 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(filepath.Join(jobDir, "exit_code")); err == nil {
+		if _, err := os.Stat(jobstore.ExitCodePath(jobDir)); err == nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	code, _ := os.ReadFile(filepath.Join(jobDir, "exit_code"))
+	code, _ := os.ReadFile(jobstore.ExitCodePath(jobDir))
 	if strings.TrimSpace(string(code)) != strconv.Itoa(jobstore.ExitSIGTERM) {
 		t.Fatalf("exit_code = %q, want %d (SIGTERM cancel)", code, jobstore.ExitSIGTERM)
 	}

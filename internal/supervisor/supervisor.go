@@ -91,6 +91,18 @@ func run(jobDir string, grace time.Duration) error {
 		return err
 	}
 
+	// Install the SIGTERM handler first, before opening the job files and starting
+	// agy. A SIGTERM (the manager's cancel) landing during this startup window would
+	// otherwise kill the supervisor with its default disposition, leaving agy with
+	// nobody to forward the signal to, the timeout unenforced, and no sentinel
+	// written. The channel is buffered, so a signal that arrives before the
+	// forwarding goroutine reads it is held, not lost. Installing it before the job
+	// files are created also makes their existence a sound readiness barrier for
+	// tests: once out/err exist, the handler is already in place.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM)
+	defer signal.Stop(sig)
+
 	// 0600: out/err capture full agy output, which often embeds source code, so
 	// they must not be readable by other users on a multi-user host. os.Create would
 	// use 0666 (umask-reduced), so open them explicitly owner-only instead.
@@ -118,16 +130,6 @@ func run(jobDir string, grace time.Duration) error {
 	cmd.Stderr = errF
 	// Put agy in its own process group so we can signal it and its children.
 	proc.SetGroup(cmd)
-
-	// Install the SIGTERM handler BEFORE starting agy. A SIGTERM landing in the
-	// window between Start and Notify would otherwise kill the supervisor with its
-	// default disposition, leaving agy detached with nobody to forward the signal,
-	// enforce the timeout, or write the sentinel. The channel is buffered, so a
-	// signal that arrives before the forwarding goroutine is reading is held, not
-	// lost.
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGTERM)
-	defer signal.Stop(sig)
 
 	if err := cmd.Start(); err != nil {
 		_ = jobstore.WriteExitCodeDir(jobDir, jobstore.ExitSpawnFail)
