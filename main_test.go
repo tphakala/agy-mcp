@@ -87,7 +87,7 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 	}
 	// A fake agy that sleeps far longer than the test; with no timeout in meta,
 	// only an external cancel signal can stop it.
-	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "x", SleepSecs: 60})
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "x", Sleep: 60 * time.Second})
 	jobDir := t.TempDir()
 	meta := jobstore.Meta{ID: filepath.Base(jobDir), AgyPath: agy, Args: []string{"-p", "x"}}
 	b, _ := jsonMarshalForTest(meta)

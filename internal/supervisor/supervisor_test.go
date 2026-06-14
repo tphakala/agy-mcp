@@ -102,7 +102,7 @@ func TestSupervisorRecordsNonZeroExit(t *testing.T) {
 func TestSupervisorHardTimeoutKillsAgy(t *testing.T) {
 	dir := t.TempDir()
 	// A fake agy that would sleep far longer than the hard timeout.
-	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "should not finish", SleepSecs: 30})
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "should not finish", Sleep: 30 * time.Second})
 	writeMeta(t, dir, jobstore.Meta{
 		ID: "j", AgyPath: agy, Args: []string{"-p", "x"},
 		StartedAt: time.Now(), Timeout: 500 * time.Millisecond,

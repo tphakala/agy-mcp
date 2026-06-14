@@ -2,18 +2,19 @@ package testutil
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // runSupervisor executes the fake supervisor the way the manager does
-// (`<exe> run-job <jobdir>`) and returns the job dir.
+// (`<exe> run-job <jobdir>`) and returns the job dir. It runs under a hard timeout
+// so a hung script fails the test with diagnostics instead of stalling the suite.
 func runSupervisor(t *testing.T, sup string) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := exec.Command(sup, "run-job", dir).Run(); err != nil {
-		t.Fatalf("run fake supervisor: %v", err)
+	if res := runScript(t, 10*time.Second, sup, "run-job", dir); res.ExitCode != 0 {
+		t.Fatalf("fake supervisor exited %d; stderr: %q", res.ExitCode, res.Stderr)
 	}
 	return dir
 }

@@ -6,14 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // FakeAgy configures a stand-in agy binary for tests.
 type FakeAgy struct {
-	Stdout    string // printed to stdout, then process exits
-	Stderr    string // printed to stderr
-	Exit      int    // exit code
-	SleepSecs int    // seconds to sleep before printing (simulate a long run)
+	Stdout string        // printed to stdout, then process exits
+	Stderr string        // printed to stderr
+	Exit   int           // exit code
+	Sleep  time.Duration // delay before printing (simulate a long run); bash sleep honors fractions
 	// IgnoreSIGTERM makes the script trap and ignore SIGTERM and loop forever, so
 	// only SIGKILL can stop it. Used to exercise the supervisor's SIGKILL
 	// escalation after killGrace. Mutually exclusive with Stdout/Stderr/Exit
@@ -51,11 +52,11 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 		t.Fatalf("write fake agy stderr: %v", err)
 	}
 	script := fmt.Sprintf(`#!/usr/bin/env bash
-sleep %d
+sleep %.3f
 cat %q
 cat %q 1>&2
 exit %d
-`, cfg.SleepSecs, outPath, errPath, cfg.Exit)
+`, cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake agy: %v", err)
 	}

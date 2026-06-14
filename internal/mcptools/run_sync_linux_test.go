@@ -159,7 +159,7 @@ func TestAgyRunSyncOverrunReturnsJobID(t *testing.T) {
 	// The sleep must comfortably outlast the 100ms wait cap even on a stalled
 	// CI runner, or the job finishes before the cap and the running assertion
 	// flakes.
-	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "LATE OK", Exit: 0, SleepSecs: 5})
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "LATE OK", Exit: 0, Sleep: 2 * time.Second})
 	cs := connect(t, mgr, nil)
 
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
@@ -188,7 +188,7 @@ func TestAgyRunSyncOverrunReturnsJobID(t *testing.T) {
 func TestAgyRunSyncSendsProgress(t *testing.T) {
 	// One second spans several 250ms poll ticks, so at least one progress
 	// notification fires while the job runs.
-	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "SLOW OK", Exit: 0, SleepSecs: 1})
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "SLOW OK", Exit: 0, Sleep: 1 * time.Second})
 
 	var mu sync.Mutex
 	var tokens []any
@@ -238,7 +238,7 @@ func TestAgyRunSyncSendsProgress(t *testing.T) {
 }
 
 func TestAgyRunSyncClientCancelKeepsJobAlive(t *testing.T) {
-	mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "LATE OK", Exit: 0, SleepSecs: 5})
+	mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "LATE OK", Exit: 0, Sleep: 2 * time.Second})
 	cs := connect(t, mgr, nil)
 
 	ctx, cancel := context.WithCancel(t.Context())

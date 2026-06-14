@@ -190,7 +190,7 @@ func TestStartJobSerializesEquivalentCwdSpellings(t *testing.T) {
 	dir := t.TempDir()
 	// A sleeping fake agy keeps the first supervisor alive, so its gate key stays
 	// held while the second run is attempted.
-	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "x", SleepSecs: 30})
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "x", Sleep: 30 * time.Second})
 	c := config.Config{
 		AgyPath:        "/usr/bin/agy",
 		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
