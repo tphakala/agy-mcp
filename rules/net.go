@@ -81,13 +81,17 @@ func FilepathIsLocal(m dsl.Matcher) {
 	//     pattern the rule is really about (a path held in a local var).
 	//
 	//  2. The identifier must read like a path. The match is case-sensitive so it
-	//     keys on Go's camelCase boundaries instead of plain substrings:
+	//     keys on Go's camelCase boundaries instead of plain substrings, and BOTH
+	//     alternatives are anchored (`|` has the lowest precedence, so an
+	//     unanchored second branch would match the keyword as a substring of any
+	//     identifier, e.g. MyDirtyVar via "Dir" or IsFiled via "File"):
 	//       - `^(path|dir|file)(s|path|name|[A-Z].*)?$` catches a lowercase
 	//         keyword that is the whole name, a plural, a common lowercase compound
 	//         (filepath, filename, dirname, dirpath), or the first camelCase
 	//         component (fileName, dirEntry, ...).
-	//       - `(Path|Dir|File)` catches a capitalized keyword anywhere in a
-	//         compound identifier (userPath, srcDir, inputFile, ...).
+	//       - `^(.*[a-z0-9_])?(Path|Dir|File)(s|[A-Z].*)?$` catches a capitalized
+	//         keyword at a camelCase boundary (userPath, srcDir, inputFile), while
+	//         requiring it to sit on a boundary so MyDirtyVar/IsFiled do not match.
 	//     A flat `(?i)path|dir|file` would also fire on words that merely contain
 	//     those letters (profile, directory, redirect, dirty, filed).
 	//
@@ -98,7 +102,7 @@ func FilepathIsLocal(m dsl.Matcher) {
 	).
 		Where(
 			m["path"].Text.Matches(`^[A-Za-z_][A-Za-z0-9_]*$`) &&
-				m["path"].Text.Matches(`^(path|dir|file)(s|path|name|[A-Z].*)?$|(Path|Dir|File)`),
+				m["path"].Text.Matches(`^(path|dir|file)(s|path|name|[A-Z].*)?$|^(.*[a-z0-9_])?(Path|Dir|File)(s|[A-Z].*)?$`),
 		).
 		Report("consider using filepath.IsLocal($path) for file path validation (Go 1.20+); for URL paths, strings.Contains is appropriate")
 }
