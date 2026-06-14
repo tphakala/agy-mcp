@@ -92,6 +92,14 @@ at the configured limit, up to N times that many distinct, non-conflicting runs 
 The lock files are tiny and left in place by design (unlinking a `flock` file races), so the
 `locks/` directory keeps one empty file per distinct directory or conversation ever locked.
 
+Two caveats. `AGY_MCP_STATE_DIR` must live on a local filesystem that supports `flock` (not NFS,
+where `flock` may be a no-op or fail); a run is refused rather than started if the lock cannot be
+taken, so cross-process exclusion can never silently lapse. And across a server restart there is a
+brief window, while the manager process is down, before it re-takes the locks for jobs whose
+supervisor outlived it; a sibling process that starts the same-`cwd` run during that window is not
+blocked. The in-process gate is always restored at startup, so this gap is limited to the restart
+window itself.
+
 ## HTTP mode
 
 ```bash

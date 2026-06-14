@@ -11,7 +11,7 @@ import (
 // twoManagers returns two managers that share one state dir, modeling two sibling
 // agy-mcp processes in stdio mode (each process has its own in-memory gate, but
 // they share AGY_MCP_STATE_DIR and so must serialize through the on-disk locks).
-func twoManagers(t *testing.T) (*Manager, *Manager) {
+func twoManagers(t *testing.T) (m1, m2 *Manager) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Config{StateDir: dir, MaxConcurrency: 4}
@@ -40,6 +40,29 @@ func TestAdmitExcludesAcrossManagers(t *testing.T) {
 	if outcome, err := m2.admit("cwd:/w"); err != nil || outcome != acquireOK {
 		t.Fatalf("m2.admit after m1.releaseKey = (%v, %v), want (acquireOK, nil)", outcome, err)
 	}
+}
+
+// TestAdmitEmptyKeyNotSerialized: an empty key has nothing to serialize on, so
+// admit must skip the cross-process lock entirely and never block a sibling. This
+// pins the key == "" short-circuit in admit/releaseKey that StartJob relies on for
+// the defensive no-cwd path.
+func TestAdmitEmptyKeyNotSerialized(t *testing.T) {
+	m1, m2 := twoManagers(t)
+
+	if outcome, err := m1.admit(""); err != nil || outcome != acquireOK {
+		t.Fatalf("m1.admit(\"\") = (%v, %v), want (acquireOK, nil)", outcome, err)
+	}
+	// A sibling admitting an empty key is not blocked: empty keys do not serialize.
+	if outcome, err := m2.admit(""); err != nil || outcome != acquireOK {
+		t.Fatalf("m2.admit(\"\") while m1 holds an empty key = (%v, %v), want (acquireOK, nil)", outcome, err)
+	}
+	// No cross-process lock fd was taken for the empty key in either process.
+	if len(m1.xlock.fds) != 0 || len(m2.xlock.fds) != 0 {
+		t.Fatalf("empty key must take no cross-process lock; fds = %d, %d", len(m1.xlock.fds), len(m2.xlock.fds))
+	}
+	// releaseKey on an empty key is a no-op on the lock side and must not panic.
+	m1.releaseKey("")
+	m2.releaseKey("")
 }
 
 // TestAdmitInProcessRefusalsStillApply: admit must preserve the in-process gate's

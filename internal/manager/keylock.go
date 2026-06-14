@@ -3,6 +3,7 @@ package manager
 import (
 	"crypto/sha256"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -82,5 +83,12 @@ func (c *crossLock) unlock(key string) {
 		return
 	}
 	delete(c.fds, key)
-	_ = f.Close()
+	// Closing the fd drops the flock. A close error should never happen for a lock
+	// file, but if it does the kernel may not have released the lock yet while this
+	// process has already forgotten the fd; log it so the regression surfaces rather
+	// than silently leaving the key un-releasable until process exit (which does free
+	// the lock).
+	if err := f.Close(); err != nil {
+		log.Printf("crosslock: close lock file for key %q: %v", key, err)
+	}
 }

@@ -3,6 +3,7 @@ package manager
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -61,6 +62,31 @@ func TestCrossLockUnlockUnheldKeyIsNoop(t *testing.T) {
 	b.unlock("conv:x")
 	if ok, _ := b.tryLock("conv:x"); ok {
 		t.Fatal("b must still be refused conv:x: a's hold survives b's no-op unlock")
+	}
+}
+
+// TestCrossLockHashesArbitraryKeys: a gate key is an absolute cwd or a conversation
+// id, so it can contain path separators and "..". Hashing the key into the filename
+// must keep the lock file inside the locks dir (no path escape) and still serialize
+// siblings, for both traversal-laden and very long keys.
+func TestCrossLockHashesArbitraryKeys(t *testing.T) {
+	dir := t.TempDir()
+	a := newCrossLock(dir)
+	b := newCrossLock(dir)
+
+	for _, key := range []string{
+		"cwd:/a/b/../../etc/passwd",
+		"cwd:" + strings.Repeat("/deep", 300),
+	} {
+		if got := filepath.Dir(a.lockPath(key)); got != a.dir {
+			t.Fatalf("lockPath(%q) escaped the locks dir: got dir %q, want %q", key, got, a.dir)
+		}
+		if ok, err := a.tryLock(key); err != nil || !ok {
+			t.Fatalf("a.tryLock(%q) = (%v, %v), want (true, nil)", key, ok, err)
+		}
+		if ok, err := b.tryLock(key); err != nil || ok {
+			t.Fatalf("b.tryLock(%q) must be refused while a holds it; got (%v, %v)", key, ok, err)
+		}
 	}
 }
 
