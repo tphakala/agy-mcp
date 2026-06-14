@@ -104,6 +104,11 @@ func TestAdmitFailsClosedOnLockError(t *testing.T) {
 	if m.gate.keys["cwd:/w"] {
 		t.Fatal("admit must roll back the in-process key on a lock error")
 	}
+	// Rollback must also release the slot, not just the key: a leaked in-flight slot
+	// would silently lower the effective cap while the key map looks clean.
+	if m.gate.inFlight != 0 {
+		t.Fatalf("admit must roll back the in-flight count on a lock error; got %d", m.gate.inFlight)
+	}
 }
 
 // TestForceAdmitTakesCrossProcessLock: a restored job (whose detached supervisor

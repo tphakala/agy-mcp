@@ -47,11 +47,16 @@ func (c *crossLock) lockPath(key string) string {
 // (false, nil) when another process already holds it, and (false, err) on any other
 // failure, which the caller must treat as fail-closed: refuse the run rather than
 // proceed without cross-process exclusion. The gate never admits the same key twice
-// in one process, so tryLock is never called for a key this instance already holds
-// (which would leak the prior fd).
+// in one process, so tryLock is not expected to be called for a key this instance
+// already holds; the duplicate guard below enforces that invariant locally (rather
+// than silently overwriting and leaking the prior fd) should a future caller bypass
+// the gate.
 func (c *crossLock) tryLock(key string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, held := c.fds[key]; held {
+		return false, fmt.Errorf("crosslock: key %q already held by this process", key)
+	}
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		return false, fmt.Errorf("create locks dir: %w", err)
 	}

@@ -65,6 +65,25 @@ func TestCrossLockUnlockUnheldKeyIsNoop(t *testing.T) {
 	}
 }
 
+// TestCrossLockTryLockRejectsDuplicateHeldKey: locking a key this instance already
+// holds is a contract violation (the gate prevents it in production). The guard must
+// fail fast rather than overwrite and leak the prior fd, and the original hold must
+// survive intact.
+func TestCrossLockTryLockRejectsDuplicateHeldKey(t *testing.T) {
+	c := newCrossLock(t.TempDir())
+	if ok, err := c.tryLock("conv:x"); err != nil || !ok {
+		t.Fatalf("first tryLock = (%v, %v), want (true, nil)", ok, err)
+	}
+	if ok, err := c.tryLock("conv:x"); ok || err == nil {
+		t.Fatalf("duplicate tryLock = (%v, %v), want (false, error)", ok, err)
+	}
+	// The original hold is intact: unlock then re-lock succeeds.
+	c.unlock("conv:x")
+	if ok, err := c.tryLock("conv:x"); err != nil || !ok {
+		t.Fatalf("tryLock after unlock = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
 // TestCrossLockHashesArbitraryKeys: a gate key is an absolute cwd or a conversation
 // id, so it can contain path separators and "..". Hashing the key into the filename
 // must keep the lock file inside the locks dir (no path escape) and still serialize
