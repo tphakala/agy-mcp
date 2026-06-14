@@ -62,12 +62,31 @@ func JoinHostPort(m dsl.Matcher) {
 //
 // See: https://pkg.go.dev/path/filepath#IsLocal
 func FilepathIsLocal(m dsl.Matcher) {
-	// Detect simple .. check that might be replaced by IsLocal
-	// Note: For URL paths, strings.Contains is still appropriate because filepath.IsLocal
-	// cleans paths internally (e.g., "path/../etc" → "etc" → valid).
+	// Detect simple .. check that might be replaced by IsLocal.
+	//
+	// strings.Contains($x, "..") on its own is far too broad: it fires on any
+	// ".." substring test (version ranges, ellipsis checks, arbitrary text), not
+	// just path traversal. There is no type signal that distinguishes a path from
+	// any other string, so this constrains on the operand's name instead: only
+	// flag when the checked expression reads like a path. This trades a little
+	// recall for far fewer false positives; it stays advisory (Report-only).
+	//
+	// The name match is deliberately case-sensitive so it keys on Go's camelCase
+	// boundaries instead of plain substrings:
+	//   - `^(path|dir|file)(s?$|[A-Z])` catches a lowercase keyword that is the
+	//     whole name or the first camelCase component (path, dir, file, paths,
+	//     fileName, dirEntry, pathStr, ...).
+	//   - `(Path|Dir|File)` catches a capitalized keyword anywhere in a compound
+	//     identifier (userPath, filePath, srcDir, inputFile, ...).
+	// A flat `(?i)path|dir|file` would also fire on words that merely contain
+	// those letters (profile, directory, redirect, dirty, filed), so it is not used.
+	//
+	// Note: For URL paths, strings.Contains is still appropriate because
+	// filepath.IsLocal cleans paths internally (e.g., "path/../etc" → "etc").
 	m.Match(
 		`strings.Contains($path, "..")`,
 	).
+		Where(m["path"].Text.Matches(`(^(path|dir|file)(s?$|[A-Z]))|(Path|Dir|File)`)).
 		Report("consider using filepath.IsLocal($path) for file path validation (Go 1.20+); for URL paths, strings.Contains is appropriate")
 }
 
@@ -133,11 +152,24 @@ func DeprecatedReverseProxyDirector(m dsl.Matcher) {
 //
 // See: https://go.dev/doc/go1.25#compiler (nil check reordering fix)
 func ErrorBeforeUse(m dsl.Matcher) {
-	// os.Open/Create followed by method call before error check
+	// os.Open/Create/OpenFile followed by a use of $f before the error check.
+	// Three result shapes are covered for each constructor:
+	//   - single-value assignment: name := f.Method(...)
+	//   - bare call (return value discarded): f.Method(...)
+	//   - multi-value assignment: a, b := f.Method(...)
 	m.Match(
+		// single-value assignment
 		`$f, $err := os.Open($path); $_ := $f.$method($*_); if $err != nil { $*_ }`,
 		`$f, $err := os.Create($path); $_ := $f.$method($*_); if $err != nil { $*_ }`,
 		`$f, $err := os.OpenFile($*_); $_ := $f.$method($*_); if $err != nil { $*_ }`,
+		// bare call
+		`$f, $err := os.Open($path); $f.$method($*_); if $err != nil { $*_ }`,
+		`$f, $err := os.Create($path); $f.$method($*_); if $err != nil { $*_ }`,
+		`$f, $err := os.OpenFile($*_); $f.$method($*_); if $err != nil { $*_ }`,
+		// multi-value assignment
+		`$f, $err := os.Open($path); $_, $_ := $f.$method($*_); if $err != nil { $*_ }`,
+		`$f, $err := os.Create($path); $_, $_ := $f.$method($*_); if $err != nil { $*_ }`,
+		`$f, $err := os.OpenFile($*_); $_, $_ := $f.$method($*_); if $err != nil { $*_ }`,
 	).
 		Report("potential nil pointer: $f may be nil if $err != nil; check error before using $f.$method()")
 }

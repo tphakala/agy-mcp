@@ -102,14 +102,14 @@ func ReflectTypeOf(m dsl.Matcher) {
 // See: https://pkg.go.dev/unsafe#Slice
 // See: https://pkg.go.dev/unsafe#String
 func DeprecatedReflectHeaders(m dsl.Matcher) {
+	// `{$*_}` matches zero or more fields, so it already covers the empty `{}`
+	// literal; a separate `{}` clause would be dead weight.
 	m.Match(
-		`reflect.SliceHeader{}`,
 		`reflect.SliceHeader{$*_}`,
 	).
 		Report("reflect.SliceHeader is deprecated in Go 1.21; use unsafe.Slice instead")
 
 	m.Match(
-		`reflect.StringHeader{}`,
 		`reflect.StringHeader{$*_}`,
 	).
 		Report("reflect.StringHeader is deprecated in Go 1.21; use unsafe.String instead")

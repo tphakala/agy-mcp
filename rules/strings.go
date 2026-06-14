@@ -4,7 +4,7 @@ package gorules
 
 import "github.com/quasilyte/go-ruleguard/dsl"
 
-// StringsLinesIteration detects manual line splitting patterns and suggests strings.Lines.
+// LinesIteration detects manual line splitting patterns and suggests strings.Lines.
 //
 // Old pattern:
 //
@@ -29,7 +29,7 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 // strings.Split: Lines keeps the line terminator (the trailing \n, and \r\n)
 // on each yielded line, whereas Split strips the separator. Callers that
 // compare or trim lines must account for that, so this stays Report-only.
-func StringsLinesIteration(m dsl.Matcher) {
+func LinesIteration(m dsl.Matcher) {
 	// Pattern: for _, line := range strings.Split(s, "\n")
 	m.Match(
 		`for $_, $line := range strings.Split($s, "\n") { $*body }`,
@@ -59,7 +59,7 @@ func StringsLinesIteration(m dsl.Matcher) {
 		Report(`use for $line := range bytes.Lines($s) instead of ranging over bytes.Split (Go 1.24+); not value-equivalent: Lines keeps the trailing newline, Split strips it`)
 }
 
-// StringsSplitIteration detects strings.Split used only for iteration
+// SplitIteration detects strings.Split used only for iteration
 // and suggests strings.SplitSeq for better memory efficiency.
 //
 // Old pattern:
@@ -84,7 +84,7 @@ func StringsLinesIteration(m dsl.Matcher) {
 //
 // See: https://pkg.go.dev/strings#SplitSeq
 // See: https://pkg.go.dev/bytes#SplitSeq
-func StringsSplitIteration(m dsl.Matcher) {
+func SplitIteration(m dsl.Matcher) {
 	// Pattern: for _, part := range strings.Split(s, sep)
 	// Excluding newline separators which should use Lines() instead
 	m.Match(
@@ -101,7 +101,7 @@ func StringsSplitIteration(m dsl.Matcher) {
 		Report("use for $part := range bytes.SplitSeq($s, $sep) to avoid intermediate slice allocation (Go 1.24+)")
 }
 
-// StringsFieldsIteration detects strings.Fields used only for iteration
+// FieldsIteration detects strings.Fields used only for iteration
 // and suggests strings.FieldsSeq.
 //
 // Old pattern:
@@ -118,7 +118,7 @@ func StringsSplitIteration(m dsl.Matcher) {
 //
 // See: https://pkg.go.dev/strings#FieldsSeq
 // See: https://pkg.go.dev/bytes#FieldsSeq
-func StringsFieldsIteration(m dsl.Matcher) {
+func FieldsIteration(m dsl.Matcher) {
 	m.Match(
 		`for $_, $field := range strings.Fields($s) { $*body }`,
 	).
@@ -130,7 +130,7 @@ func StringsFieldsIteration(m dsl.Matcher) {
 		Report("use for $field := range bytes.FieldsSeq($s) to avoid intermediate slice allocation (Go 1.24+)")
 }
 
-// StringsFieldsFuncIteration detects strings.FieldsFunc used only for iteration
+// FieldsFuncIteration detects strings.FieldsFunc used only for iteration
 // and suggests strings.FieldsFuncSeq.
 //
 // Old pattern:
@@ -147,7 +147,7 @@ func StringsFieldsIteration(m dsl.Matcher) {
 //
 // See: https://pkg.go.dev/strings#FieldsFuncSeq
 // See: https://pkg.go.dev/bytes#FieldsFuncSeq
-func StringsFieldsFuncIteration(m dsl.Matcher) {
+func FieldsFuncIteration(m dsl.Matcher) {
 	m.Match(
 		`for $_, $field := range strings.FieldsFunc($s, $f) { $*body }`,
 	).

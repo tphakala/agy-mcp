@@ -1,6 +1,5 @@
 //go:build ruleguard
 
-// Package gorules defines custom linter rules for Go modernization.
 package gorules
 
 import "github.com/quasilyte/go-ruleguard/dsl"

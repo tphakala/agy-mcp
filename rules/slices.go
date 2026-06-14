@@ -4,7 +4,8 @@ package gorules
 
 import "github.com/quasilyte/go-ruleguard/dsl"
 
-// SortInts detects sort.Ints/sort.Strings/sort.Float64s and suggests slices.Sort.
+// SortToSlices detects sort.Ints/sort.Strings/sort.Float64s (and their
+// *AreSorted variants) and suggests the generic slices.Sort/slices.IsSorted.
 //
 // Old patterns:
 //
@@ -24,7 +25,7 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 //   - Part of the new slices package
 //
 // See: https://pkg.go.dev/slices#Sort
-func SortInts(m dsl.Matcher) {
+func SortToSlices(m dsl.Matcher) {
 	m.Match(
 		`sort.Ints($s)`,
 	).

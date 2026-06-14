@@ -156,37 +156,11 @@ func TimerChannelLen(m dsl.Matcher) {
 // See: https://pkg.go.dev/time#Since
 // Note: Go 1.22 vet tool also warns about this pattern.
 func DeferredTimeSince(m dsl.Matcher) {
-	// Pattern: defer with time.Since as argument
+	// One clause covers time.Since in any argument position: the two variadic
+	// captures absorb any preceding and trailing args (including none), so the
+	// earlier per-position clauses were redundant.
 	m.Match(
-		`defer $fn(time.Since($start))`,
-	).
-		Report("time.Since($start) is evaluated at defer time, not function exit; wrap in func() to measure actual duration")
-
-	// Pattern: defer with time.Since as argument (multiple args)
-	m.Match(
-		`defer $fn(time.Since($start), $*args)`,
-	).
-		Report("time.Since($start) is evaluated at defer time, not function exit; wrap in func() to measure actual duration")
-
-	m.Match(
-		`defer $fn($arg, time.Since($start))`,
-	).
-		Report("time.Since($start) is evaluated at defer time, not function exit; wrap in func() to measure actual duration")
-
-	m.Match(
-		`defer $fn($arg1, $arg2, time.Since($start))`,
-	).
-		Report("time.Since($start) is evaluated at defer time, not function exit; wrap in func() to measure actual duration")
-
-	// time.Since as second argument with trailing args
-	m.Match(
-		`defer $fn($arg, time.Since($start), $*args)`,
-	).
-		Report("time.Since($start) is evaluated at defer time, not function exit; wrap in func() to measure actual duration")
-
-	// time.Since as fourth argument (3 preceding args)
-	m.Match(
-		`defer $fn($arg1, $arg2, $arg3, time.Since($start))`,
+		`defer $fn($*_, time.Since($start), $*_)`,
 	).
 		Report("time.Since($start) is evaluated at defer time, not function exit; wrap in func() to measure actual duration")
 }
@@ -204,20 +178,11 @@ func DeferredTimeSince(m dsl.Matcher) {
 //
 // See: https://pkg.go.dev/time#Now
 func DeferredTimeNow(m dsl.Matcher) {
+	// One clause covers time.Now() in any argument position: the two variadic
+	// captures absorb any preceding and trailing args (including none), so the
+	// earlier per-position clauses were redundant.
 	m.Match(
-		`defer $fn(time.Now())`,
-	).
-		Report("time.Now() is evaluated at defer time, not function exit; wrap in func() if you want exit time")
-
-	// time.Now() as the last argument (with preceding args).
-	m.Match(
-		`defer $fn($*args, time.Now())`,
-	).
-		Report("time.Now() is evaluated at defer time, not function exit; wrap in func() if you want exit time")
-
-	// time.Now() as the first argument (with trailing args).
-	m.Match(
-		`defer $fn(time.Now(), $*args)`,
+		`defer $fn($*_, time.Now(), $*_)`,
 	).
 		Report("time.Now() is evaluated at defer time, not function exit; wrap in func() if you want exit time")
 }
