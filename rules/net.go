@@ -71,22 +71,35 @@ func FilepathIsLocal(m dsl.Matcher) {
 	// flag when the checked expression reads like a path. This trades a little
 	// recall for far fewer false positives; it stays advisory (Report-only).
 	//
-	// The name match is deliberately case-sensitive so it keys on Go's camelCase
-	// boundaries instead of plain substrings:
-	//   - `^(path|dir|file)(s?$|[A-Z])` catches a lowercase keyword that is the
-	//     whole name or the first camelCase component (path, dir, file, paths,
-	//     fileName, dirEntry, pathStr, ...).
-	//   - `(Path|Dir|File)` catches a capitalized keyword anywhere in a compound
-	//     identifier (userPath, filePath, srcDir, inputFile, ...).
-	// A flat `(?i)path|dir|file` would also fire on words that merely contain
-	// those letters (profile, directory, redirect, dirty, filed), so it is not used.
+	// Two guards keep this narrow:
+	//
+	//  1. The operand must be a bare identifier (`^[A-Za-z_][A-Za-z0-9_]*$`).
+	//     The name match below runs on the operand's full source text, so without
+	//     this a selector like req.URL.Path would match on "Path" and get flagged,
+	//     even though the message says URL paths are the exception. Restricting to
+	//     a plain local variable both removes that contradiction and targets the
+	//     pattern the rule is really about (a path held in a local var).
+	//
+	//  2. The identifier must read like a path. The match is case-sensitive so it
+	//     keys on Go's camelCase boundaries instead of plain substrings:
+	//       - `^(path|dir|file)(s|path|name|[A-Z].*)?$` catches a lowercase
+	//         keyword that is the whole name, a plural, a common lowercase compound
+	//         (filepath, filename, dirname, dirpath), or the first camelCase
+	//         component (fileName, dirEntry, ...).
+	//       - `(Path|Dir|File)` catches a capitalized keyword anywhere in a
+	//         compound identifier (userPath, srcDir, inputFile, ...).
+	//     A flat `(?i)path|dir|file` would also fire on words that merely contain
+	//     those letters (profile, directory, redirect, dirty, filed).
 	//
 	// Note: For URL paths, strings.Contains is still appropriate because
 	// filepath.IsLocal cleans paths internally (e.g., "path/../etc" → "etc").
 	m.Match(
 		`strings.Contains($path, "..")`,
 	).
-		Where(m["path"].Text.Matches(`(^(path|dir|file)(s?$|[A-Z]))|(Path|Dir|File)`)).
+		Where(
+			m["path"].Text.Matches(`^[A-Za-z_][A-Za-z0-9_]*$`) &&
+				m["path"].Text.Matches(`^(path|dir|file)(s|path|name|[A-Z].*)?$|(Path|Dir|File)`),
+		).
 		Report("consider using filepath.IsLocal($path) for file path validation (Go 1.20+); for URL paths, strings.Contains is appropriate")
 }
 
@@ -153,10 +166,12 @@ func DeprecatedReverseProxyDirector(m dsl.Matcher) {
 // See: https://go.dev/doc/go1.25#compiler (nil check reordering fix)
 func ErrorBeforeUse(m dsl.Matcher) {
 	// os.Open/Create/OpenFile followed by a use of $f before the error check.
-	// Three result shapes are covered for each constructor:
+	// Four result shapes are covered for each constructor:
 	//   - single-value assignment: name := f.Method(...)
 	//   - bare call (return value discarded): f.Method(...)
 	//   - multi-value assignment: a, b := f.Method(...)
+	//   - deferred call: defer f.Method(...) (the classic `defer f.Close()` before
+	//     the err check, which runs on a nil receiver and panics when Open fails)
 	m.Match(
 		// single-value assignment
 		`$f, $err := os.Open($path); $_ := $f.$method($*_); if $err != nil { $*_ }`,
@@ -170,6 +185,10 @@ func ErrorBeforeUse(m dsl.Matcher) {
 		`$f, $err := os.Open($path); $_, $_ := $f.$method($*_); if $err != nil { $*_ }`,
 		`$f, $err := os.Create($path); $_, $_ := $f.$method($*_); if $err != nil { $*_ }`,
 		`$f, $err := os.OpenFile($*_); $_, $_ := $f.$method($*_); if $err != nil { $*_ }`,
+		// deferred call
+		`$f, $err := os.Open($path); defer $f.$method($*_); if $err != nil { $*_ }`,
+		`$f, $err := os.Create($path); defer $f.$method($*_); if $err != nil { $*_ }`,
+		`$f, $err := os.OpenFile($*_); defer $f.$method($*_); if $err != nil { $*_ }`,
 	).
 		Report("potential nil pointer: $f may be nil if $err != nil; check error before using $f.$method()")
 }
