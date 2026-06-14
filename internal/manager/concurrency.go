@@ -6,8 +6,12 @@ import (
 )
 
 // gate enforces a global concurrency cap and per-key (conversation/cwd)
-// serialization so concurrent agy sessions cannot trigger the known
-// session-lock hang.
+// serialization so concurrent agy sessions cannot trigger the known session-lock
+// hang. It is in-process only; crossLock (keylock.go) extends the same per-key
+// serialization across sibling agy-mcp processes that share one state dir. The
+// Manager pairs them in admit/releaseKey/forceAdmit (admit.go). The global cap
+// stays per-process: in stdio mode each client session runs its own process and
+// enforces the cap independently.
 type gate struct {
 	mu       sync.Mutex
 	max      int

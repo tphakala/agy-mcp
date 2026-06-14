@@ -24,9 +24,10 @@ import (
 // Manager coordinates jobs backed by an on-disk store.
 type Manager struct {
 	cfg       config.Config
-	store     jobStore // *jobstore.Store in production; an interface so tests can inject failures
-	gate      *gate    // serializes conflicting jobs and caps total concurrency
-	cacheFile string   // agy conversation cache (last_conversations.json); injectable for tests
+	store     jobStore   // *jobstore.Store in production; an interface so tests can inject failures
+	gate      *gate      // serializes conflicting jobs and caps total concurrency within this process
+	xlock     *crossLock // serializes same-key jobs across sibling processes sharing the state dir
+	cacheFile string     // agy conversation cache (last_conversations.json); injectable for tests
 
 	// pendingCaptures holds the job ids of fresh runs whose conversation-id
 	// capture is armed but not yet settled (the post-exit capture attempt has
@@ -71,6 +72,7 @@ func New(c config.Config) *Manager {
 		cfg:                  c,
 		store:                jobstore.New(c.StateDir),
 		gate:                 newGate(c.MaxConcurrency),
+		xlock:                newCrossLock(c.StateDir),
 		cacheFile:            cacheFile,
 		captureBudget:        2 * time.Second,
 		capturePoll:          100 * time.Millisecond,
@@ -310,9 +312,16 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}
 
 	key := keyFor(req)
-	switch outcome := m.gate.tryAcquire(key); outcome {
+	outcome, err := m.admit(key)
+	if err != nil {
+		// The cross-process lock could not be established (e.g. the locks dir is
+		// unwritable). Fail closed: starting without it could let a sibling process
+		// run a conflicting same-key job and re-expose the session-lock hang.
+		return Job{}, fmt.Errorf("acquire cross-process lock for this conversation or directory: %w", err)
+	}
+	switch outcome {
 	case acquireOK:
-		// Slot reserved; proceed to spawn below.
+		// Slot and cross-process lock reserved; proceed to spawn below.
 	case acquireKeyBusy:
 		return Job{}, fmt.Errorf("a conflicting agy job for this conversation or directory is already running")
 	case acquireAtCap:
@@ -363,7 +372,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	dir, err := m.store.Create(meta)
 	if err != nil {
 		m.pendingCaptures.Delete(id)
-		m.gate.release(key)
+		m.releaseKey(key)
 		return Job{}, fmt.Errorf("create job store entry: %w", err)
 	}
 
@@ -380,7 +389,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// orphan; remove it now rather than leaving it for a later GarbageCollect.
 		_ = m.store.Remove(id)
 		m.pendingCaptures.Delete(id)
-		m.gate.release(key)
+		m.releaseKey(key)
 		return Job{}, fmt.Errorf("spawn supervisor: %w", err)
 	}
 	// Record the supervisor PID (for liveness and cancel) and its start time (so a
@@ -403,7 +412,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 			_ = cmd.Wait()
 			_ = m.store.Remove(id)
 			m.pendingCaptures.Delete(id)
-			m.gate.release(key)
+			m.releaseKey(key)
 		}()
 		return Job{}, fmt.Errorf("record supervisor pid: %w", err)
 	}
@@ -423,7 +432,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// Settle the capture (success or give-up) before releasing the key, so
 		// CapturePending=false means the reported status is final.
 		m.pendingCaptures.Delete(id)
-		m.gate.release(key)
+		m.releaseKey(key)
 	}()
 
 	return Job{ID: id, ConversationID: req.ConversationID, State: StateRunning}, nil
@@ -708,13 +717,14 @@ func (m *Manager) restoreEvaluate(l loadedJob) {
 	if !m.processAlive(l.meta) {
 		return // supervisor gone; GarbageCollect will reap it
 	}
-	// forceAcquire counts the job and holds its key unconditionally: a restored
-	// job is already running, so it must be tracked even past the cap (otherwise a
-	// new same-key run could start once a slot frees and run concurrently with it,
-	// the bypass this method prevents). A false return means another restored job
-	// already holds this key, so it is already watched.
+	// forceAdmit counts the job and holds its key unconditionally: a restored job is
+	// already running, so it must be tracked even past the cap (otherwise a new
+	// same-key run could start once a slot frees and run concurrently with it, the
+	// bypass this method prevents). It also best-effort re-takes the cross-process
+	// lock so sibling processes are blocked again across the restart. A false return
+	// means another restored job already holds this key, so it is already watched.
 	key := keyFor(reqFromMeta(l.meta))
-	if m.gate.forceAcquire(key) {
+	if m.forceAdmit(key) {
 		if l.meta.ConversationID == "" && !l.meta.CaptureDisabled {
 			// Mirror StartJob: arm the capture so pollers can tell this
 			// restored fresh run's id is still being settled.
@@ -756,7 +766,7 @@ func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
 			m.captureFreshConversationID(&meta)
 		}
 		m.pendingCaptures.Delete(meta.ID)
-		m.gate.release(key)
+		m.releaseKey(key)
 	}()
 }
 
