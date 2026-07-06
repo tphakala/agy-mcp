@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
+
+// wantUUID1 is the conversation id the session-filter tests expect to survive
+// their directory filter.
+const wantUUID1 = "uuid-1"
 
 func TestListSessionsFromCache(t *testing.T) {
 	cache := t.TempDir()
@@ -51,9 +54,7 @@ func TestListSessionsMalformedCacheErrors(t *testing.T) {
 }
 
 func TestListSessionsFilteredByDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-specific: hardcoded /home/u paths do not survive Windows path canonicalization; cross-platform filtering is covered by TestListSessionsFilterMatchesRealDir")
-	}
+	skipIfWindows(t, "Unix-specific: hardcoded /home/u paths do not survive Windows path canonicalization; cross-platform filtering is covered by TestListSessionsFilterMatchesRealDir")
 	cache := t.TempDir()
 	data := `{"/home/u/proj":"uuid-1","/home/u/other":"uuid-2"}`
 	if err := os.WriteFile(filepath.Join(cache, "last_conversations.json"), []byte(data), 0o644); err != nil {
@@ -63,7 +64,7 @@ func TestListSessionsFilteredByDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 1 || sessions[0].ConversationID != "uuid-1" {
+	if len(sessions) != 1 || sessions[0].ConversationID != wantUUID1 {
 		t.Fatalf("got %+v", sessions)
 	}
 }
@@ -75,9 +76,7 @@ func TestListSessionsFilteredByDir(t *testing.T) {
 // a symlinked alias would never match. The filter must canonicalize the same way
 // StartJob canonicalizes a run's cwd (issue #24).
 func TestListSessionsFilterCanonicalizesSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-specific: uses os.Symlink (privileged on Windows) and a raw path in JSON")
-	}
+	skipIfWindows(t, "Unix-specific: uses os.Symlink (privileged on Windows) and a raw path in JSON")
 	realDir := t.TempDir()
 	resolved, err := filepath.EvalSymlinks(realDir)
 	if err != nil {
@@ -99,7 +98,7 @@ func TestListSessionsFilterCanonicalizesSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 1 || sessions[0].ConversationID != "uuid-1" {
+	if len(sessions) != 1 || sessions[0].ConversationID != wantUUID1 {
 		t.Fatalf("symlinked filter did not match resolved cache key: got %+v", sessions)
 	}
 }
@@ -116,7 +115,7 @@ func TestListSessionsFilterMatchesRealDir(t *testing.T) {
 	}
 	other := filepath.Join(dir, "other") // a distinct path that must be filtered out
 	cache := filepath.Join(t.TempDir(), "last_conversations.json")
-	data, err := json.Marshal(map[string]string{norm: "uuid-1", other: "uuid-2"})
+	data, err := json.Marshal(map[string]string{norm: wantUUID1, other: "uuid-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +126,7 @@ func TestListSessionsFilterMatchesRealDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 1 || sessions[0].ConversationID != "uuid-1" {
+	if len(sessions) != 1 || sessions[0].ConversationID != wantUUID1 {
 		t.Fatalf("directory filter did not match the real-dir cache key: got %+v", sessions)
 	}
 }

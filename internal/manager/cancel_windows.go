@@ -17,9 +17,22 @@ func (m *Manager) requestCancel(meta jobstore.Meta) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(jobstore.CancelPath(dir), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// Create the sentinel atomically (temp file + rename), matching the rest of the
+	// job-dir contract (meta.json, exit_code). The supervisor only checks the file's
+	// existence, so an empty file is already a valid signal; the rename additionally
+	// keeps any future content-reading consumer from ever seeing a half-written file.
+	tmp, err := os.CreateTemp(dir, "cancel-*.tmp")
 	if err != nil {
 		return err
 	}
-	return f.Close()
+	tmpName := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, jobstore.CancelPath(dir)); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,12 @@ func TestMain(m *testing.M) {
 
 // Build the binary once and use it as its own supervisor against a fake agy.
 func TestRunJobSubcommandEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The fake agy is a bash script (testutil.WriteFakeAgy), which the supervisor
+		// cannot exec on Windows. The run-job supervisor path is covered on Windows by
+		// internal/supervisor's TestRunCapturesOutputAndExit (fake agy via cmd.exe).
+		t.Skip("Unix-specific: bash-script fake agy is not executable on Windows")
+	}
 	bin, err := buildBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +88,12 @@ func TestRunJobSubcommandEndToEnd(t *testing.T) {
 // the signal to agy and writes the SIGTERM sentinel, which Status maps to
 // "cancelled".
 func TestRunJobCancelViaSignal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// This exercises cancel via SIGTERM, the Linux delivery mechanism; Windows
+		// delivers cancel through a sentinel file instead, covered by internal/supervisor's
+		// TestRunCancelViaSentinel. It also uses the bash-script fake agy.
+		t.Skip("Unix-specific: cancel-via-SIGTERM and bash-script fake agy do not apply on Windows")
+	}
 	bin, err := buildBinary()
 	if err != nil {
 		t.Fatal(err)

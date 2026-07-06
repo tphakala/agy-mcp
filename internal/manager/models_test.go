@@ -1,7 +1,6 @@
 package manager
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 
@@ -12,9 +11,7 @@ import (
 // TestListModelsIncludesStderrOnError: when `agy models` fails, the error must
 // carry agy's stderr (e.g. an auth prompt) rather than a bare "exit status 1".
 func TestListModelsIncludesStderrOnError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-specific: WriteFakeAgy emits a bash script that is not executable on Windows; ListModels error-surfacing is covered on Linux")
-	}
+	skipIfWindows(t, "Unix-specific: WriteFakeAgy emits a bash script that is not executable on Windows; ListModels error-surfacing is covered on Linux")
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stderr: "agy: not logged in", Exit: 1})
 	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
 

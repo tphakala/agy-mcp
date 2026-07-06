@@ -165,7 +165,11 @@ func canBreakaway() bool {
 	var inJob int32
 	r1, _, _ := procIsProcessInJob.Call(uintptr(windows.CurrentProcess()), 0, uintptr(unsafe.Pointer(&inJob)))
 	if r1 == 0 {
-		return true // IsProcessInJob failed; if not in a job the flag is harmless
+		// IsProcessInJob itself failed (r1 == 0 is the API failure return, not the
+		// in-a-job result). Fail closed: if we are in a job that forbids breakaway,
+		// setting the flag would make CreateProcess fail and the spawn would fail
+		// entirely, which is worse than a supervisor that stays in the parent job.
+		return false
 	}
 	if inJob == 0 {
 		return true // not in any job: CREATE_BREAKAWAY_FROM_JOB is ignored
