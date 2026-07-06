@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"os/signal"
 	"syscall"
 	"time"
 
@@ -80,10 +79,10 @@ func Run(jobDir string) error {
 // race-free.
 func run(jobDir string, grace time.Duration) error {
 	if !proc.Supported {
-		// Job supervision needs process groups, signal forwarding, and /proc, which
-		// only exist on Linux. The non-Linux proc.TerminateGroup stub cannot kill agy,
-		// so the timeout would "fire" without terminating anything and Run would block
-		// in cmd.Wait forever. Refuse here, matching StartJob's guard on the manager side.
+		// Job supervision is implemented on Linux (process groups) and Windows (Job
+		// Objects). On other platforms the proc stubs cannot terminate agy, so the hard
+		// timeout would "fire" without killing anything and Run would block in cmd.Wait
+		// forever. Refuse here, matching StartJob's guard on the manager side.
 		return proc.ErrUnsupported
 	}
 	m, err := jobstore.LoadDir(jobDir)
@@ -91,17 +90,16 @@ func run(jobDir string, grace time.Duration) error {
 		return err
 	}
 
-	// Install the SIGTERM handler first, before opening the job files and starting
-	// agy. A SIGTERM (the manager's cancel) landing during this startup window would
-	// otherwise kill the supervisor with its default disposition, leaving agy with
-	// nobody to forward the signal to, the timeout unenforced, and no sentinel
-	// written. The channel is buffered, so a signal that arrives before the
-	// forwarding goroutine reads it is held, not lost. Installing it before the job
-	// files are created also makes their existence a sound readiness barrier for
-	// tests: once out/err exist, the handler is already in place.
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGTERM)
-	defer signal.Stop(sig)
+	// Arm cancel detection first, before opening the job files and starting agy. A
+	// cancel (SIGTERM on Linux, a sentinel file on Windows) arriving during this
+	// startup window would otherwise be missed, leaving agy with nobody to
+	// terminate it, the timeout unenforced, and no sentinel written. waitForCancel
+	// holds an early cancel (a buffered signal, or a file that persists), so it is
+	// not lost. Arming it before the job files are created also makes their
+	// existence a sound readiness barrier for tests: once out/err exist, cancel is
+	// already armed.
+	cancel, stopCancel := waitForCancel(jobDir)
+	defer stopCancel()
 
 	// 0600: out/err capture full agy output, which often embeds source code, so
 	// they must not be readable by other users on a multi-user host. os.Create would
@@ -128,13 +126,29 @@ func run(jobDir string, grace time.Duration) error {
 	cmd.Stdin = devnull
 	cmd.Stdout = outF
 	cmd.Stderr = errF
-	// Put agy in its own process group so we can signal it and its children.
-	proc.SetGroup(cmd)
+	// Put agy in its own process group / job so the whole tree can be terminated
+	// together on cancel or timeout.
+	proc.ConfigureGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		_ = jobstore.WriteExitCodeDir(jobDir, jobstore.ExitSpawnFail)
 		return err
 	}
+	// Capture a handle to agy's process tree so cancel/timeout can terminate it and
+	// its descendants as a unit (kill -pgid on Linux, a Job Object on Windows).
+	// killOnClose=true: if the supervisor itself dies unexpectedly, the Job Object
+	// closing tears down agy and its descendants too (on Windows), rather than
+	// leaking them; on Linux the flag is a no-op (a crashing supervisor orphans agy).
+	grp, err := proc.Track(cmd, true)
+	if err != nil {
+		// Track only fails before Start, which already succeeded above; treat an
+		// unexpected failure as fatal, killing agy so it cannot outlive the sentinel.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = jobstore.WriteExitCodeDir(jobDir, jobstore.ExitSpawnFail)
+		return err
+	}
+	defer func() { _ = grp.Close() }()
 
 	// Terminate the agy process group on either an external SIGTERM (cancel from
 	// the manager) or the hard timeout, escalating to SIGKILL after a grace
@@ -151,21 +165,23 @@ func run(jobDir string, grace time.Duration) error {
 		select {
 		case <-done:
 			return
-		case <-sig:
+		case <-cancel:
 			close(cancelled) // cancel requested by the manager
 		case <-t.C:
 			close(timedOut)
 		}
-		_ = proc.TerminateGroup(cmd.Process.Pid, syscall.SIGTERM)
+		_ = grp.Terminate(syscall.SIGTERM)
 		select {
 		case <-done:
 		case <-time.After(grace):
 			// Do not signal a process group that may have already been reaped
-			// (and whose pgid could be recycled) once Wait has returned.
+			// (and whose pgid could be recycled) once Wait has returned. On Windows
+			// the first Terminate already hard-killed the job, so this escalation is
+			// a no-op there.
 			select {
 			case <-done:
 			default:
-				_ = proc.TerminateGroup(cmd.Process.Pid, syscall.SIGKILL)
+				_ = grp.Terminate(syscall.SIGKILL)
 			}
 		}
 	}()

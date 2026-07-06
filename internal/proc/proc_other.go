@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package proc
 
@@ -7,15 +7,23 @@ import (
 	"syscall"
 )
 
-// Non-Linux stubs so the manager and supervisor packages build on macOS and
-// Windows. Both callers check Supported and refuse before spawning, so these
-// are never reached at runtime.
+// Non-Linux, non-Windows stubs so the manager and supervisor packages build on
+// platforms (e.g. macOS) without a supervision implementation. Both callers
+// check Supported and refuse before spawning, so these are never reached at
+// runtime.
 
-// Supported is false off Linux: supervision relies on process groups and /proc.
+// Supported is false here: supervision relies on process groups / job objects.
 const Supported = false
 
-func SetGroup(_ *exec.Cmd) {}
+func ConfigureGroup(_ *exec.Cmd) {}
 
-func TerminateGroup(_ int, _ syscall.Signal) error { return ErrUnsupported }
+func StartDetached(_ *exec.Cmd) error { return ErrUnsupported }
 
-func Signal(_ int, _ syscall.Signal) error { return ErrUnsupported }
+// Group has no state on unsupported platforms; Track never returns one.
+type Group struct{}
+
+func Track(_ *exec.Cmd, _ bool) (*Group, error) { return nil, ErrUnsupported }
+
+func (g *Group) Terminate(_ syscall.Signal) error { return ErrUnsupported }
+
+func (g *Group) Close() error { return nil }

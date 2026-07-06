@@ -1,12 +1,13 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package manager
 
 import "github.com/tphakala/agy-mcp/internal/jobstore"
 
-// Non-Linux liveness stubs. Real liveness reads the kernel boot id and /proc, which only
-// exist on Linux. StartJob refuses to spawn on unsupported platforms, so these are never
-// reached for a live job; they exist so the package compiles on macOS and Windows.
+// Liveness stubs for platforms with no supervision implementation (e.g. macOS).
+// Linux reads the kernel boot id and /proc; Windows queries the process via
+// Win32 (liveness_windows.go). StartJob refuses to spawn on unsupported platforms,
+// so these are never reached for a live job; they exist so the package compiles.
 
 func readBootID() string { return "" }
 

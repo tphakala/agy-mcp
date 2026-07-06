@@ -3,6 +3,7 @@ package manager
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -104,6 +105,9 @@ func TestRestoreAndCollectSkipsRemovalWhenTTLDisabled(t *testing.T) {
 // serving with an unrestored gate (a stricter contract than GarbageCollect's, whose
 // scan failure was only logged).
 func TestRestoreAndCollectFailsClosedOnScanError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-specific: os.ReadDir on a regular file does not error on Windows, so the file-as-dir scan-failure technique does not apply; the fail-closed contract is covered on Linux")
+	}
 	state := t.TempDir()
 	// Make the jobs path a file so the directory scan errors (distinct from the
 	// benign "directory does not exist yet" case, which is not an error).

@@ -269,10 +269,10 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if req.ContinueLatest && req.ConversationID != "" {
 		return Job{}, fmt.Errorf("conversation_id and continue_latest are mutually exclusive: pass one or the other")
 	}
-	// Job supervision needs process groups and /proc, which only exist on Linux. On
-	// other platforms refuse before doing any work, so the failure is a clear error
-	// rather than a half-spawned job. stdio/HTTP serve, list_models, and list_sessions
-	// still work everywhere.
+	// Job supervision is implemented on Linux (process groups, /proc) and Windows
+	// (Job Objects, OpenProcess). On other platforms refuse before doing any work, so
+	// the failure is a clear error rather than a half-spawned job. stdio/HTTP serve,
+	// list_models, and list_sessions still work everywhere.
 	if !proc.Supported {
 		return Job{}, proc.ErrUnsupported
 	}
@@ -387,19 +387,36 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 
 	cmd := exec.Command(m.cfg.SupervisorExe, "run-job", dir)
 	cmd.Env = os.Environ()
-	proc.SetGroup(cmd)
 	// Detach stdio: supervisor must not inherit the manager's stdout (the
 	// JSON-RPC stream in stdio mode).
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
+	// StartDetached puts the supervisor in its own group/job and starts it detached
+	// so it survives the manager's death (init adoption on Linux; a non-kill-on-close
+	// Job Object on Windows).
+	if err := proc.StartDetached(cmd); err != nil {
 		// No supervisor was spawned, so the just-created job dir is a never-started
 		// orphan; remove it now rather than leaving it for a later GarbageCollect.
 		_ = m.store.Remove(id)
 		m.pendingCaptures.Delete(id)
 		m.releaseKey(key)
 		return Job{}, fmt.Errorf("spawn supervisor: %w", err)
+	}
+	// Capture a handle to the supervisor's process tree so the record-pid failure
+	// path below can terminate it (and any agy it already spawned) as a unit.
+	// killOnClose=false: closing the handle on manager exit must NOT kill the tree,
+	// so the detached supervisor still outlives the manager.
+	grp, err := proc.Track(cmd, false)
+	if err != nil {
+		// Started but untrackable (Track only fails before Start, which succeeded).
+		// Fail closed: kill the supervisor, reap it in the background, and clean up.
+		_ = cmd.Process.Kill()
+		go func() { _ = cmd.Wait() }()
+		_ = m.store.Remove(id)
+		m.pendingCaptures.Delete(id)
+		m.releaseKey(key)
+		return Job{}, fmt.Errorf("track supervisor: %w", err)
 	}
 	// Record the supervisor PID (for liveness and cancel) and its start time (so a
 	// later process that recycles the same PID within this boot is not mistaken for
@@ -416,9 +433,10 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// remove the dir and release the gate. Releasing only after the agy process
 		// group is gone keeps a conflicting same-key run from starting while the
 		// dying agy still holds its session lock.
-		_ = proc.TerminateGroup(cmd.Process.Pid, syscall.SIGTERM)
+		_ = grp.Terminate(syscall.SIGTERM)
 		go func() {
 			_ = cmd.Wait()
+			_ = grp.Close()
 			_ = m.store.Remove(id)
 			m.pendingCaptures.Delete(id)
 			m.releaseKey(key)
@@ -432,6 +450,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// the manager dies first, init adopts and reaps it.
 	go func() {
 		_ = cmd.Wait()
+		_ = grp.Close()
 		// For a successful fresh run, capture the conversation id agy created
 		// while the gate key is still held, then release. Gating on exit 0 avoids
 		// waiting out the capture budget for a run that created no conversation.

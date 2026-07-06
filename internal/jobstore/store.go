@@ -27,7 +27,7 @@ type Meta struct {
 	Prompt         string    `json:"prompt"`
 	StartedAt      time.Time `json:"started_at"`
 	PID            int       `json:"pid"`
-	StartTimeTicks uint64    `json:"start_time_ticks,omitempty"` // supervisor /proc start time; 0 = unknown
+	StartTimeTicks uint64    `json:"start_time_ticks,omitempty"` // supervisor start time (Linux /proc ticks, Windows FILETIME); 0 = unknown
 	BootID         string    `json:"boot_id"`
 	CwdUUIDBefore  string    `json:"cwd_uuid_before,omitempty"`
 	// CaptureDisabled marks a fresh run whose pre-run cache snapshot could not
@@ -57,6 +57,7 @@ const (
 	OutFile      = "out"       // captured agy stdout
 	ErrFile      = "err"       // captured agy stderr
 	ExitCodeFile = "exit_code" // completion sentinel
+	CancelFile   = "cancel"    // manager -> supervisor cancel request sentinel
 )
 
 // MetaPath, OutPath, ErrPath, and ExitCodePath join a job directory with the
@@ -67,6 +68,12 @@ func MetaPath(dir string) string     { return filepath.Join(dir, MetaFile) }
 func OutPath(dir string) string      { return filepath.Join(dir, OutFile) }
 func ErrPath(dir string) string      { return filepath.Join(dir, ErrFile) }
 func ExitCodePath(dir string) string { return filepath.Join(dir, ExitCodeFile) }
+
+// CancelPath is the manager -> supervisor cancel sentinel in a job directory.
+// On Windows the manager creates this file to request cancellation and the
+// supervisor polls for it (Windows has no POSIX signal to deliver to an
+// arbitrary process); on Linux cancel is delivered as SIGTERM instead.
+func CancelPath(dir string) string { return filepath.Join(dir, CancelFile) }
 
 // LoadDir reads and parses meta.json directly from a job directory. The
 // supervisor knows only the job dir (not the store root or the id), so this
