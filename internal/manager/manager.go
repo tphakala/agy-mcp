@@ -428,34 +428,17 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	} else if startTimeMandatory {
 		// darwin has no /proc/comm-style liveness fallback, so processAlive fails
 		// closed without a recorded start time; a job must never persist a 0. The
-		// read is a local lookup of a child we just forked, so a failure means it
-		// almost certainly died instantly. Tear it down like the UpdateMeta path
-		// below and release the gate.
-		_ = grp.Terminate(syscall.SIGTERM)
-		go func() {
-			_ = cmd.Wait()
-			_ = grp.Close()
-			_ = m.store.Remove(id)
-			m.pendingCaptures.Delete(id)
-			m.releaseKey(key)
-		}()
-		return Job{}, fmt.Errorf("record supervisor start time: sysctl kern.proc.pid failed for pid %d", cmd.Process.Pid)
+		// read is a local lookup of a child we just forked, so a failure (after the
+		// retries in readStartTimeTicks) means it almost certainly died instantly.
+		// Tear it down and release the gate.
+		m.abortSpawn(cmd, grp, id, key)
+		return Job{}, fmt.Errorf("record supervisor start time for pid %d", cmd.Process.Pid)
 	}
 	if err := m.store.UpdateMeta(meta); err != nil {
 		// Without a persisted PID the supervisor would be untrackable
-		// (uncancellable, and reported as not-alive). Fail closed: terminate it,
-		// then once it has fully exited (so nothing is still writing the job dir)
-		// remove the dir and release the gate. Releasing only after the agy process
-		// group is gone keeps a conflicting same-key run from starting while the
-		// dying agy still holds its session lock.
-		_ = grp.Terminate(syscall.SIGTERM)
-		go func() {
-			_ = cmd.Wait()
-			_ = grp.Close()
-			_ = m.store.Remove(id)
-			m.pendingCaptures.Delete(id)
-			m.releaseKey(key)
-		}()
+		// (uncancellable, and reported as not-alive). Fail closed: tear it down and
+		// release the gate once it has fully exited (see abortSpawn).
+		m.abortSpawn(cmd, grp, id, key)
 		return Job{}, fmt.Errorf("record supervisor pid: %w", err)
 	}
 	// Wait for the supervisor in the background. cmd.Wait returns exactly when
@@ -479,6 +462,24 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	}()
 
 	return Job{ID: id, ConversationID: req.ConversationID, State: StateRunning}, nil
+}
+
+// abortSpawn tears down a supervisor that was started but cannot be recorded as
+// a running job. It terminates the process group, then in the background reaps
+// it and — only once it has fully exited, so nothing is still writing the job
+// dir — removes the dir and releases the gate. Releasing only after the agy
+// process group is gone keeps a conflicting same-key run from starting while the
+// dying agy still holds its session lock. Both spawn-failure paths (start time
+// unreadable on darwin, and UpdateMeta failure) share it so they cannot diverge.
+func (m *Manager) abortSpawn(cmd *exec.Cmd, grp *proc.Group, id, key string) {
+	_ = grp.Terminate(syscall.SIGTERM)
+	go func() {
+		_ = cmd.Wait()
+		_ = grp.Close()
+		_ = m.store.Remove(id)
+		m.pendingCaptures.Delete(id)
+		m.releaseKey(key)
+	}()
 }
 
 // loadedJob is one job's meta from a single meta.json read, the shared input the

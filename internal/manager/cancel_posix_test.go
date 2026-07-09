@@ -12,8 +12,9 @@ import (
 )
 
 func TestCancelSignalsSupervisor(t *testing.T) {
-	// The liveness guard requires the target's /proc comm to match the
-	// configured supervisor basename, so stand in "sleep" as the supervisor.
+	// processAlive pins liveness by the recorded start time (set below), so any
+	// real, signalable process stands in as the supervisor. SupervisorExe feeds
+	// only the Linux comm fallback, which a recorded start time bypasses.
 	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, SupervisorExe: "sleep"})
 
 	// Spawn a real sleeper process we can signal.

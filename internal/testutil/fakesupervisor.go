@@ -17,9 +17,9 @@ import (
 // The generated script mimics `agy-mcp run-job <jobdir>`: it takes the job
 // directory as $2, writes the job's out (and err/exit_code) files there, and,
 // on Linux only, sets its comm to the script basename so the liveness comm
-// fallback sees the same value the real supervisor would report. On
-// macOS/Windows, identity is pinned by process start time instead, so the
-// fake — a real spawned process — needs no comm trick there.
+// fallback sees the same value the real supervisor would report. On macOS,
+// identity is pinned by process start time instead, so the fake — a real
+// spawned process — needs no comm trick there.
 type FakeSupervisor struct {
 	// AgyPath, when set, makes the script run that (fake) agy binary with
 	// `-p x`, streaming stdout to <dir>/out and stderr to <dir>/err and
@@ -70,8 +70,8 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 	sb.WriteString("#!/usr/bin/env bash\n")
 	if runtime.GOOS == "linux" {
 		// Linux liveness matches /proc/<pid>/comm against the supervisor basename;
-		// set it so the fake looks like the real supervisor. macOS/Windows pin
-		// identity by start time instead, so the fake needs no comm trick.
+		// set it so the fake looks like the real supervisor. macOS pins identity
+		// by start time instead, so the fake needs no comm trick there.
 		sb.WriteString("printf '%s' \"${0##*/}\" > /proc/$$/comm\n")
 	}
 	sb.WriteString("dir=\"$2\"\n")

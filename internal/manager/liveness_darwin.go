@@ -3,7 +3,6 @@
 package manager
 
 import (
-	"encoding/binary"
 	"syscall"
 
 	"github.com/tphakala/agy-mcp/internal/jobstore"
@@ -24,22 +23,25 @@ const startTimeMandatory = true
 func readBootID() string { return "darwin" }
 
 // readStartTimeTicks returns pid's start time as microseconds since the Unix
-// epoch, decoded from kp_proc.p_starttime — a struct timeval at offset 0 of the
-// kern.proc.pid kinfo_proc blob (Sec int64 @0, Usec int32 @8; LP64 and
-// little-endian on both darwin arches). p_starttime is the first union member
-// of the leading struct extern_proc, itself the first member of struct
-// kinfo_proc, so offset 0 is a stable ABI. Being absolute wall-clock it uniquely
-// pins a process across reboots, so a recycled PID never matches the original's
-// value. ok is false on any failure, so a transient error is never mistaken for
-// a recycled PID: callers only act on a successful read.
+// epoch, read from kp_proc.p_starttime via the typed kern.proc.pid accessor
+// unix.SysctlKinfoProc. Being an absolute wall-clock value it uniquely pins a
+// process across reboots, so a recycled PID never matches the original's value.
+//
+// A just-forked child we still hold is readable immediately, but a transient
+// sysctl error (e.g. an EINTR from a signal in the window right after fork) can
+// still occur, so retry a few times before concluding the read failed; a
+// genuinely dead PID errors on every attempt and correctly yields (0, false).
+// ok is false on any failure, so a transient error is never mistaken for a
+// recycled PID: callers only act on a successful read.
 func readStartTimeTicks(pid int) (uint64, bool) {
-	buf, err := unix.SysctlRaw("kern.proc.pid", pid)
-	if err != nil || len(buf) < 12 {
-		return 0, false
+	for range 3 {
+		kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+		if err == nil {
+			st := kp.Proc.P_starttime
+			return uint64(st.Sec)*1_000_000 + uint64(st.Usec), true
+		}
 	}
-	sec := binary.LittleEndian.Uint64(buf[0:8])
-	usec := uint64(binary.LittleEndian.Uint32(buf[8:12]))
-	return sec*1_000_000 + usec, true
+	return 0, false
 }
 
 // processAlive reports whether the job's recorded supervisor PID is still that

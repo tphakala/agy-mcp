@@ -16,8 +16,9 @@ import (
 
 // startFakeLiveSupervisor starts a real, long-lived process to stand in for a
 // detached job supervisor that survived a manager restart. It returns the pid and
-// the resolved path to the binary; the Manager's SupervisorExe must be set to that
-// path so processAlive's /proc/<pid>/comm check matches ("sleep").
+// the resolved path to the binary. Set the Manager's SupervisorExe to that path
+// for the Linux comm fallback; on darwin (and whenever a start time is recorded)
+// processAlive pins identity by start time and does not consult comm.
 func startFakeLiveSupervisor(t *testing.T) (pid int, exePath string) {
 	t.Helper()
 	exePath, err := exec.LookPath("sleep")
