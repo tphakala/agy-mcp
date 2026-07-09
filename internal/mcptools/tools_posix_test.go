@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package mcptools
 
 import (
@@ -9,10 +11,10 @@ import (
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
-// This file is _linux-gated: the tests drive StartJob, which only runs job
-// supervision on Linux. The cross-platform tool tests (toStartRequest
-// validation, HTTP serving) live in tools_test.go / serve_http_test.go so
-// `go test ./...` stays green on macOS and Windows.
+// This file is posix-gated (linux || darwin): the tests drive StartJob, which
+// only runs job supervision on Linux and macOS. The cross-platform tool tests
+// (toStartRequest validation, HTTP serving) live in tools_test.go /
+// serve_http_test.go so `go test ./...` stays green on Windows too.
 
 // TestListModelsOverMCP exercises the list_models tool end to end: the handler
 // runs `agy models` (the fake agy prints two lines) and returns them on the
