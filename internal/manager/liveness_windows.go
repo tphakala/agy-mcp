@@ -9,6 +9,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// startTimeMandatory reports whether StartJob must fail when it cannot record a
+// supervisor start time. It is false wherever processAlive has a name-based
+// liveness fallback (Linux /proc/comm, Windows image name) or never runs a live
+// job (the unsupported stub); only darwin (no fallback) sets it true.
+const startTimeMandatory = false
+
 // readBootID has no kernel-boot-id analog on Windows, and none is needed:
 // readStartTimeTicks returns an absolute wall-clock creation time that already
 // differs for a PID recycled after a reboot, so boot pinning is subsumed. It

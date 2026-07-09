@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +15,11 @@ import (
 // FakeSupervisor configures a stand-in supervisor script for tests.
 //
 // The generated script mimics `agy-mcp run-job <jobdir>`: it takes the job
-// directory as $2, writes the job's out (and err/exit_code) files there, and
-// sets its comm to the script basename so the liveness comm fallback sees the
-// same value the real supervisor would report.
+// directory as $2, writes the job's out (and err/exit_code) files there, and,
+// on Linux only, sets its comm to the script basename so the liveness comm
+// fallback sees the same value the real supervisor would report. On
+// macOS/Windows, identity is pinned by process start time instead, so the
+// fake — a real spawned process — needs no comm trick there.
 type FakeSupervisor struct {
 	// AgyPath, when set, makes the script run that (fake) agy binary with
 	// `-p x`, streaming stdout to <dir>/out and stderr to <dir>/err and
@@ -59,13 +62,18 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 		t.Fatal("FakeSupervisor: CacheDelay requires CachePath")
 	}
 	dir := t.TempDir()
-	// The basename doubles as the comm value; it must stay under the kernel's
-	// 15-char comm limit for the liveness comm fallback to match.
+	// On Linux the basename doubles as the comm value; it must stay under the
+	// kernel's 15-char comm limit for the liveness comm fallback to match.
 	path := filepath.Join(dir, "fake-sup")
 
 	var sb strings.Builder
 	sb.WriteString("#!/usr/bin/env bash\n")
-	sb.WriteString("printf '%s' \"${0##*/}\" > /proc/$$/comm\n")
+	if runtime.GOOS == "linux" {
+		// Linux liveness matches /proc/<pid>/comm against the supervisor basename;
+		// set it so the fake looks like the real supervisor. macOS/Windows pin
+		// identity by start time instead, so the fake needs no comm trick.
+		sb.WriteString("printf '%s' \"${0##*/}\" > /proc/$$/comm\n")
+	}
 	sb.WriteString("dir=\"$2\"\n")
 	if cfg.AgyPath != "" {
 		fmt.Fprintf(&sb, "%q -p x > \"$dir/%s\" 2> \"$dir/%s\"\ncode=$?\n", cfg.AgyPath, jobstore.OutFile, jobstore.ErrFile)

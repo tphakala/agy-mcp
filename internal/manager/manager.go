@@ -425,6 +425,21 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	meta.PID = cmd.Process.Pid
 	if ticks, ok := readStartTimeTicks(cmd.Process.Pid); ok {
 		meta.StartTimeTicks = ticks
+	} else if startTimeMandatory {
+		// darwin has no /proc/comm-style liveness fallback, so processAlive fails
+		// closed without a recorded start time; a job must never persist a 0. The
+		// read is a local lookup of a child we just forked, so a failure means it
+		// almost certainly died instantly. Tear it down like the UpdateMeta path
+		// below and release the gate.
+		_ = grp.Terminate(syscall.SIGTERM)
+		go func() {
+			_ = cmd.Wait()
+			_ = grp.Close()
+			_ = m.store.Remove(id)
+			m.pendingCaptures.Delete(id)
+			m.releaseKey(key)
+		}()
+		return Job{}, fmt.Errorf("record supervisor start time: sysctl kern.proc.pid failed for pid %d", cmd.Process.Pid)
 	}
 	if err := m.store.UpdateMeta(meta); err != nil {
 		// Without a persisted PID the supervisor would be untrackable

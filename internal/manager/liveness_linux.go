@@ -12,6 +12,12 @@ import (
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 )
 
+// startTimeMandatory reports whether StartJob must fail when it cannot record a
+// supervisor start time. It is false wherever processAlive has a name-based
+// liveness fallback (Linux /proc/comm, Windows image name) or never runs a live
+// job (the unsupported stub); only darwin (no fallback) sets it true.
+const startTimeMandatory = false
+
 // bootID reads the kernel boot id once and caches it. The value is stable for
 // the lifetime of the process, so liveness checks (which run per poll) do not
 // re-read /proc each time.
