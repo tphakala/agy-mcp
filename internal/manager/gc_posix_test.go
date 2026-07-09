@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package manager
 
 import (
@@ -31,11 +33,16 @@ func TestGarbageCollectKeepsExpiredButAliveJob(t *testing.T) {
 	}()
 
 	// Expired (StartedAt well before the TTL cutoff) but its supervisor is alive.
+	startTicks, ok := readStartTimeTicks(cmd.Process.Pid)
+	if !ok {
+		t.Fatal("readStartTimeTicks(target) failed")
+	}
 	if _, err := m.store.Create(jobstore.Meta{
-		ID:        "alive",
-		PID:       cmd.Process.Pid,
-		BootID:    readBootID(),
-		StartedAt: time.Now().Add(-2 * time.Hour),
+		ID:             "alive",
+		PID:            cmd.Process.Pid,
+		BootID:         readBootID(),
+		StartTimeTicks: startTicks,
+		StartedAt:      time.Now().Add(-2 * time.Hour),
 	}); err != nil {
 		t.Fatal(err)
 	}

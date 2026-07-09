@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package manager
 
 import (
@@ -24,8 +26,12 @@ func TestCancelSignalsSupervisor(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
+	startTicks, ok := readStartTimeTicks(cmd.Process.Pid)
+	if !ok {
+		t.Fatal("readStartTimeTicks(target) failed")
+	}
 	if _, err := m.store.Create(jobstore.Meta{
-		ID: "j", PID: cmd.Process.Pid, BootID: readBootID(), StartedAt: time.Now(),
+		ID: "j", PID: cmd.Process.Pid, BootID: readBootID(), StartTimeTicks: startTicks, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}

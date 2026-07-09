@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package manager
 
 import (
@@ -46,15 +48,25 @@ func newManagerForRestore(t *testing.T, exePath string, maxConcurrency int) *Man
 	return m
 }
 
+// createLiveJob is shared by both "live" and "dead" restore tests: it records
+// pid's real start time when readable (a genuinely live pid) and otherwise
+// leaves StartTimeTicks at its zero value (a killed-and-reaped pid, whose
+// start time can no longer be read) — darwin's processAlive fails closed on a
+// live pid with no recorded start time, but a dead pid still reads as dead on
+// both platforms via kill(pid,0) regardless of StartTimeTicks.
 func createLiveJob(t *testing.T, m *Manager, id, cwd string, pid int) {
 	t.Helper()
-	if _, err := m.store.Create(jobstore.Meta{
+	meta := jobstore.Meta{
 		ID:        id,
 		Cwd:       cwd,
 		PID:       pid,
 		BootID:    readBootID(),
 		StartedAt: time.Now(),
-	}); err != nil {
+	}
+	if ticks, ok := readStartTimeTicks(pid); ok {
+		meta.StartTimeTicks = ticks
+	}
+	if _, err := m.store.Create(meta); err != nil {
 		t.Fatalf("create live job: %v", err)
 	}
 }
@@ -241,12 +253,17 @@ func TestRestoreAndCollectCollectsExpiredAndRestoresLive(t *testing.T) {
 	// A live job whose supervisor survived the restart, itself past the TTL: GC must
 	// keep it (alive), and the gate must re-occupy its key.
 	liveCwd := t.TempDir()
+	startTicks, ok := readStartTimeTicks(pid)
+	if !ok {
+		t.Fatal("readStartTimeTicks(target) failed")
+	}
 	if _, err := m.store.Create(jobstore.Meta{
-		ID:        "live-1",
-		Cwd:       liveCwd,
-		PID:       pid,
-		BootID:    readBootID(),
-		StartedAt: time.Now().Add(-2 * time.Hour),
+		ID:             "live-1",
+		Cwd:            liveCwd,
+		PID:            pid,
+		BootID:         readBootID(),
+		StartTimeTicks: startTicks,
+		StartedAt:      time.Now().Add(-2 * time.Hour),
 	}); err != nil {
 		t.Fatal(err)
 	}

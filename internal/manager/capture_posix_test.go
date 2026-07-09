@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package manager
 
 import (
@@ -21,7 +23,14 @@ func TestFreshRunCapturesConversationID(t *testing.T) {
 	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cwd := t.TempDir()
+	// normalizeCwd (via StartJob) resolves symlinks before storing meta.Cwd, so
+	// the cache-lookup key must be resolved the same way: on darwin t.TempDir()
+	// is a symlink (/var/folders/... -> /private/var/folders/...), and a
+	// CacheJSON keyed by the unresolved path would never match meta.Cwd.
+	cwd, err := normalizeCwd(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	const newUUID = "11111111-2222-3333-4444-555555555555"
 
 	c := config.Config{
@@ -326,7 +335,13 @@ func TestCapturePendingSettles(t *testing.T) {
 	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cwd := t.TempDir()
+	// See the identical comment in TestFreshRunCapturesConversationID: the
+	// cache-lookup key must match the symlink-resolved path StartJob persists
+	// as meta.Cwd, or the fake supervisor's cache write is never attributed.
+	cwd, err := normalizeCwd(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	const newUUID = "55556666-7777-8888-9999-000011112222"
 
 	c := config.Config{
