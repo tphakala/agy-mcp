@@ -7,10 +7,10 @@ import (
 	"syscall"
 )
 
-// Non-Linux, non-Windows stubs so the manager and supervisor packages build on
-// platforms (e.g. macOS) without a supervision implementation. Both callers
-// check Supported and refuse before spawning, so these are never reached at
-// runtime.
+// Non-Linux, non-Windows, non-macOS stubs so the manager and supervisor packages
+// build on platforms (e.g. FreeBSD) without a supervision implementation. Both
+// callers check Supported and refuse before spawning, so these are never
+// reached at runtime.
 
 // Supported is false here: supervision relies on process groups / job objects.
 const Supported = false

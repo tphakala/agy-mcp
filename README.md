@@ -38,7 +38,7 @@ Two transports run the same core:
 
 - The `agy` binary on `PATH` (or configured explicitly via `AGY_MCP_AGY_PATH`). agy 1.0.9 or newer is recommended (see the continuation note below).
 - Go 1.26+ to build.
-- The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_run_sync` / `agy_status` / `agy_cancel`) is implemented on **Linux** (process groups, `/proc`, the kernel boot id) and **Windows** (Job Objects, `OpenProcess` + process creation time, `LockFileEx`). On **macOS** those async tools return a clear "job supervision is only supported on Linux and Windows" error, while stdio/HTTP serving, `list_models`, and `list_sessions` work everywhere.
+- The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_run_sync` / `agy_status` / `agy_cancel`) is implemented on **Linux** and **macOS** (process groups, SIGTERM cancel, an advisory flock) and on **Windows** (Job Objects, `OpenProcess` + process creation time, `LockFileEx`); stdio/HTTP serving, `list_models`, and `list_sessions` work identically everywhere.
 
   Windows behaves the same as Linux with two documented differences:
   - **Cancel and hard timeout are hard kills.** Linux sends agy `SIGTERM` and waits a 10s grace before `SIGKILL`; Windows has no equivalent signal for a detached process, so `TerminateJobObject` ends the whole process tree immediately with no flush window.
@@ -142,7 +142,7 @@ go test ./... -race
 golangci-lint run
 ```
 
-CI builds and vets on Linux and macOS, runs the race-enabled test suite on Linux, and cross-compiles for Windows.
+CI builds and vets on Linux, macOS, and Windows; runs the race-enabled test suite on Linux and macOS; and runs the test suite (without the race detector) on Windows.
 
 ## License
 

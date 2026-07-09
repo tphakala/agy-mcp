@@ -79,10 +79,11 @@ func Run(jobDir string) error {
 // race-free.
 func run(jobDir string, grace time.Duration) error {
 	if !proc.Supported {
-		// Job supervision is implemented on Linux (process groups) and Windows (Job
-		// Objects). On other platforms the proc stubs cannot terminate agy, so the hard
-		// timeout would "fire" without killing anything and Run would block in cmd.Wait
-		// forever. Refuse here, matching StartJob's guard on the manager side.
+		// Job supervision is implemented on Linux and macOS (process groups) and
+		// Windows (Job Objects). On other platforms the proc stubs cannot terminate
+		// agy, so the hard timeout would "fire" without killing anything and Run
+		// would block in cmd.Wait forever. Refuse here, matching StartJob's guard on
+		// the manager side.
 		return proc.ErrUnsupported
 	}
 	m, err := jobstore.LoadDir(jobDir)
