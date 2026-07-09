@@ -28,9 +28,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      # build + vet on every OS proves the package compiles cross-platform (macOS gets
-      # the unsupported-platform stubs). Job supervision is implemented on Linux and
-      # Windows, so both run the test suite; macOS only builds and vets the stubs.
+      # build + vet on every OS proves the package compiles cross-platform. Job
+      # supervision runs on Linux, macOS, and Windows, so all three run the test
+      # suite; Linux and macOS add -race (both provide the cgo C toolchain), while
+      # Windows omits it (no C toolchain on PATH for the race detector).
       - run: go build ./...
       - run: go vet ./...
       - name: Test (race)
@@ -41,6 +42,9 @@ jobs:
       - name: Test (Windows)
         if: matrix.os == 'windows-latest'
         run: go test ./...
+      - name: Test (macOS, race)
+        if: matrix.os == 'macos-latest'
+        run: go test ./... -race
   lint:
     name: Lint
     runs-on: ubuntu-latest
