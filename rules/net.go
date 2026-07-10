@@ -4,6 +4,39 @@ package gorules
 
 import "github.com/quasilyte/go-ruleguard/dsl"
 
+// JoinHostPort detects fmt.Sprintf patterns for a bare host:port and suggests
+// net.JoinHostPort. Kept alongside the stock nosprintfhostport linter rather
+// than being superseded by it: nosprintfhostport's upstream analyzer only
+// matches a scheme-prefixed URL ("scheme://%s:..."), never the bare
+// "%s:%d"/"%v:%d" form this rule targets (verified empirically), which is the
+// common case for building a raw net.Dial/net.Listen/http.Server.Addr address.
+//
+// The old pattern:
+//
+//	addr := fmt.Sprintf("%s:%d", host, port)
+//
+// Should be:
+//
+//	addr := net.JoinHostPort(host, strconv.Itoa(port))
+//
+// net.JoinHostPort properly handles IPv6 addresses by wrapping them in brackets,
+// which fmt.Sprintf does not. This is critical for network code correctness.
+//
+// Note: This rule only flags patterns with integer ports to reduce false positives.
+// String concatenation patterns like "host + : + port" are too common for non-network
+// use cases (cache keys, identifiers, etc.) and are not flagged.
+//
+// See: https://pkg.go.dev/net#JoinHostPort
+func JoinHostPort(m dsl.Matcher) {
+	// Only flag fmt.Sprintf with integer port - this is a strong signal for network addresses
+	// String ports could be cache keys, identifiers, etc.
+	m.Match(
+		`fmt.Sprintf("%s:%d", $host, $port)`,
+		`fmt.Sprintf("%v:%d", $host, $port)`,
+	).
+		Report("use net.JoinHostPort($host, strconv.Itoa($port)) instead of fmt.Sprintf for host:port (handles IPv6 correctly)")
+}
+
 // FilepathIsLocal detects simple path traversal checks that could use filepath.IsLocal.
 //
 // Old pattern (manual path traversal check):

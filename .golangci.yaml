@@ -72,6 +72,15 @@ linters:
       for-loops: true
     exhaustive:
       default-signifies-exhaustive: true
+    usetesting:
+      # Both default to false upstream (ldez/usetesting); without these,
+      # usetesting silently does not flag context.Background()/context.TODO()
+      # in tests at all, verified empirically with the pinned golangci-lint
+      # version, so leaving them off would make the rules/doc.go policy
+      # comment's "usetesting covers the same ground as TestingContext" claim
+      # false as configured.
+      context-background: true
+      context-todo: true
   exclusions:
     rules:
       # goconst gained cross-file scanning in golangci-lint v2.12 (the old
