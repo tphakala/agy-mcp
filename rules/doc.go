@@ -39,14 +39,18 @@
 //     reason, SA1019 names both replacements per symbol where this rule
 //     named only one.
 //   - builtins.go's RangeOverInteger, reflect.go's ReflectTypeOf,
-//     ReflectFieldsIterator, ReflectMethodsIterator, ReflectInsOutsIterator:
-//     modernize's rangeint/reflecttypefor/stditerators analyzers cover the
-//     identical patterns (rangeint additionally respects the same safety
-//     exclusions RangeOverInteger did: a mutated loop bound, b.N benchmark
-//     loops, reflect Num* counters; reflecttypefor also matches a
-//     bare-variable form ReflectTypeOf did not) with autofix, which these
-//     rules deliberately declined to offer for safety/import-pruning
-//     reasons. Not just deduplication -- modernize is a strict upgrade.
+//     ReflectInsOutsIterator: modernize's rangeint/reflecttypefor/
+//     stditerators analyzers cover the identical patterns (rangeint
+//     additionally respects the same safety exclusions RangeOverInteger
+//     did: a mutated loop bound, b.N benchmark loops, reflect Num*
+//     counters; reflecttypefor also matches a bare-variable form
+//     ReflectTypeOf did not) with autofix, which these rules deliberately
+//     declined to offer for safety/import-pruning reasons. Not just
+//     deduplication -- modernize is a strict upgrade. ReflectInsOutsIterator
+//     has no reflect.Value-side equivalent (NumIn/NumOut are Type-only, for
+//     function signatures), so unlike ReflectFieldsIterator/
+//     ReflectMethodsIterator below there is no parallel-access case to
+//     preserve; the removal is clean.
 //   - strings.go's SplitIteration and FieldsIteration (both the strings.*
 //     and bytes.* forms in each): modernize's stringsseq analyzer matches
 //     the identical patterns with autofix, including the newline-separator
@@ -88,6 +92,17 @@
 //   - slices.go's SliceRepeat: modernize's rangeint analyzer also matches
 //     its spread-append pattern with a generic message; same latent,
 //     accepted uniq-by-line collision, pre-existing and not addressed here.
+//   - reflect.go's ReflectFieldsIterator, ReflectMethodsIterator: verified
+//     modernize's stditerators silently declines to fire at all (not even a
+//     worse message -- zero signal) on the common "parallel Type+Value
+//     indexed access" pattern (sf := t.Field(i); vf := val.Field(i), same
+//     i; likewise for Method(i)), almost certainly because it cannot safely
+//     fuse two independent NumField/NumMethod-bound accesses into one
+//     Fields()/Methods() iterator without an index correspondence
+//     guarantee. These two rules still fire unconditionally on every
+//     Type/Value NumField or NumMethod loop, so they remain the only signal
+//     for the parallel-access case, at the cost of losing the uniq-by-line
+//     lottery to stditerators' autofix on the simple single-target case.
 //
 // Checked against modernize and confirmed as genuinely unique, currently no
 // overlap at all (revisit on a future golangci-lint bump):
@@ -106,7 +121,12 @@
 // stdlib-deprecation matchers; net.go's DeprecatedReverseProxyDirector's
 // assignment-form match was extended to accept both *httputil.ReverseProxy
 // and the value type (matching TimeDateTimeConstants's identical
-// both-forms pattern in time.go).
+// both-forms pattern in time.go). The short package-name form (not the
+// fully-qualified "net/http/httputil.ReverseProxy") is deliberate and
+// matches every other Type.Is call in this package (time.Time, sync.
+// WaitGroup, testing.B, etc.): verified empirically that ruleguard resolves
+// short names via its own stdlib import-path table, not literal string
+// matching, so the short form is not a reliability risk.
 //
 // TestingContext was removed in favor of enabling the stock usetesting
 // linter with its context-background and context-todo settings explicitly
