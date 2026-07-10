@@ -307,6 +307,12 @@ func waitForCapturedID(t *testing.T, m *Manager, id string, within time.Duration
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The job is done and the capture goroutine has settled (armed pending
+		// cleared) with no id: that outcome is final, not something more waiting
+		// would change, so fail fast instead of burning the rest of the timeout.
+		if st.State == StateDone && !m.CapturePending(id) && st.ConversationID == "" {
+			t.Fatal("job finished and capture settled, but no conversation id was captured")
+		}
 		return st.State == StateDone && st.ConversationID != ""
 	}, fmt.Sprintf("job %s never captured a conversation id within %s", id, within))
 	return st
