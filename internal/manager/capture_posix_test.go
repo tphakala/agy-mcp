@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,7 +106,10 @@ func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 
 	// Wait for the job to finish; the id stays empty (no conversation was created).
 	testutil.WaitFor(t, 2*time.Second, func() bool {
-		st, _ := m.Status(job.ID)
+		st, err := m.Status(job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if st.State != StateDone {
 			return false
 		}
@@ -116,12 +120,19 @@ func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 	}, "job never reached done state")
 
 	// The gate key must have been released after the capture budget: a second
-	// same-cwd fresh run eventually succeeds.
+	// same-cwd fresh run eventually succeeds. Any error other than the expected
+	// "conflicting" gate refusal is a genuine bug, not something to retry through.
 	var job2 Job
 	testutil.WaitFor(t, 2*time.Second, func() bool {
 		var err error
 		job2, err = m.StartJob(StartRequest{Prompt: "again", Cwd: cwd})
-		return err == nil
+		if err == nil {
+			return true
+		}
+		if !strings.Contains(err.Error(), "conflicting") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return false
 	}, "gate key was not released after a fresh run that created no conversation")
 	// Wait for the second job's supervisor to finish before returning. It writes
 	// into StateDir (a t.TempDir), and a still-running supervisor races the TempDir

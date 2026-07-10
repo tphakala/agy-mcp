@@ -236,7 +236,10 @@ func TestRunPeriodicGCCollectsAndStops(t *testing.T) {
 
 	// The ticker collects the expired job.
 	testutil.WaitFor(t, 2*time.Second, func() bool {
-		ids, _ := m.store.List()
+		ids, err := m.store.List()
+		if err != nil {
+			t.Fatal(err)
+		}
 		return len(ids) == 0
 	}, "periodic GC did not collect the expired job")
 
