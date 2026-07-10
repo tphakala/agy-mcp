@@ -21,18 +21,58 @@
 //     message; verified with `go vet` and a minimal govet-only golangci-lint
 //     config). DeferredTimeNow stays: govet's defers analyzer does not flag a
 //     bare deferred time.Now(), only defer-wrapped time.Since().
-//   - Some Deprecated* matchers (crypto.go, reflect.go, and net.go's
-//     DeprecatedReverseProxyDirector) keep duplicating staticcheck's SA1019
-//     anyway: their messages name the concrete attack class (Bleichenbacher,
-//     active-attack vulnerability in unauthenticated cipher modes, hop-by-hop
-//     header abuse, etc.) and the specific replacement API, which is more
-//     actionable than SA1019's generic "X is deprecated" text. Sometimes
-//     staticcheck's message wins the uniq-by-line lottery instead and the
-//     richer text doesn't show, but the line is still flagged either way, so
-//     this only costs message quality, never a missed violation. That trade
-//     is accepted deliberately. This is not a full audit of every
-//     Deprecated*-flavored matcher in the package against SA1019 or against
-//     the now-enabled modernize linter; see #77 for the remaining candidates.
+//   - Some Deprecated* matchers (crypto.go, reflect.go's
+//     DeprecatedCipherModes/DeprecatedElliptic/DeprecatedRSAMultiPrime/
+//     DeprecatedPKCS1v15, and net.go's DeprecatedReverseProxyDirector) keep
+//     duplicating staticcheck's SA1019 anyway: their messages name the
+//     concrete attack class (Bleichenbacher, active-attack vulnerability in
+//     unauthenticated cipher modes, hop-by-hop header abuse, etc.) and the
+//     specific replacement API, which is more actionable than SA1019's
+//     generic "X is deprecated" text. Sometimes staticcheck's message wins
+//     the uniq-by-line lottery instead and the richer text doesn't show, but
+//     the line is still flagged either way, so this only costs message
+//     quality, never a missed violation. That trade is accepted
+//     deliberately.
+//   - random.go's rand.Seed keeps duplicating SA1019 for the same reason,
+//     plus a capability SA1019 cannot replicate: the message substitutes the
+//     actual matched $seed into the suggested replacement call, so the fix
+//     shown is already correct for that call site, not generic prose.
+//     rand.Read's submatch was removed instead: verified SA1019's message
+//     names both replacements (crypto/rand.Read and, for a deterministic
+//     non-crypto source, math/rand/v2.ChaCha8.Read), while this rule's
+//     message named only the first, so SA1019 is strictly more complete here.
+//   - runtime.go's GorootDeprecated was removed: verified SA1019's message
+//     for runtime.GOROOT is more detailed than this rule's, with no
+//     offsetting gain (no $capture substitution, unlike rand.Seed above).
+//   - builtins.go's RangeOverInteger was removed: verified the now-enabled
+//     modernize linter's rangeint analyzer has equal-or-better safety
+//     awareness (it correctly skips a loop bound mutated in the body, skips
+//     b.N benchmark loops, and defers to its own better stditerators
+//     suggestion for reflect Type.NumField loops -- all cases this rule also
+//     excluded) plus autofix, which this rule deliberately declined to offer
+//     for the same safety reasons. Dropping it is not just deduplication;
+//     modernize is a strict upgrade here. This leaves a latent, pre-existing,
+//     out-of-scope collision unfixed: SliceRepeat's spread-append pattern
+//     (slices.go) is also matched by modernize's rangeint with its generic
+//     message, so uniq-by-line arbitrarily picks between the two on that
+//     line; not addressed here since it is not new and not caused by
+//     removing RangeOverInteger.
+//   - sync.go's WaitGroupGo kept only its param-passed-closure pattern and
+//     dropped the direct-closure one: verified modernize's waitgroup
+//     analyzer catches the direct form with autofix producing an identical
+//     rewrite to this rule's own former Suggest(), but does not catch the
+//     param-passed form at all, so that half is unique coverage.
+//   - testing.go's BenchmarkLoop and errors.go's ErrorsAsType were checked
+//     against modernize and kept unchanged: golangci-lint v2.12.2's
+//     modernize does not implement a b.Loop() or errors.AsType analyzer at
+//     all (confirmed against its configurable analyzer list), so these
+//     provide genuine, currently-unique coverage. Revisit on a future
+//     golangci-lint bump.
+//   - reflect.go's ReflectPtrTo was renamed to DeprecatedReflectPtrTo, and
+//     net.go's DeprecatedReverseProxyDirector's assignment-form match was
+//     extended to accept both *httputil.ReverseProxy and the value type
+//     (matching TimeDateTimeConstants's identical both-forms pattern in
+//     time.go), for consistency and completeness rather than an overlap fix.
 //
 // TestingContext was removed in favor of enabling the stock usetesting
 // linter with its context-background and context-todo settings explicitly

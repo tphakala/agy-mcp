@@ -4,15 +4,20 @@ package gorules
 
 import "github.com/quasilyte/go-ruleguard/dsl"
 
-// WaitGroupGo detects the old sync.WaitGroup pattern and suggests using Go 1.25's wg.Go().
+// WaitGroupGo detects the old sync.WaitGroup pattern, passed by reference to a
+// closure parameter, and suggests using Go 1.25's wg.Go().
 //
-// The old pattern:
+// The direct-closure form (wg.Add(1); go func() { defer wg.Done(); ... }())
+// is not matched here: the now-enabled modernize linter's waitgroup analyzer
+// already catches it, with autofix, verified to emit the identical rewrite
+// this rule's own former Suggest() produced. This rule keeps only the
+// param-passed form modernize does not cover:
 //
 //	wg.Add(1)
-//	go func() {
-//	    defer wg.Done()
+//	go func(w *sync.WaitGroup) {
+//	    defer w.Done()
 //	    doSomething()
-//	}()
+//	}(wg)
 //
 // Can be simplified to:
 //
@@ -29,16 +34,6 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 //
 // See: https://pkg.go.dev/sync#WaitGroup.Go
 func WaitGroupGo(m dsl.Matcher) {
-	// Pattern 1: wg.Add(1) followed by go func() with defer wg.Done()
-	// This matches when the defer is the first statement
-	m.Match(
-		`$wg.Add(1); go func() { defer $wg.Done(); $*body }()`,
-	).
-		Where(m["wg"].Type.Is("*sync.WaitGroup") || m["wg"].Type.Is("sync.WaitGroup")).
-		Report("use $wg.Go(func() { $body }) instead of manual Add/Done pattern (Go 1.25+)").
-		Suggest("$wg.Go(func() { $body })")
-
-	// Pattern 2: When wg is passed by reference to the closure
 	m.Match(
 		`$wg.Add(1); go func($param $typ) { defer $param.Done(); $*body }($wg)`,
 		`$wg.Add(1); go func($param $typ) { defer $param.Done(); $*body }(&$wg)`,

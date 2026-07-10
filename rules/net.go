@@ -151,7 +151,11 @@ func DeprecatedReverseProxyDirector(m dsl.Matcher) {
 	m.Match(
 		`$proxy.Director = $_`,
 	).
-		Where(m["proxy"].Type.Is("*httputil.ReverseProxy")).
+		// Both forms accepted (see TimeDateTimeConstants in time.go for the
+		// identical pattern): ReverseProxy is normally used as *ReverseProxy,
+		// but a value embedded in another struct or a local var also assigns
+		// through this exact syntax.
+		Where(m["proxy"].Type.Is("*httputil.ReverseProxy") || m["proxy"].Type.Is("httputil.ReverseProxy")).
 		Report("httputil.ReverseProxy.Director is deprecated in Go 1.20: Director is vulnerable to hop-by-hop header abuse; use Rewrite instead for safe header handling")
 }
 

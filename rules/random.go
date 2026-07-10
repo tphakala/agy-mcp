@@ -8,7 +8,11 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 //
 // Go 1.20 deprecated (global rand is auto-seeded since 1.20):
 //   - rand.Seed() - use rand.New(rand.NewSource(seed)) for reproducibility
-//   - rand.Read() - use crypto/rand.Read() for cryptographic purposes
+//
+// rand.Read() is also Go 1.20-deprecated but is not matched here: staticcheck's
+// SA1019 covers it with a message naming both replacements (crypto/rand.Read
+// for security, math/rand/v2.ChaCha8.Read for a deterministic non-crypto
+// source), which is more complete than this rule's single-alternative text.
 //
 // Go 1.22 introduced math/rand/v2 with improved APIs:
 //
@@ -59,15 +63,12 @@ func RandV2Migration(m dsl.Matcher) {
 	).
 		Report("consider using math/rand/v2: rand.Int64N($n) instead of rand.Int63n (Go 1.22+)")
 
-	// rand.Seed is deprecated (Go 1.20+, auto-seeded)
+	// rand.Seed is deprecated (Go 1.20+, auto-seeded). Kept deliberately despite
+	// duplicating staticcheck's SA1019 on this symbol: the message substitutes
+	// the actual matched $seed into the replacement call, giving a concrete,
+	// copy-pasteable fix SA1019's generic prose cannot produce.
 	m.Match(
 		`rand.Seed($seed)`,
 	).
 		Report("rand.Seed is deprecated (Go 1.20+); global rand is auto-seeded; use rand.New(rand.NewSource($seed)) for reproducibility")
-
-	// rand.Read is deprecated (Go 1.20+)
-	m.Match(
-		`rand.Read($b)`,
-	).
-		Report("rand.Read is deprecated (Go 1.20+); use crypto/rand.Read for cryptographic purposes")
 }

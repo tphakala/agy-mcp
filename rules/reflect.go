@@ -29,7 +29,9 @@ func ReflectTypeAssert(m dsl.Matcher) {
 		Report("use reflect.TypeAssert[$typ]($v) instead of $v.Interface().($typ) to avoid allocation (Go 1.25+)")
 }
 
-// ReflectPtrTo detects deprecated reflect.PtrTo and suggests reflect.PointerTo.
+// DeprecatedReflectPtrTo detects deprecated reflect.PtrTo and suggests
+// reflect.PointerTo. Named with the Deprecated* prefix for consistency with
+// this package's other stdlib-deprecation matchers (crypto.go, net.go).
 //
 // Deprecated pattern:
 //
@@ -42,7 +44,7 @@ func ReflectTypeAssert(m dsl.Matcher) {
 // reflect.PtrTo was deprecated in Go 1.22 in favor of the clearer name PointerTo.
 //
 // See: https://pkg.go.dev/reflect#PointerTo
-func ReflectPtrTo(m dsl.Matcher) {
+func DeprecatedReflectPtrTo(m dsl.Matcher) {
 	m.Match(
 		`reflect.PtrTo($t)`,
 	).

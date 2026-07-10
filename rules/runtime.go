@@ -32,26 +32,3 @@ func PreferAddCleanup(m dsl.Matcher) {
 	).
 		Report("consider using runtime.AddCleanup instead of runtime.SetFinalizer (Go 1.24+): AddCleanup allows multiple cleanups, avoids cycle leaks, and doesn't delay object freeing")
 }
-
-// GorootDeprecated detects runtime.GOROOT() which is deprecated in Go 1.24.
-//
-// The old pattern:
-//
-//	root := runtime.GOROOT()
-//
-// New pattern:
-//
-//	// Use go env GOROOT from command line or exec
-//	cmd := exec.Command("go", "env", "GOROOT")
-//	output, _ := cmd.Output()
-//
-// Reason: runtime.GOROOT() may not reflect the actual GOROOT when the binary
-// is moved or when using toolchains.
-//
-// See: https://go.dev/doc/go1.24#runtime
-func GorootDeprecated(m dsl.Matcher) {
-	m.Match(
-		`runtime.GOROOT()`,
-	).
-		Report("runtime.GOROOT() is deprecated in Go 1.24; use 'go env GOROOT' instead")
-}

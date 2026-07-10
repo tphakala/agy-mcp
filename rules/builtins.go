@@ -101,56 +101,6 @@ func ClearBuiltin(m dsl.Matcher) {
 		Suggest("clear($m)")
 }
 
-// RangeOverInteger detects traditional for loops that iterate from 0 to n
-// and suggests using the Go 1.22+ range-over-integer syntax.
-//
-// Old pattern:
-//
-//	for i := 0; i < n; i++ {
-//	    process(i)
-//	}
-//
-// New pattern (Go 1.22+):
-//
-//	for i := range n {
-//	    process(i)
-//	}
-//
-// Benefits:
-//   - More concise and readable
-//   - Intent is clearer (iterate n times)
-//   - Less error-prone (no off-by-one mistakes)
-//
-// Note: Only matches loops starting from 0 with < comparison and i++.
-// Loops with different starting values, comparisons, or increments
-// are intentionally not flagged.
-//
-// See: https://go.dev/doc/go1.22#language
-func RangeOverInteger(m dsl.Matcher) {
-	// Pattern: for i := 0; i < n; i++
-	// Report-only, no autofix. Rewriting to `for i := range n` evaluates n once
-	// at loop entry, so any loop whose body mutates n (a worklist that appends to
-	// the slice it ranges, for example) silently changes behavior while still
-	// compiling. The range form also drops i when the body never reads it, which
-	// would leave an "unused variable" autofix.
-	//
-	// Exclusions:
-	//   - benchmark loops (b.N) should use b.Loop() instead
-	//   - reflect Num* counters
-	//   - single-statement spread-append bodies, which are SliceRepeat's pattern;
-	//     without this, RangeOverInteger (loaded first, first match wins) shadows
-	//     the more specific "use slices.Repeat" advice.
-	m.Match(
-		`for $i := 0; $i < $n; $i++ { $*body }`,
-	).
-		Where(
-			!m["n"].Text.Matches(`.*\.N$`) &&
-				!m["n"].Text.Matches(`\.(NumField|NumMethod|NumIn|NumOut)\(\)$`) &&
-				!m["body"].Text.Matches(`(?s)^\s*\S+\s*=\s*append\(.*?\.\.\.\)\s*$`),
-		).
-		Report("use for $i := range $n instead of for $i := 0; $i < $n; $i++ (Go 1.22+)")
-}
-
 // NewWithExpression detects the slice-literal hack for getting a pointer to a value
 // and suggests using Go 1.26's enhanced new() built-in.
 //
