@@ -160,7 +160,7 @@ func TestStatusLazilyCapturesConversationID(t *testing.T) {
 	cwd := t.TempDir()
 	const newUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	// The cache already reflects the conversation agy created for this cwd.
-	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, newUUID)), 0o644); err != nil {
+	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, newUUID), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -220,7 +220,7 @@ func TestStatusLazyCaptureNoOpWhenCacheUnchanged(t *testing.T) {
 	cwd := t.TempDir()
 	const stale = "11112222-3333-4444-5555-666677778888"
 	// The cache holds an id that was already present before this run started.
-	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, stale)), 0o644); err != nil {
+	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, stale), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -300,7 +300,7 @@ func TestFreshRunWithCorruptCacheDisablesCapture(t *testing.T) {
 	waitForExitCode(t, m, job.ID)
 
 	// The cache "recovers" with an entry for this cwd; it must not be captured.
-	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, "aaaa1111-2222-3333-4444-555566667777")), 0o644); err != nil {
+	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, "aaaa1111-2222-3333-4444-555566667777"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	st, err := m.Status(job.ID)
@@ -385,7 +385,7 @@ func TestStatusLazyCaptureSkipsWhenLaterRunExists(t *testing.T) {
 	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
 	cwd := t.TempDir()
 	const laterUUID = "99998888-7777-6666-5555-444433332222"
-	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, laterUUID)), 0o644); err != nil {
+	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, laterUUID), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -461,7 +461,7 @@ func TestStatusLazyCaptureSkipsButDoesNotSettleOnListError(t *testing.T) {
 	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
 	cwd := t.TempDir()
 	const uuid = "abcd0000-1111-2222-3333-444455556666"
-	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, uuid)), 0o644); err != nil {
+	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, uuid), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -566,7 +566,7 @@ func TestStatusLazyCaptureSettlesAfterHorizon(t *testing.T) {
 		t.Fatalf("first Status: id=%q err=%v", st.ConversationID, err)
 	}
 	// A cache entry appears later (some unrelated run); it must not be captured.
-	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, "abcdef00-1111-2222-3333-444455556666")), 0o644); err != nil {
+	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, "abcdef00-1111-2222-3333-444455556666"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if st, err := m.Status(meta.ID); err != nil || st.ConversationID != "" {
@@ -620,7 +620,7 @@ func TestStatusLazyCaptureSettlesViaFallbackHorizonWhenTimeoutZero(t *testing.T)
 		t.Fatal("a Timeout==0 job past the 1h fallback horizon must settle")
 	}
 	// A later unrelated cache entry must not be captured.
-	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, "00001111-2222-3333-4444-555566667777")), 0o644); err != nil {
+	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, "00001111-2222-3333-4444-555566667777"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if st, err := m.Status(meta.ID); err != nil || st.ConversationID != "" {

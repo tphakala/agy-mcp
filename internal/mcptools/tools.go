@@ -28,6 +28,17 @@ type runInput struct {
 // cannot leave a hung job uncollectable for weeks.
 const maxJobTimeout = 24 * time.Hour
 
+// Tool names, shared between registration (here and run_sync.go) and tests so
+// the two cannot drift.
+const (
+	toolAgyRun       = "agy_run"
+	toolAgyStatus    = "agy_status"
+	toolAgyCancel    = "agy_cancel"
+	toolAgyRunSync   = "agy_run_sync"
+	toolListModels   = "list_models"
+	toolListSessions = "list_sessions"
+)
+
 // toStartRequest converts the wire input into a manager start request,
 // validating the timeout.
 func (in runInput) toStartRequest() (manager.StartRequest, error) {
@@ -119,7 +130,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "agy-mcp", Version: serverVersion()}, nil)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "agy_run",
+		Name:        toolAgyRun,
 		Description: "Start an agy prompt (e.g. a peer review) as an async job. Returns a job_id to poll with agy_status.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
 		req, err := in.toStartRequest()
@@ -134,7 +145,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "agy_status",
+		Name:        toolAgyStatus,
 		Description: `Poll an agy job. Returns running, done (with result), failed, or cancelled. A done result with "partial": true was recovered without a completion sentinel and may be truncated.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in statusInput) (*mcp.CallToolResult, statusOutput, error) {
 		st, err := mgr.Status(in.JobID)
@@ -145,7 +156,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "agy_cancel",
+		Name:        toolAgyCancel,
 		Description: `Cancel a running agy job. Returns the resulting state: "cancelled", or the job's terminal state if it had already finished, or "unknown" if the state could not be read after cancelling.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cancelInput) (*mcp.CallToolResult, cancelOutput, error) {
 		if err := mgr.Cancel(in.JobID); err != nil {
@@ -165,7 +176,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 	registerRunSync(s, mgr)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "list_models", Description: "List available agy models.",
+		Name: toolListModels, Description: "List available agy models.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, modelsOutput, error) {
 		models, err := mgr.ListModels(ctx)
 		if err != nil {
@@ -178,7 +189,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "list_sessions", Description: "List known agy conversations (workspace to conversation id).",
+		Name: toolListSessions, Description: "List known agy conversations (workspace to conversation id).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionsInput) (*mcp.CallToolResult, sessionsOutput, error) {
 		sessions, err := mgr.ListSessions(in.Dir)
 		if err != nil {

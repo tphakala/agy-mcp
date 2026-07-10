@@ -38,7 +38,7 @@ type runSyncOutput struct {
 // (bounded), streaming progress notifications when the client asked for them.
 func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "agy_run_sync",
+		Name: toolAgyRunSync,
 		Description: "Start an agy prompt and wait for it inline (bounded by wait, default 2m). " +
 			"Sends MCP progress notifications while waiting. If the job outlives the wait cap " +
 			"it keeps running and the returned job_id can be polled with agy_status.",

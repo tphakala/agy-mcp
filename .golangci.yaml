@@ -5,8 +5,8 @@
 #     jobstore.Meta are passed by value on purpose (StartJob mutates its own
 #     copy of the request), and these calls are not on a hot path, so the
 #     by-pointer suggestion would only leak mutation into callers.
-#   - modernize stays disabled: it panics on Go 1.26 + atomic types in
-#     golangci-lint v2.11.4 (known bug)
+#   - modernize was disabled because it panicked on Go 1.26 + atomic types in
+#     golangci-lint v2.11.4 (known bug); fixed as of v2.12.2, re-enabled below
 version: "2"
 output:
   sort-order:
@@ -30,6 +30,7 @@ linters:
     - iface
     - ineffassign
     - misspell
+    - modernize
     - nilerr
     - nilnil
     - predeclared
@@ -69,6 +70,15 @@ linters:
       for-loops: true
     exhaustive:
       default-signifies-exhaustive: true
+  exclusions:
+    rules:
+      # goconst gained cross-file scanning in golangci-lint v2.12 (the old
+      # ignore-tests setting was removed from the v2 config schema); without
+      # this, idiomatic literal repetition across _test.go files floods the
+      # linter with noise that isn't worth extracting into constants.
+      - path: '_test\.go'
+        linters:
+          - goconst
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

@@ -317,7 +317,7 @@ func TestRestoreGateCapturesConversationIDOnExit(t *testing.T) {
 	// supervisor records exit 0 (the watcher treats the sentinel as terminal
 	// even while the fake supervisor process lingers).
 	const uuid = "deadbeef-1111-2222-3333-444455556666"
-	if err := os.WriteFile(cachePath, []byte(fmt.Sprintf(`{%q:%q}`, cwd, uuid)), 0o644); err != nil {
+	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, uuid), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.store.WriteExitCode("restored-fresh", 0); err != nil {

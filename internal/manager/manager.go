@@ -814,16 +814,26 @@ func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
 	}()
 }
 
+// agy CLI flags, shared with tests so the flag strings cannot drift between
+// the arg builder and its assertions.
+const (
+	dangerouslySkipPermissionsFlag = "--dangerously-skip-permissions"
+	printTimeoutFlag               = "--print-timeout"
+	modelFlag                      = "--model"
+	addDirFlag                     = "--add-dir"
+	conversationFlag               = "--conversation"
+)
+
 func buildAgyArgs(req StartRequest) []string {
-	args := []string{"--dangerously-skip-permissions", "--print-timeout", req.Timeout.String()}
+	args := []string{dangerouslySkipPermissionsFlag, printTimeoutFlag, req.Timeout.String()}
 	if req.Model != "" {
-		args = append(args, "--model", req.Model)
+		args = append(args, modelFlag, req.Model)
 	}
 	for _, d := range req.Dirs {
-		args = append(args, "--add-dir", d)
+		args = append(args, addDirFlag, d)
 	}
 	if req.ConversationID != "" {
-		args = append(args, "--conversation", req.ConversationID)
+		args = append(args, conversationFlag, req.ConversationID)
 	}
 	args = append(args, "-p", req.Prompt)
 	return args
