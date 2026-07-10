@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 )
 
@@ -15,7 +14,7 @@ func TestCancelSignalsSupervisor(t *testing.T) {
 	// processAlive pins liveness by the recorded start time (set below), so any
 	// real, signalable process stands in as the supervisor. SupervisorExe feeds
 	// only the Linux comm fallback, which a recorded start time bypasses.
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, SupervisorExe: "sleep"})
+	m := newManager(t, managerOpts{maxConcurrency: 4, supervisorExe: "sleep"})
 
 	// Spawn a real sleeper process we can signal.
 	cmd := execpkg.Command("sleep", "30")

@@ -64,14 +64,15 @@ type Manager struct {
 	captureBudget        time.Duration
 	capturePoll          time.Duration
 	restoredPollInterval time.Duration
-}
 
-// readStartTimeTicksFn is a package-level indirection over readStartTimeTicks
-// (a free function with no fault-injection seam of its own) so a darwin-tagged
-// test can force the startTimeMandatory fail-closed spawn path in StartJob
-// without depending on an actual sysctl read failure, which is not reliably
-// reproducible for a real child process.
-var readStartTimeTicksFn = readStartTimeTicks
+	// readStartTimeTicks is a per-instance indirection over the free function of
+	// the same name (which has no fault-injection seam of its own), defaulted in
+	// New, so a darwin-tagged test can force the startTimeMandatory fail-closed
+	// spawn path in StartJob on its own *Manager without depending on an actual
+	// sysctl read failure (not reliably reproducible for a real child process)
+	// and without any risk of a package-level var leaking into another test.
+	readStartTimeTicks func(int) (uint64, bool)
+}
 
 // New constructs a Manager.
 func New(c config.Config) *Manager {
@@ -94,6 +95,7 @@ func New(c config.Config) *Manager {
 		capturePoll:          100 * time.Millisecond,
 		restoredPollInterval: 2 * time.Second,
 		settledCapture:       make(map[string]struct{}),
+		readStartTimeTicks:   readStartTimeTicks,
 	}
 }
 
@@ -430,7 +432,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// the supervisor) with an atomic rewrite, so the just-spawned supervisor never
 	// reads a half-written meta.json.
 	meta.PID = cmd.Process.Pid
-	if ticks, ok := readStartTimeTicksFn(cmd.Process.Pid); ok {
+	if ticks, ok := m.readStartTimeTicks(cmd.Process.Pid); ok {
 		meta.StartTimeTicks = ticks
 	} else if startTimeMandatory {
 		// darwin has no /proc/comm-style liveness fallback, so processAlive fails

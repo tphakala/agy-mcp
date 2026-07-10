@@ -17,23 +17,23 @@ import (
 // rather than persist StartTimeTicks==0 (which processAlive treats as dead on
 // darwin, since there is no /proc/comm fallback).
 //
-// The real trigger (a sysctl kern.proc.pid read of a child we still hold, now
-// retried) is essentially unreachable in practice, so this forces it via the
-// readStartTimeTicksFn seam instead of trying to reproduce a genuine sysctl
-// failure. abortSpawn's teardown sequence itself is exercised by proxy through
+// The real trigger (a sysctl kern.proc.pid read of a child we still hold,
+// already retried inside readStartTimeTicks) is essentially unreachable in
+// practice, so this forces it via the readStartTimeTicks seam instead of
+// trying to reproduce a genuine sysctl failure. abortSpawn's teardown
+// sequence itself is exercised by proxy through
 // TestStartJobCleansUpDirOnUpdateMetaFailure (cleanup_posix_test.go, via the
 // failUpdateStore seam); this test is the direct trigger for the darwin path.
 func TestStartJobAbortsSpawnOnDarwinStartTimeFailure(t *testing.T) {
-	orig := readStartTimeTicksFn
-	readStartTimeTicksFn = func(int) (uint64, bool) { return 0, false }
-	t.Cleanup(func() { readStartTimeTicksFn = orig })
-
 	m := newManager(t, managerOpts{
 		agyPath:        "/usr/bin/agy",
 		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
 		defaultTimeout: time.Minute,
 		maxConcurrency: 1,
 	})
+	// Scoped to this *Manager instance only, so it cannot leak into any other
+	// test even if the package's no-t.Parallel() convention changes later.
+	m.readStartTimeTicks = func(int) (uint64, bool) { return 0, false }
 	cwd := t.TempDir()
 
 	_, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd})

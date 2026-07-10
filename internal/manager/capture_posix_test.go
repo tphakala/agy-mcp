@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
@@ -50,10 +49,8 @@ func TestFreshRunCapturesConversationID(t *testing.T) {
 		t.Fatalf("fresh run should start with no conversation id, got %q", job.ConversationID)
 	}
 
+	// waitForCapturedID's postcondition already guarantees st.State == StateDone.
 	st := waitForCapturedID(t, m, job.ID, 3*time.Second)
-	if st.State != StateDone {
-		t.Fatalf("state = %q, want done", st.State)
-	}
 	if st.ConversationID != newUUID {
 		t.Fatalf("captured conversation id = %q, want %q", st.ConversationID, newUUID)
 	}
@@ -144,12 +141,12 @@ func TestStatusLazilyCapturesConversationID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  "/bin/true",
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  "/bin/true",
+		stateDir:       state,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
 	})
 	m.cacheFile = cachePath
 
@@ -204,12 +201,12 @@ func TestStatusLazyCaptureNoOpWhenCacheUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  "/bin/true",
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  "/bin/true",
+		stateDir:       state,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
 	})
 	m.cacheFile = cachePath
 
@@ -251,14 +248,13 @@ func TestFreshRunWithCorruptCacheDisablesCapture(t *testing.T) {
 	}
 	cwd := t.TempDir()
 
-	c := config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
-	}
-	m := New(c)
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		stateDir:       state,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+	})
 	m.cacheFile = cachePath
 	m.captureBudget = 50 * time.Millisecond
 	m.capturePoll = 10 * time.Millisecond
@@ -358,12 +354,12 @@ func TestStatusLazyCaptureSkipsWhenLaterRunExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  "/bin/true",
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  "/bin/true",
+		stateDir:       state,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
 	})
 	m.cacheFile = cachePath
 
@@ -434,12 +430,12 @@ func TestStatusLazyCaptureSkipsButDoesNotSettleOnListError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  "/bin/true",
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  "/bin/true",
+		stateDir:       state,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
 	})
 	m.cacheFile = cachePath
 	fls := &failListStore{jobStore: m.store}
@@ -502,12 +498,12 @@ func TestStatusLazyCaptureSettlesAfterHorizon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  "/bin/true",
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  "/bin/true",
+		stateDir:       state,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
 	})
 	m.cacheFile = cachePath
 
@@ -554,12 +550,12 @@ func TestStatusLazyCaptureSettlesViaFallbackHorizonWhenTimeoutZero(t *testing.T)
 		t.Fatal(err)
 	}
 
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  "/bin/true",
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  "/bin/true",
+		stateDir:       state,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
 	})
 	m.cacheFile = cachePath
 

@@ -34,7 +34,11 @@ func TestReadStartTimeTicksNonZero(t *testing.T) {
 }
 
 func TestProcessAliveLiveThenDead(t *testing.T) {
-	m := newManager(t, managerOpts{})
+	// maxConcurrency: 1 matches the old New(config.Config{StateDir: t.TempDir()})
+	// zero-value default (newGate(0) clamps to 1), which newManager's own default
+	// (4) would otherwise silently diverge from. Inert either way since this test
+	// only calls processAlive, never the gate, but pinned for defense in depth.
+	m := newManager(t, managerOpts{maxConcurrency: 1})
 	cmd := startSleeper(t)
 	ticks, ok := readStartTimeTicks(cmd.Process.Pid)
 	if !ok {

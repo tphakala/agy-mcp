@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
@@ -33,7 +32,7 @@ func (r *reReadExitStore) ExitCode(id string) (int, bool) {
 }
 
 func TestGarbageCollectReapsExpiredOrphanDir(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	// A job dir with no meta.json: a crash between Create's MkdirAll and its meta
 	// write, or a partial RemoveAll. Load fails on it, so the old GC skipped it
 	// forever and orphan dirs accumulated without bound.
@@ -61,7 +60,7 @@ func TestGarbageCollectReapsExpiredOrphanDir(t *testing.T) {
 }
 
 func TestGarbageCollectKeepsRecentOrphanDir(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	// A meta-less dir younger than the TTL may be a job mid-Create (MkdirAll done,
 	// meta write pending), so it must not be reaped.
 	dir, err := m.store.Dir("fresh-orphan")
@@ -84,7 +83,7 @@ func TestGarbageCollectKeepsRecentOrphanDir(t *testing.T) {
 }
 
 func TestGarbageCollectKeepsExpiredJobWithUnreadableMeta(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	// meta.json is present but unparseable (a transient read error, or a legacy
 	// corrupt write). This is NOT an orphan: only a genuinely missing meta.json is.
 	// A valid long-running job's dir mtime is old because writing to out/err does
@@ -117,7 +116,7 @@ func TestGarbageCollectKeepsExpiredJobWithUnreadableMeta(t *testing.T) {
 }
 
 func TestGarbageCollectKeepsTerminalJobWithCapturePending(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	// A fresh run that exited 0 and is past the TTL, but whose conversation-id
 	// capture is still in flight: the manager's post-cmd.Wait goroutine is inside
 	// captureFreshConversationID, still writing this dir (the sentinel is already on
@@ -144,7 +143,7 @@ func TestGarbageCollectKeepsTerminalJobWithCapturePending(t *testing.T) {
 }
 
 func TestGarbageCollectRereadsSentinelBeforeRemoval(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	// Old enough to collect, PID 0 so processAlive is false (the process has
 	// exited). The first ExitCode read sees no sentinel; the re-read after the
 	// liveness check sees the sentinel the supervisor wrote on its way out, so the
@@ -170,7 +169,7 @@ func TestGarbageCollectRereadsSentinelBeforeRemoval(t *testing.T) {
 }
 
 func TestGarbageCollectRemovesExpired(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	if _, err := m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +186,7 @@ func TestGarbageCollectRemovesExpired(t *testing.T) {
 }
 
 func TestGarbageCollectUntracksSettledCapture(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	if _, err := m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +250,7 @@ func TestRunPeriodicGCCollectsAndStops(t *testing.T) {
 }
 
 func TestGarbageCollectDisabledWhenTTLZero(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4}) // JobTTL 0
+	m := newManager(t, managerOpts{maxConcurrency: 4}) // JobTTL 0
 	if _, err := m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-100 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
