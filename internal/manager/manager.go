@@ -66,6 +66,13 @@ type Manager struct {
 	restoredPollInterval time.Duration
 }
 
+// readStartTimeTicksFn is a package-level indirection over readStartTimeTicks
+// (a free function with no fault-injection seam of its own) so a darwin-tagged
+// test can force the startTimeMandatory fail-closed spawn path in StartJob
+// without depending on an actual sysctl read failure, which is not reliably
+// reproducible for a real child process.
+var readStartTimeTicksFn = readStartTimeTicks
+
 // New constructs a Manager.
 func New(c config.Config) *Manager {
 	// Prefer an explicitly configured cache path; only fall back to the default
@@ -423,7 +430,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// the supervisor) with an atomic rewrite, so the just-spawned supervisor never
 	// reads a half-written meta.json.
 	meta.PID = cmd.Process.Pid
-	if ticks, ok := readStartTimeTicks(cmd.Process.Pid); ok {
+	if ticks, ok := readStartTimeTicksFn(cmd.Process.Pid); ok {
 		meta.StartTimeTicks = ticks
 	} else if startTimeMandatory {
 		// darwin has no /proc/comm-style liveness fallback, so processAlive fails

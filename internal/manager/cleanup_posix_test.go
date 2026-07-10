@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
@@ -34,15 +33,12 @@ func (f *failUpdateStore) UpdateMeta(m jobstore.Meta) error {
 // manager must terminate the supervisor, wait for it to exit, remove the job dir, and
 // release the gate. cleanup runs in a goroutine after cmd.Wait, so the assertions poll.
 func TestStartJobCleansUpDirOnUpdateMetaFailure(t *testing.T) {
-	state := t.TempDir()
-	c := config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}), // real: cmd.Start succeeds and a supervisor runs
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 1,
-	}
-	m := New(c)
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}), // real: cmd.Start succeeds and a supervisor runs
+		defaultTimeout: time.Minute,
+		maxConcurrency: 1,
+	})
 	m.store = &failUpdateStore{jobStore: m.store, failUpdateMeta: true}
 	cwd := t.TempDir()
 
@@ -53,45 +49,36 @@ func TestStartJobCleansUpDirOnUpdateMetaFailure(t *testing.T) {
 
 	// The job dir must be removed (no orphan left for GarbageCollect). cleanup is
 	// asynchronous (after cmd.Wait), so poll with a bounded deadline.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testutil.WaitFor(t, 5*time.Second, func() bool {
 		ids, lerr := m.store.List()
 		if lerr != nil {
 			t.Fatal(lerr)
 		}
-		if len(ids) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("job dir not removed after UpdateMeta-failure cleanup: %v", ids)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return len(ids) == 0
+	}, "job dir not removed after UpdateMeta-failure cleanup")
 
 	// The gate slot and key must be released after the supervisor exits: a second
 	// same-cwd run must get PAST the gate (it then fails at UpdateMeta again with the
 	// same store) rather than being refused as a conflicting job. With MaxConcurrency
 	// 1, a leaked slot would also block it, so reaching the spawn proves both freed.
-	deadline = time.Now().Add(5 * time.Second)
-	for {
+	testutil.WaitFor(t, 5*time.Second, func() bool {
 		_, err2 := m.StartJob(StartRequest{Prompt: "again", Cwd: cwd})
 		switch {
 		case err2 != nil && strings.Contains(err2.Error(), "record supervisor pid"):
-			// Got past the gate, spawned, failed at UpdateMeta again: the gate was
-			// released. That second run also launched an async cleanup goroutine; wait
-			// for the store to drain before returning so its supervisor and dir removal
-			// don't race t.TempDir teardown (the same race the first poll above guards).
-			waitForEmptyStore(t, m)
-			return
+			// Got past the gate, spawned, failed at UpdateMeta again: the gate was released.
+			return true
 		case err2 != nil && strings.Contains(err2.Error(), "conflicting"):
-			if time.Now().After(deadline) {
-				t.Fatal("gate slot/key not released after UpdateMeta-failure cleanup")
-			}
-			time.Sleep(20 * time.Millisecond)
+			return false
 		default:
 			t.Fatalf("unexpected second-run error: %v", err2)
+			return false
 		}
-	}
+	}, "gate slot/key not released after UpdateMeta-failure cleanup")
+
+	// That second run also launched an async cleanup goroutine; wait for the store to
+	// drain before returning so its supervisor and dir removal don't race t.TempDir
+	// teardown (the same race the first poll above guards).
+	waitForEmptyStore(t, m)
 }
 
 // waitForEmptyStore blocks until no job dirs remain, i.e. every async cleanup goroutine
@@ -99,18 +86,11 @@ func TestStartJobCleansUpDirOnUpdateMetaFailure(t *testing.T) {
 // t.TempDir teardown.
 func waitForEmptyStore(t *testing.T, m *Manager) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testutil.WaitFor(t, 5*time.Second, func() bool {
 		ids, err := m.store.List()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(ids) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("store did not drain: %v", ids)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return len(ids) == 0
+	}, "store did not drain")
 }

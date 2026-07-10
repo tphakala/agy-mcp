@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
 )
 
@@ -18,7 +17,7 @@ import (
 // is the branch TestStatusInterruptedAfterReboot does not cover (that one has
 // recovered output and asserts done).
 func TestStatusInterruptedNoOutput(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	// Dead PID from a previous boot, and no out/err/exit_code files at all.
 	if _, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"}); err != nil {
 		t.Fatal(err)
@@ -40,7 +39,7 @@ func TestStatusInterruptedNoOutput(t *testing.T) {
 // than errTailBytes and the cut falls mid-rune, the reported error is advanced
 // to a valid UTF-8 boundary rather than emitting a split multi-byte rune.
 func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	// 3-byte runes so the last errTailBytes window starts mid-rune (2000 % 3 != 0).
 	content := strings.Repeat("€", 1000) // 3000 bytes
@@ -61,13 +60,8 @@ func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
 	}
 }
 
-func newTestManager(t *testing.T) *Manager {
-	t.Helper()
-	return New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4})
-}
-
 func TestStatusDone(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("the review"), 0o644)
 	_ = m.store.WriteExitCode("j", 0)
@@ -85,7 +79,7 @@ func TestStatusDone(t *testing.T) {
 }
 
 func TestStatusFailed(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	_ = os.WriteFile(filepath.Join(dir, "err"), []byte("boom"), 0o644)
 	_ = m.store.WriteExitCode("j", 5)
@@ -97,7 +91,7 @@ func TestStatusFailed(t *testing.T) {
 }
 
 func TestStatusTimedOut(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	_ = os.WriteFile(filepath.Join(dir, "err"), []byte("partial"), 0o644)
 	_ = m.store.WriteExitCode("j", jobstore.ExitTimeout)
@@ -147,7 +141,7 @@ func TestTailFileShorterThanRequested(t *testing.T) {
 // directory lets os.Open succeed while the read fails, exposing the old
 // readFile that collapsed every IO error into "".
 func TestStatusDoneButOutputUnreadable(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	if err := os.Mkdir(filepath.Join(dir, "out"), 0o755); err != nil {
 		t.Fatal(err)
@@ -163,7 +157,7 @@ func TestStatusDoneButOutputUnreadable(t *testing.T) {
 // TestStatusSpawnFail: ExitSpawnFail (127) with no stderr (a true spawn failure)
 // gets a dedicated message instead of a bare "exit 127:".
 func TestStatusSpawnFail(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	_ = os.WriteFile(filepath.Join(dir, "err"), []byte(""), 0o644)
 	_ = m.store.WriteExitCode("j", jobstore.ExitSpawnFail)
@@ -181,7 +175,7 @@ func TestStatusSpawnFail(t *testing.T) {
 // agy itself exits 127 (with stderr) the message must surface that stderr rather
 // than masking it behind the spawn-failure text.
 func TestStatusExit127SurfacesStderr(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	_ = os.WriteFile(filepath.Join(dir, "err"), []byte("agy: internal tool not found\n"), 0o644)
 	_ = m.store.WriteExitCode("j", jobstore.ExitSpawnFail)
@@ -193,7 +187,7 @@ func TestStatusExit127SurfacesStderr(t *testing.T) {
 }
 
 func TestStatusInterruptedAfterReboot(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	// BootID differs from current -> the recorded PID is from a previous boot.
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
 	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("partial"), 0o644)
@@ -216,7 +210,7 @@ func TestStatusInterruptedAfterReboot(t *testing.T) {
 // run's real duration (start to the sentinel's completion time), not an
 // ever-growing time.Since(StartedAt) for a job that finished long ago.
 func TestStatusElapsedFrozenAtCompletion(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	start := time.Now().Add(-time.Hour)
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: start, BootID: readBootID()})
 	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("done"), 0o644)
@@ -242,7 +236,7 @@ func TestStatusElapsedFrozenAtCompletion(t *testing.T) {
 // freeze at the best available end time (the out file's mtime) rather than
 // growing forever as time.Since(StartedAt).
 func TestStatusRecoveredElapsedFrozen(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	start := time.Now().Add(-time.Hour)
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: start, PID: 999999, BootID: "old-boot"})
 	outPath := filepath.Join(dir, "out")
@@ -267,7 +261,7 @@ func TestStatusRecoveredElapsedFrozen(t *testing.T) {
 // implausibly precedes StartedAt (clock skew), a terminal job's elapsed must
 // stay frozen (clamped to 0), not fall back to an ever-growing time.Since.
 func TestStatusElapsedClampedOnClockSkew(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	start := time.Now().Add(-time.Hour)
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: start, BootID: readBootID()})
 	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("done"), 0o644)
@@ -301,7 +295,7 @@ func TestStateMatchesStatusState(t *testing.T) {
 		{jobstore.ExitSpawnFail, StateFailed},
 		{5, StateFailed},
 	}
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	for _, c := range cases {
 		id := "code-" + strconv.Itoa(c.code)
 		dir, _ := m.store.Create(jobstore.Meta{ID: id, StartedAt: time.Now(), BootID: readBootID()})
@@ -328,7 +322,7 @@ func TestStateMatchesStatusState(t *testing.T) {
 // success), and State must report the same, not a bare "done" from the code.
 // Making out a directory lets os.Open succeed while the read fails.
 func TestStateMatchesStatusOnUnreadableCleanExit(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	if err := os.Mkdir(filepath.Join(dir, "out"), 0o755); err != nil {
 		t.Fatal(err)

@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/tphakala/agy-mcp/internal/config"
 )
 
 // twoManagers returns two managers that share one state dir, modeling two sibling
@@ -16,8 +14,8 @@ import (
 func twoManagers(t *testing.T) (m1, m2 *Manager) {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := config.Config{StateDir: dir, MaxConcurrency: 4}
-	return New(cfg), New(cfg)
+	opts := managerOpts{stateDir: dir, maxConcurrency: 4}
+	return newManager(t, opts), newManager(t, opts)
 }
 
 // TestAdmitExcludesAcrossManagers: a fresh-run key admitted by one manager must be
@@ -71,7 +69,7 @@ func TestAdmitEmptyKeyNotSerialized(t *testing.T) {
 // own outcomes (same-key busy, at-cap) and not let the cross-process layer mask
 // them, so the precise StartJob error is unchanged.
 func TestAdmitInProcessRefusalsStillApply(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 1})
+	m := newManager(t, managerOpts{maxConcurrency: 1})
 
 	if outcome, err := m.admit("conv:a"); err != nil || outcome != acquireOK {
 		t.Fatalf("first admit = (%v, %v), want (acquireOK, nil)", outcome, err)
@@ -96,7 +94,7 @@ func TestAdmitFailsClosedOnLockError(t *testing.T) {
 	if err := os.WriteFile(fileAsStateDir, []byte("not a dir"), 0o600); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	m := New(config.Config{StateDir: fileAsStateDir, MaxConcurrency: 4})
+	m := newManager(t, managerOpts{stateDir: fileAsStateDir, maxConcurrency: 4})
 
 	if _, err := m.admit("cwd:/w"); err == nil {
 		t.Fatal("admit must fail closed when the cross-process lock cannot be created")
@@ -149,7 +147,7 @@ func TestForceAdmitTracksDespiteSiblingLock(t *testing.T) {
 	}
 	// m1 never held the lock, so its release must not free the sibling's lock.
 	m1.releaseKey("cwd:/w")
-	m3 := New(config.Config{StateDir: m2.cfg.StateDir, MaxConcurrency: 4})
+	m3 := newManager(t, managerOpts{stateDir: m2.cfg.StateDir, maxConcurrency: 4})
 	if outcome, err := m3.admit("cwd:/w"); err != nil || outcome != acquireKeyBusy {
 		t.Fatalf("m3.admit while m2 still holds = (%v, %v), want (acquireKeyBusy, nil)", outcome, err)
 	}

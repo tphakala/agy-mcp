@@ -129,31 +129,21 @@ func TestRunJobCancelViaSignal(t *testing.T) {
 	// load, the supervisor process has not started yet and the signal would hit a
 	// process that is not running (dying without writing the sentinel, leaking the
 	// 60s agy and burning the poll below).
-	startDeadline := time.Now().Add(5 * time.Second)
-	for {
+	testutil.WaitFor(t, 5*time.Second, func() bool {
 		_, oerr := os.Stat(jobstore.OutPath(jobDir))
 		_, eerr := os.Stat(jobstore.ErrPath(jobDir))
-		if oerr == nil && eerr == nil {
-			break
-		}
-		if time.Now().After(startDeadline) {
-			t.Fatal("supervisor did not create out/err; cannot safely signal it")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return oerr == nil && eerr == nil
+	}, "supervisor did not create out/err; cannot safely signal it")
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()
 	reaped = true
 
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(jobstore.ExitCodePath(jobDir)); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testutil.WaitFor(t, 10*time.Second, func() bool {
+		_, err := os.Stat(jobstore.ExitCodePath(jobDir))
+		return err == nil
+	}, "supervisor did not write exit_code after SIGTERM")
 	code, _ := os.ReadFile(jobstore.ExitCodePath(jobDir))
 	if strings.TrimSpace(string(code)) != strconv.Itoa(jobstore.ExitSIGTERM) {
 		t.Fatalf("exit_code = %q, want %d (SIGTERM cancel)", code, jobstore.ExitSIGTERM)

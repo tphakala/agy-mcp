@@ -7,6 +7,7 @@ import (
 
 	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
 // startSleeper spawns a long-running process a liveness test can inspect and then
@@ -33,7 +34,7 @@ func TestReadStartTimeTicksNonZero(t *testing.T) {
 }
 
 func TestProcessAliveLiveThenDead(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir()})
+	m := newManager(t, managerOpts{})
 	cmd := startSleeper(t)
 	ticks, ok := readStartTimeTicks(cmd.Process.Pid)
 	if !ok {
@@ -46,13 +47,9 @@ func TestProcessAliveLiveThenDead(t *testing.T) {
 	// Kill it and confirm liveness flips to false.
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()
-	deadline := time.Now().Add(5 * time.Second)
-	for m.processAlive(meta) && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if m.processAlive(meta) {
-		t.Fatal("processAlive must be false once the process has exited")
-	}
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return !m.processAlive(meta)
+	}, "processAlive must be false once the process has exited")
 }
 
 func TestProcessAliveRejectsCreationTimeMismatch(t *testing.T) {

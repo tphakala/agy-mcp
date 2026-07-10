@@ -10,23 +10,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
 func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
-	state := t.TempDir()
-	c := config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
-	}
-	m := New(c)
-	// Inject a test-owned cache file so the fresh run's id capture does not read
-	// the developer's real agy cache or leak a capture goroutine racing cleanup.
-	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
+	// withCacheFile injects a test-owned cache file so the fresh run's id capture
+	// does not read the developer's real agy cache or leak a capture goroutine
+	// racing cleanup.
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
 
 	job, err := m.StartJob(StartRequest{Prompt: "review main.go", Model: "Gemini 3.1 Pro (High)"})
 	if err != nil {
@@ -52,31 +49,23 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	}
 
 	// The fake supervisor writes out/exit_code; wait briefly for it.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, ok := m.store.ExitCode(job.ID); ok {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if _, ok := m.store.ExitCode(job.ID); !ok {
-		t.Fatal("supervisor did not write exit_code")
-	}
+	testutil.WaitFor(t, 2*time.Second, func() bool {
+		_, ok := m.store.ExitCode(job.ID)
+		return ok
+	}, "supervisor did not write exit_code")
 }
 
 // TestStartJobWiresConversationID covers the continue-a-conversation path that
 // no other StartJob test drives: an explicit conversation id must be threaded
 // into the returned job, the persisted meta, and the agy --conversation arg.
 func TestStartJobWiresConversationID(t *testing.T) {
-	c := config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
-		StateDir:       t.TempDir(),
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
-	}
-	m := New(c)
-	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
 
 	const convID = "11111111-2222-3333-4444-555555555555"
 	job, err := m.StartJob(StartRequest{Prompt: "follow up", ConversationID: convID, Cwd: t.TempDir()})
@@ -99,15 +88,13 @@ func TestStartJobWiresConversationID(t *testing.T) {
 }
 
 func TestStartJobCleansUpDirOnSpawnFailure(t *testing.T) {
-	c := config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  filepath.Join(t.TempDir(), "nonexistent-supervisor"),
-		StateDir:       t.TempDir(),
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
-	}
-	m := New(c)
-	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  filepath.Join(t.TempDir(), "nonexistent-supervisor"),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
 	cwd := t.TempDir()
 
 	_, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd})
@@ -143,18 +130,17 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	c := config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
-		StateDir:       t.TempDir(),
-		DefaultTimeout: time.Minute,
-		DefaultModel:   "Gemini 3.1 Pro (High)",
-		MaxConcurrency: 4,
-	}
-	m := New(c)
-	// Inject a temp cache file so the run does not read the real ~/.gemini cache,
-	// and shorten the post-exit capture so no capture goroutine outlives the test.
-	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
+	// withCacheFile injects a temp cache file so the run does not read the real
+	// ~/.gemini cache; captureBudget 0 shortens the post-exit capture so no
+	// capture goroutine outlives the test.
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		defaultModel:   "Gemini 3.1 Pro (High)",
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
 	m.captureBudget = 0
 
 	job, err := m.StartJob(StartRequest{Prompt: "x", Cwd: dir + "/"})
@@ -194,15 +180,13 @@ func TestStartJobSerializesEquivalentCwdSpellings(t *testing.T) {
 	// A sleeping fake agy keeps the first supervisor alive, so its gate key stays
 	// held while the second run is attempted.
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "x", Sleep: 30 * time.Second})
-	c := config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
-		StateDir:       t.TempDir(),
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
-	}
-	m := New(c)
-	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
 
 	job1, err := m.StartJob(StartRequest{Prompt: "first", Cwd: dir})
 	if err != nil {

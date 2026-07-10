@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
 // startFakeLiveSupervisor starts a real, long-lived process to stand in for a
@@ -34,19 +34,6 @@ func startFakeLiveSupervisor(t *testing.T) (pid int, exePath string) {
 		_ = cmd.Wait()
 	})
 	return cmd.Process.Pid, exePath
-}
-
-func newManagerForRestore(t *testing.T, exePath string, maxConcurrency int) *Manager {
-	t.Helper()
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  exePath,
-		StateDir:       t.TempDir(),
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: maxConcurrency,
-	})
-	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
-	return m
 }
 
 // createLiveJob is shared by both "live" and "dead" restore tests: it records
@@ -76,7 +63,7 @@ func createLiveJob(t *testing.T, m *Manager, id, cwd string, pid int) {
 // re-occupy its serialization key so a conflicting new run is blocked.
 func TestRestoreGateBlocksConflictingRun(t *testing.T) {
 	pid, exePath := startFakeLiveSupervisor(t)
-	m := newManagerForRestore(t, exePath, 4)
+	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: exePath, defaultTimeout: time.Minute, maxConcurrency: 4, withCacheFile: true})
 	cwd := t.TempDir()
 	createLiveJob(t, m, "live-1", cwd, pid)
 
@@ -93,7 +80,7 @@ func TestRestoreGateBlocksConflictingRun(t *testing.T) {
 // non-conflicting run is refused once the cap is full.
 func TestRestoreGateCountsAgainstCap(t *testing.T) {
 	pid, exePath := startFakeLiveSupervisor(t)
-	m := newManagerForRestore(t, exePath, 1)
+	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: exePath, defaultTimeout: time.Minute, maxConcurrency: 1, withCacheFile: true})
 	createLiveJob(t, m, "live-1", t.TempDir(), pid)
 
 	if err := m.RestoreGate(); err != nil {
@@ -124,7 +111,7 @@ func TestRestoreGateReleasesKeyWhenSupervisorExits(t *testing.T) {
 		}
 	})
 
-	m := newManagerForRestore(t, exePath, 4)
+	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: exePath, defaultTimeout: time.Minute, maxConcurrency: 4, withCacheFile: true})
 	m.restoredPollInterval = 10 * time.Millisecond
 	cwd := t.TempDir()
 	createLiveJob(t, m, "live-1", cwd, cmd.Process.Pid)
@@ -144,16 +131,10 @@ func TestRestoreGateReleasesKeyWhenSupervisorExits(t *testing.T) {
 	reaped = true
 
 	// The watcher must release the key; a same-cwd run then succeeds.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("watcher did not release the restored key after the supervisor exited")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testutil.WaitFor(t, 2*time.Second, func() bool {
+		_, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd})
+		return err == nil
+	}, "watcher did not release the restored key after the supervisor exited")
 }
 
 // RestoreGate must fail closed: if the on-disk jobs cannot be scanned, it returns
@@ -165,13 +146,7 @@ func TestRestoreGateFailsClosedOnScanError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(state, "jobs"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  "/bin/true",
-		StateDir:       state,
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
-	})
+	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: "/bin/true", stateDir: state, defaultTimeout: time.Minute, maxConcurrency: 4})
 	if err := m.RestoreGate(); err == nil {
 		t.Fatal("RestoreGate must return an error when the jobs dir cannot be scanned")
 	}
@@ -194,7 +169,7 @@ func TestRestoreGateSkipsDeadSupervisor(t *testing.T) {
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()
 
-	m := newManagerForRestore(t, exePath, 4)
+	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: exePath, defaultTimeout: time.Minute, maxConcurrency: 4, withCacheFile: true})
 	cwd := t.TempDir()
 	createLiveJob(t, m, "dead-1", cwd, deadPID)
 
@@ -211,7 +186,7 @@ func TestRestoreGateSkipsDeadSupervisor(t *testing.T) {
 // gate, even if its recorded pid happens to still be alive.
 func TestRestoreGateSkipsTerminalJobs(t *testing.T) {
 	pid, exePath := startFakeLiveSupervisor(t)
-	m := newManagerForRestore(t, exePath, 4)
+	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: exePath, defaultTimeout: time.Minute, maxConcurrency: 4, withCacheFile: true})
 	cwd := t.TempDir()
 	createLiveJob(t, m, "done-1", cwd, pid)
 	if err := m.store.WriteExitCode("done-1", 0); err != nil {
@@ -234,15 +209,7 @@ func TestRestoreGateSkipsTerminalJobs(t *testing.T) {
 // removing one job does not disturb restoring another.
 func TestRestoreAndCollectCollectsExpiredAndRestoresLive(t *testing.T) {
 	pid, exePath := startFakeLiveSupervisor(t)
-	m := New(config.Config{
-		AgyPath:        "/usr/bin/agy",
-		SupervisorExe:  exePath,
-		StateDir:       t.TempDir(),
-		DefaultTimeout: time.Minute,
-		MaxConcurrency: 4,
-		JobTTL:         time.Hour,
-	})
-	m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
+	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: exePath, defaultTimeout: time.Minute, maxConcurrency: 4, jobTTL: time.Hour, withCacheFile: true})
 
 	// An expired, finished job: past the TTL with an exit sentinel, so GC removes it.
 	if _, err := m.store.Create(jobstore.Meta{ID: "old-done", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
@@ -294,7 +261,7 @@ func TestRestoreAndCollectCollectsExpiredAndRestoresLive(t *testing.T) {
 // owns the capture while the gate key is held).
 func TestRestoreGateCapturesConversationIDOnExit(t *testing.T) {
 	pid, exePath := startFakeLiveSupervisor(t)
-	m := newManagerForRestore(t, exePath, 4)
+	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: exePath, defaultTimeout: time.Minute, maxConcurrency: 4})
 	m.restoredPollInterval = 20 * time.Millisecond
 
 	cwd := t.TempDir()
@@ -324,18 +291,11 @@ func TestRestoreGateCapturesConversationIDOnExit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	testutil.WaitFor(t, 3*time.Second, func() bool {
 		meta, err := m.store.Load("restored-fresh")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if meta.ConversationID == uuid {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("watcher never captured the id; meta.ConversationID = %q", meta.ConversationID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return meta.ConversationID == uuid
+	}, "watcher never captured the conversation id")
 }

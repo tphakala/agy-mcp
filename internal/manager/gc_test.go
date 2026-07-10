@@ -9,6 +9,7 @@ import (
 
 	"github.com/tphakala/agy-mcp/internal/config"
 	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
 // reReadExitStore reports "no sentinel" on the first ExitCode(id) call and
@@ -225,7 +226,7 @@ func TestGCInterval(t *testing.T) {
 }
 
 func TestRunPeriodicGCCollectsAndStops(t *testing.T) {
-	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, JobTTL: time.Hour})
+	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	if _, err := m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
@@ -235,17 +236,10 @@ func TestRunPeriodicGCCollectsAndStops(t *testing.T) {
 	go func() { m.runPeriodicGC(ctx, 10*time.Millisecond); close(done) }()
 
 	// The ticker collects the expired job.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testutil.WaitFor(t, 2*time.Second, func() bool {
 		ids, _ := m.store.List()
-		if len(ids) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("periodic GC did not collect the expired job")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return len(ids) == 0
+	}, "periodic GC did not collect the expired job")
 
 	// Cancelling the context stops the loop and returns.
 	cancel()

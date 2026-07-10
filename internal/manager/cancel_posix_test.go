@@ -60,7 +60,7 @@ func TestCancelSignalsSupervisor(t *testing.T) {
 // (a stale PID from a previous boot), Cancel is a no-op success; there is
 // nothing to signal and Status reports the terminal state from disk.
 func TestCancelDeadSupervisorNoOp(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	// A dead PID from a previous boot: processAlive is false, so Cancel must not
 	// signal anything and must return nil.
 	if _, err := m.store.Create(jobstore.Meta{ID: "j", PID: 999999, BootID: "old-boot", StartedAt: time.Now()}); err != nil {
@@ -74,7 +74,7 @@ func TestCancelDeadSupervisorNoOp(t *testing.T) {
 // TestCancelLoadError: cancelling an unknown job surfaces the store's load
 // error rather than silently succeeding.
 func TestCancelLoadError(t *testing.T) {
-	m := newTestManager(t)
+	m := newManager(t, managerOpts{})
 	if err := m.Cancel("does-not-exist"); err == nil {
 		t.Fatal("Cancel on an unknown job must return the load error")
 	}
