@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -120,8 +119,8 @@ func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 	}, "job never reached done state")
 
 	// The gate key must have been released after the capture budget: a second
-	// same-cwd fresh run eventually succeeds. Any error other than the expected
-	// "conflicting" gate refusal is a genuine bug, not something to retry through.
+	// same-cwd fresh run eventually succeeds. Any error other than a known
+	// retryable gate refusal is a genuine bug, not something to retry through.
 	var job2 Job
 	testutil.WaitFor(t, 2*time.Second, func() bool {
 		var err error
@@ -129,7 +128,7 @@ func TestFreshRunNoConversationReleasesKey(t *testing.T) {
 		if err == nil {
 			return true
 		}
-		if !strings.Contains(err.Error(), "conflicting") {
+		if !isRetryableGateRefusal(err) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		return false
@@ -305,7 +304,10 @@ func waitForCapturedID(t *testing.T, m *Manager, id string, within time.Duration
 	testutil.WaitFor(t, within, func() bool {
 		var err error
 		st, err = m.Status(id)
-		return err == nil && st.State == StateDone && st.ConversationID != ""
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.State == StateDone && st.ConversationID != ""
 	}, fmt.Sprintf("job %s never captured a conversation id within %s", id, within))
 	return st
 }

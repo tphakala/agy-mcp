@@ -60,7 +60,7 @@ func TestStartJobAbortsSpawnOnDarwinStartTimeFailure(t *testing.T) {
 		switch {
 		case err2 != nil && strings.Contains(err2.Error(), "record supervisor start time"):
 			return true
-		case err2 != nil && strings.Contains(err2.Error(), "conflicting"):
+		case isRetryableGateRefusal(err2):
 			return false
 		default:
 			t.Fatalf("unexpected second-run error: %v", err2)

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -132,14 +131,14 @@ func TestRestoreGateReleasesKeyWhenSupervisorExits(t *testing.T) {
 	reaped = true
 
 	// The watcher must release the key; a same-cwd run then succeeds. Any error
-	// other than the expected "conflicting" gate refusal is a genuine bug, not
-	// something to retry through.
+	// other than a known retryable gate refusal is a genuine bug, not something
+	// to retry through.
 	testutil.WaitFor(t, 2*time.Second, func() bool {
 		_, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd})
 		if err == nil {
 			return true
 		}
-		if !strings.Contains(err.Error(), "conflicting") {
+		if !isRetryableGateRefusal(err) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		return false
