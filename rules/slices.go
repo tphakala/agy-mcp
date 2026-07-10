@@ -145,11 +145,17 @@ func SlicesClone(m dsl.Matcher) {
 		Report("use slices.Clone($s) instead of append($s[:0:0], $s...) (Go 1.21+)")
 }
 
-// BackwardIteration detects manual reverse iteration patterns and suggests slices.Backward.
+// BackwardIteration detects the "i > -1" spelling of manual reverse slice
+// iteration and suggests slices.Backward. The more common "i >= 0" spelling
+// is not matched here: verified modernize's slicesbackward analyzer already
+// catches it, with autofix, and is already correctly slice-type-guarded (no
+// false positive on strings, where len/index work but slices.Backward does
+// not compile) -- exact duplicate, no informational gain. slicesbackward
+// does not recognize the "i > -1" spelling at all, so that half stays.
 //
 // Old pattern:
 //
-//	for i := len(s) - 1; i >= 0; i-- {
+//	for i := len(s) - 1; i > -1; i-- {
 //	    process(s[i])
 //	}
 //
@@ -166,17 +172,9 @@ func SlicesClone(m dsl.Matcher) {
 //
 // See: https://pkg.go.dev/slices#Backward
 func BackwardIteration(m dsl.Matcher) {
-	// Pattern: for i := len(s) - 1; i >= 0; i--
 	// Slice-type guard: slices.Backward is defined over []E, so without it the
 	// advice fires on strings (where len/index work but slices.Backward does
 	// not compile).
-	m.Match(
-		`for $i := len($s) - 1; $i >= 0; $i-- { $*body }`,
-	).
-		Where(m["s"].Type.Underlying().Is(`[]$elem`)).
-		Report("use slices.Backward($s) for reverse iteration (Go 1.23+)")
-
-	// Pattern: for i := len(s) - 1; i > -1; i--
 	m.Match(
 		`for $i := len($s) - 1; $i > -1; $i-- { $*body }`,
 	).

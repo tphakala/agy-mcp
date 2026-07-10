@@ -39,5 +39,9 @@ func WaitGroupGo(m dsl.Matcher) {
 		`$wg.Add(1); go func($param $typ) { defer $param.Done(); $*body }(&$wg)`,
 	).
 		Where(m["wg"].Type.Is("*sync.WaitGroup") || m["wg"].Type.Is("sync.WaitGroup")).
-		Report("use $wg.Go(func() { $body }) instead of manual Add/Done pattern (Go 1.25+)")
+		// $body is a $* (variadic) capture; interpolating it into Report would
+		// dump the entire matched closure body verbatim into the lint output
+		// (verified empirically), breaking normal single-line message
+		// formatting for anything but a trivial body. Use "..." instead.
+		Report("use $wg.Go(func() { ... }) instead of manual Add/Done pattern (Go 1.25+)")
 }
