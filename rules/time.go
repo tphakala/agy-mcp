@@ -131,40 +131,6 @@ func TimerChannelLen(m dsl.Matcher) {
 		Report("cap() on ticker channel is always 0 in Go 1.23+ (channels are now unbuffered)")
 }
 
-// DeferredTimeSince detects deferred calls to time.Since which evaluate
-// the duration at defer time, not at function exit.
-//
-// Broken pattern:
-//
-//	func foo() {
-//	    start := time.Now()
-//	    defer log.Println(time.Since(start))  // Evaluated NOW, not at exit!
-//	    // ... work ...
-//	}
-//
-// The time.Since(start) is called immediately when defer is executed,
-// so it will always report ~0 duration.
-//
-// Correct pattern:
-//
-//	func foo() {
-//	    start := time.Now()
-//	    defer func() { log.Println(time.Since(start)) }()
-//	    // ... work ...
-//	}
-//
-// See: https://pkg.go.dev/time#Since
-// Note: Go 1.22 vet tool also warns about this pattern.
-func DeferredTimeSince(m dsl.Matcher) {
-	// One clause covers time.Since in any argument position: the two variadic
-	// captures absorb any preceding and trailing args (including none), so the
-	// earlier per-position clauses were redundant.
-	m.Match(
-		`defer $fn($*_, time.Since($start), $*_)`,
-	).
-		Report("time.Since($start) is evaluated at defer time, not function exit; wrap in func() to measure actual duration")
-}
-
 // DeferredTimeNow detects deferred calls to time.Now which evaluate
 // the time at defer time, not at function exit.
 //

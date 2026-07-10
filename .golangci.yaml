@@ -33,6 +33,7 @@ linters:
     - modernize
     - nilerr
     - nilnil
+    - nosprintfhostport
     - predeclared
     - prealloc
     - revive
@@ -41,6 +42,7 @@ linters:
     - thelper
     - unconvert
     - unused
+    - usetesting
     - wastedassign
   settings:
     gocognit:

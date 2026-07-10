@@ -151,21 +151,6 @@ func RangeOverInteger(m dsl.Matcher) {
 		Report("use for $i := range $n instead of for $i := 0; $i < $n; $i++ (Go 1.22+)")
 }
 
-// AppendWithoutValues detects append calls with no values which have no effect.
-//
-// Broken pattern:
-//
-//	slice = append(slice)  // No effect
-//
-// See: https://pkg.go.dev/builtin#append
-// Note: Go 1.22 vet tool also warns about this pattern.
-func AppendWithoutValues(m dsl.Matcher) {
-	m.Match(
-		`append($s)`,
-	).
-		Report("append with single argument has no effect; did you forget the values to append?")
-}
-
 // NewWithExpression detects the slice-literal hack for getting a pointer to a value
 // and suggests using Go 1.26's enhanced new() built-in.
 //
