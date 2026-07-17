@@ -74,6 +74,7 @@ func TestWaitJobUnknownJob(t *testing.T) {
 }
 
 func TestWaitJobUsage(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	var out, errb bytes.Buffer
 	if code := waitJobMain(nil, &out, &errb); code != 2 {
 		t.Fatalf("waitJobMain(nil) = %d, want 2 (stderr: %s)", code, errb.String())
