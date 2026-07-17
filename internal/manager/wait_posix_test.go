@@ -5,6 +5,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -194,5 +195,60 @@ func TestWaitTerminalOnTick(t *testing.T) {
 	}
 	if sawNonRunning {
 		t.Fatal("onTick observed a non-running status; it must only fire while running")
+	}
+}
+
+// A fresh run whose conversation cache lands only after the exit sentinel (agy's
+// cache daemon flushes after the process exits) must still return its id from
+// WaitTerminal: the capture grace must hold until the late capture settles
+// rather than returning done with an empty id. This mirrors
+// TestAgyRunSyncReturnsLateCapturedConversationID at the manager level.
+func TestWaitTerminalGraceDeliversLateCapturedID(t *testing.T) {
+	// See TestFreshRunCapturesConversationID: the cache key must match the
+	// symlink-resolved path StartJob persists as meta.Cwd, or the fake
+	// supervisor's cache write is never attributed to this run.
+	cwd, err := normalizeCwd(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const uuid = "13131313-2424-3535-4646-575757575757"
+
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+	// The cache lands ~600ms after the exit sentinel, mimicking agy's cache-daemon
+	// lag. The manager's default captureBudget (2s) stays comfortably larger, so
+	// the completion goroutine is still retrying the capture when the cache write
+	// arrives; WaitTerminal's grace must span that window. Using the default
+	// budget (not the short waitManager one) is what exercises the grace path.
+	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
+		AgyPath:    agy,
+		CachePath:  cachePath,
+		CacheJSON:  fmt.Sprintf(`{%q:%q}`, cwd, uuid),
+		CacheDelay: 600 * time.Millisecond,
+	})
+	m := newManager(t, managerOpts{
+		agyPath:        agy,
+		supervisorExe:  sup,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+	})
+	m.cacheFile = cachePath
+
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: cwd})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	st, terminal, err := m.WaitTerminal(context.Background(), job.ID, time.Now().Add(15*time.Second), nil)
+	if err != nil {
+		t.Fatalf("WaitTerminal: %v", err)
+	}
+	if !terminal || st.State != StateDone {
+		t.Fatalf("state = %q terminal = %v, want done/true", st.State, terminal)
+	}
+	if st.ConversationID != uuid {
+		t.Fatalf("conversation_id = %q, want %q (grace must hold until the late capture lands)", st.ConversationID, uuid)
 	}
 }

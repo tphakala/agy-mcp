@@ -36,14 +36,23 @@ func (m *Manager) WaitTerminal(ctx context.Context, id string, deadline time.Tim
 			return Status{}, false, err
 		}
 		if st.State != StateRunning {
-			if st.State == StateDone && st.ConversationID == "" &&
-				time.Now().Before(deadline) && m.CapturePending(id) {
-				select {
-				case <-ctx.Done():
-					return st, true, nil
-				case <-ticker.C:
+			if st.State == StateDone && st.ConversationID == "" && time.Now().Before(deadline) {
+				if m.CapturePending(id) {
+					select {
+					case <-ctx.Done():
+						return st, true, nil
+					case <-ticker.C:
+					}
+					continue
 				}
-				continue
+				// CapturePending went false between the Status read above and this
+				// check: the completion goroutine persists the captured id and only
+				// then clears pendingCaptures, so the st we hold can predate a
+				// just-settled id. Re-read once so that id is delivered instead of a
+				// stale empty one; keep the original st if the re-read fails.
+				if fresh, ferr := m.Status(id); ferr == nil {
+					return fresh, true, nil
+				}
 			}
 			return st, true, nil
 		}
