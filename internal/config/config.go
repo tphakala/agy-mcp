@@ -26,15 +26,22 @@ type Config struct {
 	ConversationCacheFile string
 }
 
-// Resolve builds a Config from environment variables and defaults.
-func Resolve() (Config, error) {
-	c := Config{
-		DefaultModel:   os.Getenv("AGY_MCP_DEFAULT_MODEL"),
+// baseConfig returns a Config carrying exactly the defaults shared by Resolve
+// and ResolveWait (DefaultTimeout, MaxConcurrency, JobTTL). It is the single
+// source of those defaults, so the two resolvers cannot drift apart.
+func baseConfig() Config {
+	return Config{
 		DefaultTimeout: 30 * time.Minute,
 		MaxConcurrency: 4,
 		JobTTL:         24 * time.Hour,
-		HTTPToken:      os.Getenv("AGY_MCP_HTTP_TOKEN"),
 	}
+}
+
+// Resolve builds a Config from environment variables and defaults.
+func Resolve() (Config, error) {
+	c := baseConfig()
+	c.DefaultModel = os.Getenv("AGY_MCP_DEFAULT_MODEL")
+	c.HTTPToken = os.Getenv("AGY_MCP_HTTP_TOKEN")
 
 	if p := os.Getenv("AGY_MCP_AGY_PATH"); p != "" {
 		// Resolve the override with LookPath, symmetric with the PATH branch below, so
@@ -69,19 +76,43 @@ func Resolve() (Config, error) {
 	}
 	c.SupervisorExe = self
 
-	stateRoot := os.Getenv("AGY_MCP_STATE_DIR")
-	if stateRoot == "" {
-		xdg := os.Getenv("XDG_STATE_HOME")
-		if xdg == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return Config{}, fmt.Errorf("resolve home: %w", err)
-			}
-			xdg = filepath.Join(home, ".local", "state")
-		}
-		stateRoot = filepath.Join(xdg, "agy-mcp")
+	stateRoot, err := resolveStateDir()
+	if err != nil {
+		return Config{}, err
 	}
 	c.StateDir = stateRoot
 
+	return c, nil
+}
+
+// resolveStateDir returns the job-state root: AGY_MCP_STATE_DIR verbatim, or
+// the XDG state-home fallback. Shared by Resolve and ResolveWait so the two
+// cannot drift.
+func resolveStateDir() (string, error) {
+	if stateRoot := os.Getenv("AGY_MCP_STATE_DIR"); stateRoot != "" {
+		return stateRoot, nil
+	}
+	xdg := os.Getenv("XDG_STATE_HOME")
+	if xdg == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home: %w", err)
+		}
+		xdg = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(xdg, "agy-mcp"), nil
+}
+
+// ResolveWait builds the minimal Config the wait-only subcommands (wait-job,
+// hook-wait) need: the state dir and defaults, with no agy binary lookup and
+// no supervisor path. Reading job status never execs agy, so requiring it on
+// PATH would be an artificial failure for a pure observer.
+func ResolveWait() (Config, error) {
+	stateDir, err := resolveStateDir()
+	if err != nil {
+		return Config{}, err
+	}
+	c := baseConfig()
+	c.StateDir = stateDir
 	return c, nil
 }

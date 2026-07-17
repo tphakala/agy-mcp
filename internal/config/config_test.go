@@ -189,3 +189,26 @@ func TestResolveHTTPToken(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveWaitNeedsNoAgy: ResolveWait must succeed with no agy anywhere on
+// PATH (the wait-only subcommands are pure observers of the job store), while
+// Resolve fails in the same environment, proving the seam matters.
+func TestResolveWaitNeedsNoAgy(t *testing.T) {
+	t.Setenv("AGY_MCP_AGY_PATH", "")
+	t.Setenv("PATH", t.TempDir()) // empty dir: no agy
+	t.Setenv("AGY_MCP_STATE_DIR", "/custom/state")
+
+	if _, err := Resolve(); err == nil {
+		t.Fatal("Resolve succeeded without agy on PATH; the control condition is broken")
+	}
+	c, err := ResolveWait()
+	if err != nil {
+		t.Fatalf("ResolveWait: %v", err)
+	}
+	if c.StateDir != "/custom/state" {
+		t.Fatalf("StateDir = %q, want /custom/state", c.StateDir)
+	}
+	if c.AgyPath != "" || c.SupervisorExe != "" {
+		t.Fatalf("wait config resolved binaries it must not need: agy=%q supervisor=%q", c.AgyPath, c.SupervisorExe)
+	}
+}
