@@ -2,7 +2,6 @@ package mcptools
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,10 +15,6 @@ const (
 	// maxSyncWait caps caller-supplied waits so a tool call cannot park a
 	// session indefinitely; longer runs are for agy_run + agy_status.
 	maxSyncWait = 10 * time.Minute
-	// syncPollInterval is how often the wait loop re-reads job status and
-	// emits a progress notification. Status reads a few small files, so
-	// this is cheap.
-	syncPollInterval = 250 * time.Millisecond
 )
 
 // runSyncInput is runInput plus the inline wait cap.
@@ -43,13 +38,9 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 			"Sends MCP progress notifications while waiting. If the job outlives the wait cap " +
 			"it keeps running and the returned job_id can be polled with agy_status.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in runSyncInput) (*mcp.CallToolResult, runSyncOutput, error) {
-		wait := defaultSyncWait
-		if in.Wait != "" {
-			d, err := time.ParseDuration(in.Wait)
-			if err != nil || d <= 0 {
-				return nil, runSyncOutput{}, fmt.Errorf("invalid wait %q: want a positive Go duration like 90s", in.Wait)
-			}
-			wait = min(d, maxSyncWait)
+		wait, err := parseWait(in.Wait)
+		if err != nil {
+			return nil, runSyncOutput{}, err
 		}
 		startReq, err := in.toStartRequest()
 		if err != nil {
@@ -59,67 +50,10 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 		if err != nil {
 			return nil, runSyncOutput{}, err
 		}
-
-		token := req.Params.GetProgressToken()
-		deadline := time.Now().Add(wait)
-		ticker := time.NewTicker(syncPollInterval)
-		defer ticker.Stop()
-		lastNotified := time.Duration(-1)
-		for {
-			st, err := mgr.Status(job.ID)
-			if err != nil {
-				return nil, runSyncOutput{}, fmt.Errorf("job %s started but status read failed: %w", job.ID, err)
-			}
-			out := runSyncOutput{JobID: job.ID, statusOutput: toStatusOutput(st)}
-			if st.State != manager.StateRunning {
-				// A fresh run's conversation id can lag the exit sentinel: agy's
-				// cache daemon flushes after the process exits, and the manager's
-				// completion goroutine captures the id with a bounded retry. While
-				// that capture is still pending, keep polling instead of returning
-				// done with no id: a sync caller has no reason to poll again after
-				// a terminal result, so an id missing here is lost to the caller.
-				if st.State == manager.StateDone && st.ConversationID == "" &&
-					job.ConversationID == "" && time.Now().Before(deadline) &&
-					mgr.CapturePending(job.ID) {
-					select {
-					case <-ctx.Done():
-						return nil, out, nil
-					case <-ticker.C:
-					}
-					continue
-				}
-				return nil, out, nil
-			}
-			// The cap is approximate: the loop only observes the deadline on a
-			// poll tick, so a call can overshoot wait by up to syncPollInterval.
-			if time.Now().After(deadline) {
-				out.Note = "wait cap reached; the job is still running, poll it with agy_status"
-				return nil, out, nil
-			}
-			// Notify once per elapsed second, not per poll tick: the message has
-			// whole-second granularity, so finer cadence is pure stream noise.
-			if sec := st.Elapsed.Truncate(time.Second); token != nil && sec != lastNotified {
-				lastNotified = sec
-				// Best effort: the result, not the notifications, is the
-				// contract. The bounded context keeps a client that stopped
-				// draining the stream from parking the loop past the wait cap.
-				nctx, ncancel := context.WithTimeout(ctx, syncPollInterval)
-				_ = req.Session.NotifyProgress(nctx, &mcp.ProgressNotificationParams{
-					ProgressToken: token,
-					Progress:      st.Elapsed.Seconds(),
-					Message:       fmt.Sprintf("job %s running (%s)", job.ID, sec),
-				})
-				ncancel()
-			}
-			select {
-			case <-ctx.Done():
-				// The client gave up on the call; the job stays alive under
-				// its detached supervisor for agy_status polling. Carry the
-				// job id in the error so a gracefully-cancelling client can
-				// still find the job.
-				return nil, runSyncOutput{}, fmt.Errorf("wait cancelled; job %s is still running, poll it with agy_status: %w", job.ID, ctx.Err())
-			case <-ticker.C:
-			}
+		out, err := awaitJob(ctx, req, mgr, job.ID, time.Now().Add(wait))
+		if err != nil {
+			return nil, runSyncOutput{}, err
 		}
+		return nil, out, nil
 	})
 }
