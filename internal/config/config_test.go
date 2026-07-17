@@ -208,7 +208,14 @@ func TestResolveWaitNeedsNoAgy(t *testing.T) {
 	if c.StateDir != "/custom/state" {
 		t.Fatalf("StateDir = %q, want /custom/state", c.StateDir)
 	}
-	if c.AgyPath != "" || c.SupervisorExe != "" {
-		t.Fatalf("wait config resolved binaries it must not need: agy=%q supervisor=%q", c.AgyPath, c.SupervisorExe)
+	if c.AgyPath != "" {
+		t.Fatalf("wait config resolved a binary it must not need: agy=%q", c.AgyPath)
+	}
+	// SupervisorExe IS resolved (unlike AgyPath): processAlive's fallback
+	// liveness check compares a job's recorded supervisor process name against
+	// it, so leaving it empty would make that comparison always fail and
+	// misreport a live job as dead.
+	if c.SupervisorExe == "" {
+		t.Fatal("SupervisorExe = \"\", want the wait config's own executable path")
 	}
 }

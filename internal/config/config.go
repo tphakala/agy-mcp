@@ -104,15 +104,26 @@ func resolveStateDir() (string, error) {
 }
 
 // ResolveWait builds the minimal Config the wait-only subcommands (wait-job,
-// hook-wait) need: the state dir and defaults, with no agy binary lookup and
-// no supervisor path. Reading job status never execs agy, so requiring it on
-// PATH would be an artificial failure for a pure observer.
+// hook-wait) need: the state dir, defaults, and its own executable path, with
+// no agy binary lookup. Reading job status never execs agy, so requiring it on
+// PATH would be an artificial failure for a pure observer. SupervisorExe is
+// still resolved (unlike AgyPath): processAlive's fallback liveness check
+// compares a job's recorded supervisor process name against
+// m.cfg.SupervisorExe, and the wait subcommands run from the same agy-mcp
+// binary that supervises jobs in the normal single-install case, so leaving
+// it empty would make that fallback compare against filepath.Base(""), which
+// can never match a real comm value and would misreport a live job as dead.
 func ResolveWait() (Config, error) {
 	stateDir, err := resolveStateDir()
 	if err != nil {
 		return Config{}, err
 	}
+	self, err := os.Executable()
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve own executable: %w", err)
+	}
 	c := baseConfig()
 	c.StateDir = stateDir
+	c.SupervisorExe = self
 	return c, nil
 }
