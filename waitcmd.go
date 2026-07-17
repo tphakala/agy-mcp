@@ -54,16 +54,35 @@ func waitJobMain(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// waitForJob resolves the wait-only config and blocks on the job. Shared by
+// resolveWaitManager builds the wait-only manager (the lighter ResolveWait
+// config plus manager.New) shared by the wait subcommands. Both wait-job and
+// hook-wait observe the job store without ever execing agy, so they resolve the
+// wait config rather than the full one.
+func resolveWaitManager() (*manager.Manager, error) {
+	cfg, err := config.ResolveWait()
+	if err != nil {
+		return nil, err
+	}
+	return manager.New(cfg), nil
+}
+
+// waitForJob resolves the wait-only manager and blocks on the job. Shared by
 // wait-job and hook-wait so the two subcommands cannot diverge on how a wait
 // manager is built. The job itself is never signalled: SIGINT/SIGTERM cancel
 // only this observer's wait.
 func waitForJob(id string, timeout time.Duration) (manager.Status, bool, error) {
-	cfg, err := config.ResolveWait()
+	mgr, err := resolveWaitManager()
 	if err != nil {
 		return manager.Status{}, false, err
 	}
-	mgr := manager.New(cfg)
+	return waitForJobWith(mgr, id, timeout)
+}
+
+// waitForJobWith blocks on the job using an already-resolved manager, so a
+// caller that needs the manager for more than the wait (hook-wait reuses it for
+// its run_sync short-circuit Status read) resolves it once and reuses it here.
+// SIGINT/SIGTERM cancel only this observer's wait, never the job.
+func waitForJobWith(mgr *manager.Manager, id string, timeout time.Duration) (manager.Status, bool, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	return mgr.WaitTerminal(ctx, id, time.Now().Add(timeout), nil)
