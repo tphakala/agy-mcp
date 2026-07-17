@@ -42,6 +42,10 @@ func main() {
 		return
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "wait-job" {
+		os.Exit(waitJobMain(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	if err := serve(); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
