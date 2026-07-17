@@ -252,3 +252,77 @@ func TestWaitTerminalGraceDeliversLateCapturedID(t *testing.T) {
 		t.Fatalf("conversation_id = %q, want %q (grace must hold until the late capture lands)", st.ConversationID, uuid)
 	}
 }
+
+// A waiter in a DIFFERENT process than the server that owns the job (hook-wait,
+// wait-job) never sees CapturePending, so without the completion-recency grace it
+// would return done with an empty id the instant the exit sentinel appears, while
+// the owning server is still inside its capture retry. The cross-process grace
+// must hold such a waiter until the late cache flush lands, at which point its own
+// Status lazy-captures the id.
+func TestWaitTerminalCrossProcessGraceDeliversLateID(t *testing.T) {
+	// See TestFreshRunCapturesConversationID: the cache key must match the
+	// symlink-resolved path StartJob persists as meta.Cwd.
+	cwd, err := normalizeCwd(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const uuid = "24242424-3535-4646-5757-686868686868"
+
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+	// The cache lands ~700ms after the exit sentinel. B must begin waiting inside
+	// that gap, with the job done but no id yet, to prove its grace holds until the
+	// late capture arrives rather than returning done with an empty id.
+	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
+		AgyPath:    agy,
+		CachePath:  cachePath,
+		CacheJSON:  fmt.Sprintf(`{%q:%q}`, cwd, uuid),
+		CacheDelay: 700 * time.Millisecond,
+	})
+
+	// Manager A owns and runs the job (the MCP server process).
+	mA := newManager(t, managerOpts{
+		agyPath: agy, supervisorExe: sup, stateDir: stateDir,
+		defaultTimeout: time.Minute, maxConcurrency: 4,
+	})
+	mA.cacheFile = cachePath
+
+	job, err := mA.StartJob(StartRequest{Prompt: "hi", Cwd: cwd})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+
+	// Wait only for the exit sentinel, NOT for A's capture: B must start waiting
+	// while the job is done but the cache has not yet landed.
+	testutil.WaitFor(t, 3*time.Second, func() bool {
+		_, ok := mA.store.ExitCode(job.ID)
+		return ok
+	}, "job never wrote its exit sentinel")
+
+	// Manager B is a distinct process's view: same state dir and cache file, fresh
+	// in-memory maps, so CapturePending and captureSettled are always false for this
+	// job. Its grace rests entirely on the completion-recency window.
+	mB := newManager(t, managerOpts{
+		agyPath: agy, supervisorExe: sup, stateDir: stateDir,
+		defaultTimeout: time.Minute, maxConcurrency: 4,
+	})
+	mB.cacheFile = cachePath
+	if mB.CapturePending(job.ID) {
+		t.Fatal("cross-process manager must not see the job as capture-pending")
+	}
+
+	st, terminal, err := mB.WaitTerminal(t.Context(), job.ID, time.Now().Add(15*time.Second), nil)
+	if err != nil {
+		t.Fatalf("WaitTerminal: %v", err)
+	}
+	if !terminal || st.State != StateDone {
+		t.Fatalf("state = %q terminal = %v, want done/true", st.State, terminal)
+	}
+	if st.ConversationID != uuid {
+		t.Fatalf("conversation_id = %q, want %q (cross-process grace must hold until the late capture lands)", st.ConversationID, uuid)
+	}
+}

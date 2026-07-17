@@ -38,8 +38,16 @@ type Manager struct {
 	// (no id is coming): either the run is long past its timeout with no cache
 	// change, or a later same-cwd run made attribution unsafe. Settled jobs
 	// stop re-reading the cache on every Status poll.
-	settledMu      sync.Mutex
-	settledCapture map[string]struct{}
+	//
+	// concludedCapture memoizes job ids whose in-process eager capture attempt
+	// has finished (the completion goroutine ran its capture and cleared
+	// pendingCaptures). It ends WaitTerminal's capture grace for an in-process
+	// waiter but, unlike settledCapture, does NOT stop the lazy capture: a slow
+	// cache flush must still be picked up by a later Status read. Both maps share
+	// settledMu.
+	settledMu        sync.Mutex
+	settledCapture   map[string]struct{}
+	concludedCapture map[string]struct{}
 
 	// Timing for the fresh-run conversation-id capture and the restored-job
 	// liveness watcher. Fields (not package globals) so tests stay isolated and can
@@ -95,6 +103,7 @@ func New(c config.Config) *Manager {
 		capturePoll:          100 * time.Millisecond,
 		restoredPollInterval: 2 * time.Second,
 		settledCapture:       make(map[string]struct{}),
+		concludedCapture:     make(map[string]struct{}),
 		readStartTimeTicks:   readStartTimeTicks,
 	}
 }
@@ -214,6 +223,24 @@ func (m *Manager) settleCapture(id string) {
 	m.settledCapture[id] = struct{}{}
 }
 
+// captureConcluded reports whether this process's eager capture attempt for a
+// job has finished (the completion goroutine ran and cleared pendingCaptures).
+// WaitTerminal reads it to end an in-process waiter's grace once no more id can
+// come from the eager path. Unlike captureSettled it does not disable the lazy
+// capture, which keeps retrying on later Status reads.
+func (m *Manager) captureConcluded(id string) bool {
+	m.settledMu.Lock()
+	defer m.settledMu.Unlock()
+	_, ok := m.concludedCapture[id]
+	return ok
+}
+
+func (m *Manager) markCaptureConcluded(id string) {
+	m.settledMu.Lock()
+	defer m.settledMu.Unlock()
+	m.concludedCapture[id] = struct{}{}
+}
+
 // untrackCapture forgets a job's capture-tracking state once the job is gone
 // (garbage-collected from the store), so neither map grows without bound in a
 // long-running server. pendingCaptures is normally already cleared by the time
@@ -222,6 +249,7 @@ func (m *Manager) untrackCapture(id string) {
 	m.pendingCaptures.Delete(id)
 	m.settledMu.Lock()
 	delete(m.settledCapture, id)
+	delete(m.concludedCapture, id)
 	m.settledMu.Unlock()
 }
 
@@ -464,8 +492,14 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		if code, ok := m.store.ExitCode(id); ok && code == 0 {
 			m.captureFreshConversationID(&meta)
 		}
-		// Settle the capture (success or give-up) before releasing the key, so
-		// CapturePending=false means the reported status is final.
+		// Record that this process's eager capture attempt finished before releasing
+		// the key. markCaptureConcluded ends WaitTerminal's grace for an in-process
+		// waiter (no more id is coming from the eager path); it deliberately does NOT
+		// settle the lazy capture, which must keep retrying on later Status reads until
+		// its own horizon so a slow cache flush still delivers the id. Clearing
+		// pendingCaptures makes CapturePending false; conclude first so
+		// CapturePending=false always implies the eager attempt is concluded.
+		m.markCaptureConcluded(id)
 		m.pendingCaptures.Delete(id)
 		m.releaseKey(key)
 	}()
@@ -475,8 +509,8 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 
 // abortSpawn tears down a supervisor that was started but cannot be recorded as
 // a running job. It terminates the process group, then in the background reaps
-// it and — only once it has fully exited, so nothing is still writing the job
-// dir — removes the dir and releases the gate. Releasing only after the agy
+// it and, only once it has fully exited (so nothing is still writing the job
+// dir), removes the dir and releases the gate. Releasing only after the agy
 // process group is gone keeps a conflicting same-key run from starting while the
 // dying agy still holds its session lock. Both spawn-failure paths (start time
 // unreadable on darwin, and UpdateMeta failure) share it so they cannot diverge.
@@ -818,6 +852,9 @@ func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
 		if code, ok := m.store.ExitCode(meta.ID); ok && code == 0 {
 			m.captureFreshConversationID(&meta)
 		}
+		// Conclude this process's eager capture attempt (see the StartJob completion
+		// path); this does not settle the lazy capture.
+		m.markCaptureConcluded(meta.ID)
 		m.pendingCaptures.Delete(meta.ID)
 		m.releaseKey(key)
 	}()
