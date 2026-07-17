@@ -4,6 +4,7 @@ package mcptools
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -61,19 +62,64 @@ func TestAgyWaitUnknownJob(t *testing.T) {
 	}
 }
 
+// TestAgyWaitInvalidWait proves the invalid-wait error comes from parseWait,
+// not from an unknown job id. It targets a real, observably running job with
+// each invalid wait: if the implementation looked the job up before
+// validating wait, a real job id would let the call through, so this only
+// passes when wait is rejected first.
 func TestAgyWaitInvalidWait(t *testing.T) {
-	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "x", Exit: 0})
+	mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0, Sleep: 2 * time.Second})
 	cs := connect(t, mgr, nil)
+
+	runRes, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "agy_run",
+		Arguments: map[string]any{"prompt": "review"},
+	})
+	if err != nil || runRes.IsError {
+		t.Fatalf("agy_run: err=%v res=%+v", err, runRes)
+	}
+	jobID, _ := structMap(t, runRes.StructuredContent)["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("empty job id")
+	}
+	// Confirm the job is actually running before probing it, so a pass here
+	// cannot be explained by the job not existing yet either.
+	waitForRunningJob(t, mgr, stateDir, 5*time.Second)
 
 	for _, wait := range []string{"nope", "-1s", "0"} {
 		res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
 			Name:      "agy_wait",
-			Arguments: map[string]any{"job_id": "x", "wait": wait},
+			Arguments: map[string]any{"job_id": jobID, "wait": wait},
 		})
 		if err == nil && !res.IsError {
 			t.Errorf("wait %q: expected an error, got %+v", wait, res.StructuredContent)
+			continue
+		}
+		text := callToolErrorText(err, res)
+		if !strings.Contains(text, "invalid wait") {
+			t.Errorf("wait %q: error = %q, want it to contain %q", wait, text, "invalid wait")
 		}
 	}
+
+	waitForDone(t, mgr, jobID, "OK", 15*time.Second)
+}
+
+// callToolErrorText extracts the human-readable error message from a failed
+// CallTool response, whichever of the two error surfaces the SDK used: a
+// transport-level err (context or protocol failure), or a tool-level error
+// result whose message lands in the first text content block.
+func callToolErrorText(err error, res *mcp.CallToolResult) string {
+	if err != nil {
+		return err.Error()
+	}
+	if res != nil {
+		for _, c := range res.Content {
+			if tc, ok := c.(*mcp.TextContent); ok {
+				return tc.Text
+			}
+		}
+	}
+	return ""
 }
 
 func TestAgyWaitOverrunReturnsNote(t *testing.T) {
