@@ -35,6 +35,7 @@ const (
 	toolAgyStatus    = "agy_status"
 	toolAgyCancel    = "agy_cancel"
 	toolAgyRunSync   = "agy_run_sync"
+	toolAgyWait      = "agy_wait"
 	toolListModels   = "list_models"
 	toolListSessions = "list_sessions"
 )
@@ -174,6 +175,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 	})
 
 	registerRunSync(s, mgr)
+	registerWait(s, mgr)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: toolListModels, Description: "List available agy models.",
