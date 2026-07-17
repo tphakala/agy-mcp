@@ -46,6 +46,10 @@ func main() {
 		os.Exit(waitJobMain(os.Args[2:], os.Stdout, os.Stderr))
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "hook-wait" {
+		os.Exit(hookWaitMain(os.Args[2:], os.Stdin, os.Stderr))
+	}
+
 	if err := serve(); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
