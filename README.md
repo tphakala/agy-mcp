@@ -123,7 +123,7 @@ Add to your Claude Code `settings.json`:
       {
         "matcher": "mcp__agy__agy_run(_sync)?",
         "hooks": [
-          { "type": "command", "command": "agy-mcp hook-wait", "asyncRewake": true, "timeout": 3600 }
+          { "type": "command", "command": "agy-mcp hook-wait", "asyncRewake": true, "timeout": 3700 }
         ]
       }
     ]
@@ -135,8 +135,9 @@ How it behaves:
 
 - After every `agy_run`, the hook waits (in the background, off the session's critical path) for the job's completion sentinel and then wakes Claude with a one-line message naming the job id and final state, so the model calls `agy_status` exactly once, when the result is actually ready.
 - `agy_run_sync` calls that returned their result inline produce no wake; a sync call that overran its wait cap (and so returned a still-running job) gets the same completion wake as `agy_run`.
-- On timeout (default 1h, `-timeout` to change) the hook still wakes Claude, reporting the job as still running, so a long job is never silently lost. On any internal error the hook exits 0 silently; it can never disrupt the tool call it observes.
+- On timeout (default 1h, `-timeout` to change) the hook still wakes Claude, reporting the job as still running, so a long job is never silently lost. On any internal error the hook exits 0 silently; it can never disrupt the tool call it observes. The hook-level `timeout` in `settings.json` (3700 above) must exceed hook-wait's own `-timeout` (1h by default), so hook-wait's internal timeout always fires first and reports the wake itself; if the outer `timeout` is equal or lower, Claude Code kills the hook process first and the exit-2 wake is lost, silently defeating the "never silently lost" guarantee.
 - The matcher entry name `agy` is the server name from `claude mcp add agy`; adjust both if you registered the server under a different name.
+- Claude Code runs hooks with the user's shell environment, not the MCP server entry's own env block, so if the server is registered with a custom `AGY_MCP_STATE_DIR` the same value must also be exported in the shell (or passed inline in the hook command) or hook-wait will silently watch the wrong state directory and never wake.
 
 Two related subcommands, useful beyond Claude Code:
 
