@@ -3,9 +3,7 @@
 package mcptools
 
 import (
-	"context"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -165,15 +163,7 @@ func TestAgyWaitSendsProgress(t *testing.T) {
 	// notification fires while the job runs.
 	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0, Sleep: 1 * time.Second})
 
-	var mu sync.Mutex
-	var tokens []any
-	opts := &mcp.ClientOptions{
-		ProgressNotificationHandler: func(_ context.Context, r *mcp.ProgressNotificationClientRequest) {
-			mu.Lock()
-			tokens = append(tokens, r.Params.ProgressToken)
-			mu.Unlock()
-		},
-	}
+	opts, tokens := progressCollector()
 	cs := connect(t, mgr, opts)
 
 	runRes, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
@@ -201,25 +191,5 @@ func TestAgyWaitSendsProgress(t *testing.T) {
 		t.Fatalf("state = %v, want done", sc["state"])
 	}
 
-	// Notifications are one-way; give in-flight ones a moment to land.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(tokens)
-		mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(tokens) == 0 {
-		t.Fatal("no progress notifications received")
-	}
-	for _, tok := range tokens {
-		if tok != "tok-9" {
-			t.Fatalf("progress token = %v, want tok-9", tok)
-		}
-	}
+	assertProgressToken(t, tokens, "tok-9")
 }

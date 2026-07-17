@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -187,20 +188,48 @@ func TestAgyRunSyncOverrunReturnsJobID(t *testing.T) {
 	waitForDone(t, mgr, jobID, "LATE OK", 15*time.Second)
 }
 
-func TestAgyRunSyncSendsProgress(t *testing.T) {
-	// One second spans several 250ms poll ticks, so at least one progress
-	// notification fires while the job runs.
-	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "SLOW OK", Exit: 0, Sleep: 1 * time.Second})
-
+// progressCollector returns client options whose progress handler records every
+// progress token received, plus a snapshot accessor. Shared by the two
+// SendsProgress tests, which differ only in which tool drives the wait.
+func progressCollector() (opts *mcp.ClientOptions, snapshot func() []any) {
 	var mu sync.Mutex
 	var tokens []any
-	opts := &mcp.ClientOptions{
+	opts = &mcp.ClientOptions{
 		ProgressNotificationHandler: func(_ context.Context, r *mcp.ProgressNotificationClientRequest) {
 			mu.Lock()
 			tokens = append(tokens, r.Params.ProgressToken)
 			mu.Unlock()
 		},
 	}
+	snapshot = func() []any {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(tokens)
+	}
+	return opts, snapshot
+}
+
+// assertProgressToken waits briefly for at least one progress notification to
+// land (they are one-way, so they can arrive after the call returns) and asserts
+// every token received equals want. Shared by the two SendsProgress tests.
+func assertProgressToken(t *testing.T, tokens func() []any, want any) {
+	t.Helper()
+	testutil.WaitFor(t, 2*time.Second, func() bool {
+		return len(tokens()) > 0
+	}, "no progress notifications received")
+	for _, tok := range tokens() {
+		if tok != want {
+			t.Fatalf("progress token = %v, want %v", tok, want)
+		}
+	}
+}
+
+func TestAgyRunSyncSendsProgress(t *testing.T) {
+	// One second spans several 250ms poll ticks, so at least one progress
+	// notification fires while the job runs.
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "SLOW OK", Exit: 0, Sleep: 1 * time.Second})
+
+	opts, tokens := progressCollector()
 	cs := connect(t, mgr, opts)
 
 	params := &mcp.CallToolParams{
@@ -216,27 +245,7 @@ func TestAgyRunSyncSendsProgress(t *testing.T) {
 		t.Fatalf("state = %v, want done", sc["state"])
 	}
 
-	// Notifications are one-way; give in-flight ones a moment to land.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(tokens)
-		mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(tokens) == 0 {
-		t.Fatal("no progress notifications received")
-	}
-	for _, tok := range tokens {
-		if tok != "tok-7" {
-			t.Fatalf("progress token = %v, want tok-7", tok)
-		}
-	}
+	assertProgressToken(t, tokens, "tok-7")
 }
 
 func TestAgyRunSyncClientCancelKeepsJobAlive(t *testing.T) {

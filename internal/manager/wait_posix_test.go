@@ -328,6 +328,64 @@ func TestWaitTerminalCrossProcessGraceDeliversLateID(t *testing.T) {
 	}
 }
 
+// TestWaitTerminalGraceCancelReturnsTerminal covers the grace-window cancel
+// branch: when a done, id-less job is still inside the capture grace and ctx is
+// cancelled, WaitTerminal returns the terminal status with a nil error, because
+// the job is already done, so the cancellation is not a wait failure.
+func TestWaitTerminalGraceCancelReturnsTerminal(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+	// The supervisor writes no conversation cache, so this fresh run stays id-less
+	// and its capture stays pending for the whole default budget after the exit
+	// sentinel: exactly the done + id-less + in-grace window the cancel branch
+	// handles. The default captureBudget (2s, via New) keeps that window wide
+	// enough to enter reliably.
+	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy})
+	m := newManager(t, managerOpts{
+		agyPath:        agy,
+		supervisorExe:  sup,
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+	})
+	m.cacheFile = cachePath
+
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	// Wait until the job is done on disk with its capture still pending: the exact
+	// state the grace-cancel branch handles.
+	testutil.WaitFor(t, 3*time.Second, func() bool {
+		_, done := m.store.ExitCode(job.ID)
+		return done && m.CapturePending(job.ID)
+	}, "job never reached done with a pending capture")
+
+	// A context already cancelled when WaitTerminal enters the grace select makes
+	// the ctx.Done() branch fire deterministically, without racing the poll cadence.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	st, terminal, err := m.WaitTerminal(ctx, job.ID, time.Now().Add(15*time.Second), nil)
+	if err != nil {
+		t.Fatalf("WaitTerminal err = %v, want nil (a done job's grace cancel is not a failure)", err)
+	}
+	if !terminal {
+		t.Fatal("terminal = false, want true")
+	}
+	if st.State != StateDone {
+		t.Fatalf("state = %q, want done", st.State)
+	}
+	// Drain the completion goroutine so the capture bookkeeping settles before the
+	// test dir is removed.
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return !m.CapturePending(job.ID)
+	}, "capture never concluded")
+}
+
 // concludeCapture marks the eager capture concluded BEFORE it clears
 // pendingCaptures, so !CapturePending must always imply captureConcluded. A
 // waiter that observed pending=false && concluded=false would wrongly treat a
