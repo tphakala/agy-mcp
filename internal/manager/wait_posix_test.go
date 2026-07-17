@@ -328,6 +328,45 @@ func TestWaitTerminalCrossProcessGraceDeliversLateID(t *testing.T) {
 	}
 }
 
+// concludeCapture marks the eager capture concluded BEFORE it clears
+// pendingCaptures, so !CapturePending must always imply captureConcluded. A
+// waiter that observed pending=false && concluded=false would wrongly treat a
+// still-in-flight capture as "no grace owed" and could return a done job with an
+// empty id. Poll tightly across the completion window and assert the ordering
+// never inverts.
+func TestConcludeBeforePendingCleared(t *testing.T) {
+	m := waitManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	// Precondition: this fresh run arms the capture, so pending starts true and the
+	// invariant below is meaningful (a never-armed job would be pending=false from
+	// the start with nothing concluded, a different, legitimate state).
+	if !m.CapturePending(job.ID) {
+		t.Fatal("expected a fresh run's capture to be armed (CapturePending true)")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		// Read pending first: conclude happens before the pending clear, so if
+		// pending is observed false the conclusion must already be visible.
+		pending := m.CapturePending(job.ID)
+		if !pending && !m.captureConcluded(job.ID) {
+			t.Fatal("observed !CapturePending with !captureConcluded; conclude must precede the pending clear")
+		}
+		st, err := m.Status(job.ID)
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if st.State == StateDone && !pending {
+			break // job settled and the eager capture attempt has concluded
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("job never settled done with a concluded capture")
+		}
+	}
+}
+
 // A fresh run whose capture was disabled at start (a torn pre-run snapshot) can
 // never produce a conversation id, so the recency grace must be skipped: a
 // cross-process waiter must return at once rather than stall for the full

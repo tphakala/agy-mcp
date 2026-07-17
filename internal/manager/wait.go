@@ -13,7 +13,7 @@ const waitPollInterval = 250 * time.Millisecond
 // captureGraceWindow bounds how long after a job completes WaitTerminal keeps
 // polling a done, id-less job for a waiter that does not own the in-process
 // capture state (a cross-process hook-wait or wait-job, whose pending/settled
-// maps are empty). It must comfortably exceed the manager's captureBudget (2s)
+// maps are empty). It must comfortably exceed the manager's defaultCaptureBudget
 // so such a waiter outlasts the owning server's capture retry, and it bounds the
 // extra polling a genuinely id-less fresh run can cost that waiter.
 const captureGraceWindow = 5 * time.Second
@@ -54,12 +54,15 @@ func (m *Manager) WaitTerminal(ctx context.Context, id string, deadline time.Tim
 					}
 					continue
 				}
-				// The grace no longer applies. CapturePending may have flipped false
-				// between the Status read above and this check: the completion
-				// goroutine persists the captured id and only then clears
-				// pendingCaptures, so the st we hold can predate a just-settled id.
-				// Re-read once so that id is delivered instead of a stale empty one;
-				// keep the original st if the re-read fails.
+				// The grace no longer applies. The primary reason to re-read here is
+				// the pending-to-concluded window: the completion goroutine persists
+				// the captured id and only then clears pendingCaptures, so once
+				// CapturePending flips false the st we hold can predate a just-settled
+				// id. Re-read once so that id is delivered instead of a stale empty
+				// one. The re-read also harmlessly covers the other grace-exit paths
+				// (a capture-disabled job, or a cross-process waiter's recency window
+				// ending): the extra Status read simply returns the same empty id or a
+				// freshly lazy-captured one. Keep the original st if the re-read fails.
 				if fresh, ferr := m.Status(id); ferr == nil {
 					return fresh, true, nil
 				}
