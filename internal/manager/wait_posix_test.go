@@ -73,7 +73,7 @@ func TestWaitTerminalReturnsDoneJob(t *testing.T) {
 		return st.State == StateDone && !m.CapturePending(job.ID)
 	}, "job never settled done")
 
-	st, terminal, err := m.WaitTerminal(context.Background(), job.ID, time.Now().Add(5*time.Second), nil)
+	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(5*time.Second), nil)
 	if err != nil {
 		t.Fatalf("WaitTerminal: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestWaitTerminalBlocksUntilDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	st, terminal, err := m.WaitTerminal(context.Background(), job.ID, time.Now().Add(15*time.Second), nil)
+	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(15*time.Second), nil)
 	if err != nil {
 		t.Fatalf("WaitTerminal: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestWaitTerminalDeadlineOverrun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	st, terminal, err := m.WaitTerminal(context.Background(), job.ID, time.Now().Add(100*time.Millisecond), nil)
+	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(100*time.Millisecond), nil)
 	if err != nil {
 		t.Fatalf("WaitTerminal: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestWaitTerminalContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	// Cancel only once WaitTerminal is observably polling, so the cancellation
 	// races the running-state select rather than the first status read.
@@ -156,7 +156,7 @@ func TestWaitTerminalContextCancel(t *testing.T) {
 // An unknown job id must surface the store load failure, not a terminal result.
 func TestWaitTerminalUnknownJob(t *testing.T) {
 	m := waitManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
-	_, terminal, err := m.WaitTerminal(context.Background(), "nonexistent-id", time.Now().Add(5*time.Second), nil)
+	_, terminal, err := m.WaitTerminal(t.Context(), "nonexistent-id", time.Now().Add(5*time.Second), nil)
 	if err == nil {
 		t.Fatal("err = nil, want a store load failure for an unknown job")
 	}
@@ -183,7 +183,7 @@ func TestWaitTerminalOnTick(t *testing.T) {
 			sawNonRunning = true
 		}
 	}
-	st, terminal, err := m.WaitTerminal(context.Background(), job.ID, time.Now().Add(15*time.Second), onTick)
+	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(15*time.Second), onTick)
 	if err != nil {
 		t.Fatalf("WaitTerminal: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestWaitTerminalGraceDeliversLateCapturedID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	st, terminal, err := m.WaitTerminal(context.Background(), job.ID, time.Now().Add(15*time.Second), nil)
+	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(15*time.Second), nil)
 	if err != nil {
 		t.Fatalf("WaitTerminal: %v", err)
 	}

@@ -45,10 +45,10 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 		return 0
 	}
 	if terminal {
-		fmt.Fprintf(stderr, "agy job %s finished: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
+		_, _ = fmt.Fprintf(stderr, "agy job %s finished: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
 			jobID, st.State, st.Elapsed.Round(time.Second))
 	} else {
-		fmt.Fprintf(stderr, "agy job %s still running after %s; poll agy_status\n", jobID, *timeout)
+		_, _ = fmt.Fprintf(stderr, "agy job %s still running after %s; poll agy_status\n", jobID, *timeout)
 	}
 	return 2
 }

@@ -26,20 +26,20 @@ func waitJobMain(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: agy-mcp wait-job [-timeout 1h] <job_id>")
+		_, _ = fmt.Fprintln(stderr, "usage: agy-mcp wait-job [-timeout 1h] <job_id>")
 		return 2
 	}
 	id := fs.Arg(0)
 	st, terminal, err := waitForJob(id, *timeout)
 	if err != nil {
-		fmt.Fprintf(stderr, "wait-job: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "wait-job: %v\n", err)
 		return 1
 	}
 	if !terminal {
-		fmt.Fprintf(stderr, "wait-job: job %s still running after %s\n", id, *timeout)
+		_, _ = fmt.Fprintf(stderr, "wait-job: job %s still running after %s\n", id, *timeout)
 		return 3
 	}
-	fmt.Fprintln(stdout, st.State)
+	_, _ = fmt.Fprintln(stdout, st.State)
 	return 0
 }
 
