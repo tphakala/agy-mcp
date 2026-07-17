@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tphakala/agy-mcp/internal/jobstore"
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
@@ -324,5 +325,63 @@ func TestWaitTerminalCrossProcessGraceDeliversLateID(t *testing.T) {
 	}
 	if st.ConversationID != uuid {
 		t.Fatalf("conversation_id = %q, want %q (cross-process grace must hold until the late capture lands)", st.ConversationID, uuid)
+	}
+}
+
+// A fresh run whose capture was disabled at start (a torn pre-run snapshot) can
+// never produce a conversation id, so the recency grace must be skipped: a
+// cross-process waiter must return at once rather than stall for the full
+// captureGraceWindow waiting for an id that is not coming.
+func TestWaitTerminalNoGraceForDisabledCapture(t *testing.T) {
+	stateDir := t.TempDir()
+	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
+	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A completed fresh run left on disk with capture disabled and a clean exit.
+	m := newManager(t, managerOpts{
+		agyPath: "/usr/bin/agy", supervisorExe: "/bin/true", stateDir: stateDir,
+		defaultTimeout: time.Minute, maxConcurrency: 4,
+	})
+	m.cacheFile = cachePath
+	meta := jobstore.Meta{
+		ID:              "job-disabled",
+		Cwd:             t.TempDir(),
+		CaptureDisabled: true,
+		StartedAt:       time.Now().Add(-time.Second),
+	}
+	dir, err := m.store.Create(meta)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "out"), []byte("OK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode(meta.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// A distinct process's view: fresh maps, so CapturePending and captureConcluded
+	// are both false. Only the CaptureDisabled short-circuit keeps this from polling
+	// the full captureGraceWindow.
+	mB := newManager(t, managerOpts{
+		agyPath: "/usr/bin/agy", supervisorExe: "/bin/true", stateDir: stateDir,
+		defaultTimeout: time.Minute, maxConcurrency: 4,
+	})
+	mB.cacheFile = cachePath
+
+	start := time.Now()
+	st, terminal, err := mB.WaitTerminal(t.Context(), meta.ID, time.Now().Add(15*time.Second), nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("WaitTerminal: %v", err)
+	}
+	if !terminal || st.State != StateDone {
+		t.Fatalf("state = %q terminal = %v, want done/true", st.State, terminal)
+	}
+	// Well under captureGraceWindow (5s): a disabled capture owes no grace.
+	if elapsed > 2*time.Second {
+		t.Fatalf("WaitTerminal took %s for a capture-disabled job; grace must be skipped", elapsed)
 	}
 }

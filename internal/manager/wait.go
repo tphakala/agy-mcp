@@ -96,6 +96,14 @@ func (m *Manager) inCaptureGrace(id string) bool {
 	if m.captureConcluded(id) {
 		return false
 	}
+	// A capture disabled at start (a torn pre-run snapshot) can never produce an
+	// id, so no grace is owed: a cross-process waiter would only be stalled for the
+	// whole recency window for an id that is not coming. The meta read is an
+	// optimization, not a correctness gate, so a read error falls through to the
+	// recency window rather than erroring.
+	if meta, err := m.store.Load(id); err == nil && meta.CaptureDisabled {
+		return false
+	}
 	end, ok := m.store.CompletedAt(id)
 	return ok && time.Since(end) < captureGraceWindow
 }
