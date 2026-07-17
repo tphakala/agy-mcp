@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,9 +16,9 @@ import (
 
 // waitJobMain implements "agy-mcp wait-job [-timeout 1h] <job_id>": block
 // until the job reaches a terminal state, print that state word to stdout,
-// and exit 0. Exit codes: 0 terminal, 1 error, 2 usage, 3 timeout. It is the
-// scriptable face of manager.WaitTerminal for shell automation that would
-// otherwise poll agy_status.
+// and exit 0. Exit codes: 0 terminal, 1 error, 2 usage, 3 timeout, 130
+// interrupted. It is the scriptable face of manager.WaitTerminal for shell
+// automation that would otherwise poll agy_status.
 func waitJobMain(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("wait-job", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -32,6 +33,16 @@ func waitJobMain(args []string, stdout, stderr io.Writer) int {
 	id := fs.Arg(0)
 	st, terminal, err := waitForJob(id, *timeout)
 	if err != nil {
+		// signal.NotifyContext cancels the wait's ctx on SIGINT or SIGTERM, which
+		// WaitTerminal surfaces as context.Canceled; report that as the POSIX
+		// 128+SIGINT interrupt code (130) rather than a generic error, so a script
+		// can tell "the user hit Ctrl-C" apart from a real failure. NotifyContext
+		// covers SIGTERM too, but one code keeps the contract simple and 130 is the
+		// widely understood interrupt exit status.
+		if errors.Is(err, context.Canceled) {
+			_, _ = fmt.Fprintln(stderr, "wait-job: interrupted")
+			return 130
+		}
 		_, _ = fmt.Fprintf(stderr, "wait-job: %v\n", err)
 		return 1
 	}

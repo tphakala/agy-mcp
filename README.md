@@ -140,7 +140,7 @@ How it behaves:
 
 Two related subcommands, useful beyond Claude Code:
 
-- `agy-mcp wait-job [-timeout 1h] <job_id>` blocks until the job is terminal and prints the final state word (`done`, `failed`, or `cancelled`) to stdout. Exit codes: 0 terminal, 1 error, 2 usage, 3 timeout. It needs only the job state directory, not the agy binary, so it works in minimal environments.
+- `agy-mcp wait-job [-timeout 1h] <job_id>` blocks until the job is terminal and prints the final state word (`done`, `failed`, or `cancelled`) to stdout. Exit codes: 0 terminal, 1 error, 2 usage, 3 timeout, 130 interrupted. It needs only the job state directory, not the agy binary, so it works in minimal environments.
 - `agy-mcp hook-wait [-timeout 1h]` is the hook entrypoint described above: it reads the PostToolUse payload from stdin, so it is not useful to invoke by hand, but it is a single self-contained binary call, no shell wrapper or jq required, and it works on Linux, macOS, and Windows.
 
 MCP clients other than Claude Code get the same no-polling benefit in-protocol: call `agy_wait` with the `job_id` returned by `agy_run` and the tool blocks (bounded by `wait`, default 2m, max 10m) until the job finishes.
