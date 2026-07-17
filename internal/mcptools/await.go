@@ -10,12 +10,6 @@ import (
 	"github.com/tphakala/agy-mcp/internal/manager"
 )
 
-// notifyTimeout bounds each progress-notification send so a client that
-// stopped draining the stream cannot park the wait loop past its cap. It
-// matches the manager's poll cadence, which is what the send used to be
-// bounded by when the loop lived in run_sync.
-const notifyTimeout = 250 * time.Millisecond
-
 // parseWait validates a caller-supplied inline wait, applying the shared
 // default and cap. agy_run_sync and agy_wait use it so the two cannot drift.
 func parseWait(s string) (time.Duration, error) {
@@ -45,8 +39,10 @@ func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manage
 			return
 		}
 		lastNotified = sec
-		// Best effort: the result, not the notifications, is the contract.
-		nctx, ncancel := context.WithTimeout(ctx, notifyTimeout)
+		// Best effort: the result, not the notifications, is the contract. Bound
+		// each send to one poll tick so a client that stopped draining the stream
+		// cannot park the wait loop past its cap.
+		nctx, ncancel := context.WithTimeout(ctx, manager.WaitPollInterval)
 		_ = req.Session.NotifyProgress(nctx, &mcp.ProgressNotificationParams{
 			ProgressToken: token,
 			Progress:      st.Elapsed.Seconds(),

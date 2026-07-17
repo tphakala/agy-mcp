@@ -5,10 +5,11 @@ import (
 	"time"
 )
 
-// waitPollInterval is how often WaitTerminal re-reads job status and invokes
-// onTick. Status reads a few small files, so this is cheap. agy_run_sync's
-// wait loop used the same 250ms cadence before it moved here.
-const waitPollInterval = 250 * time.Millisecond
+// WaitPollInterval is how often WaitTerminal re-reads job status and invokes
+// onTick. Status reads a few small files, so this is cheap. It is exported so
+// callers that bound per-tick work (mcptools' progress-notification send) share
+// the one cadence rather than hard-coding a matching literal.
+const WaitPollInterval = 250 * time.Millisecond
 
 // captureGraceWindow bounds how long after a job completes WaitTerminal keeps
 // polling a done, id-less job for a waiter that does not own the in-process
@@ -37,7 +38,7 @@ const captureGraceWindow = 5 * time.Second
 // completion-recency window; for such a waiter Status's lazy capture, which
 // reads agy's cache directly, is what actually delivers the id.
 func (m *Manager) WaitTerminal(ctx context.Context, id string, deadline time.Time, onTick func(Status)) (Status, bool, error) {
-	ticker := time.NewTicker(waitPollInterval)
+	ticker := time.NewTicker(WaitPollInterval)
 	defer ticker.Stop()
 	for {
 		st, err := m.Status(id)

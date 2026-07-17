@@ -2,7 +2,6 @@ package mcptools
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,11 +30,11 @@ func registerWait(s *mcp.Server, mgr *manager.Manager) {
 		if err != nil {
 			return nil, runSyncOutput{}, err
 		}
-		// Reject an unknown job before entering the wait loop, so a typo'd id
-		// fails fast instead of polling a job that can never appear.
-		if _, err := mgr.Status(in.JobID); err != nil {
-			return nil, runSyncOutput{}, fmt.Errorf("job %s: %w", in.JobID, err)
-		}
+		// An unknown job needs no separate pre-check: WaitTerminal's first action is
+		// the same Status read, and it returns before any polling, so awaitJob's
+		// "status read failed" path already fails a typo'd id fast. The pre-check only
+		// duplicated a potentially large out-file read on every wait against a
+		// terminal job.
 		out, err := awaitJob(ctx, req, mgr, in.JobID, time.Now().Add(wait))
 		if err != nil {
 			return nil, runSyncOutput{}, err
