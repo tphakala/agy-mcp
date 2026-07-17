@@ -16,9 +16,12 @@ import (
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
-// hookPayload builds the stdin JSON hook-wait expects from a PostToolUse hook.
-func hookPayload(tool, id string) string {
-	return fmt.Sprintf(`{"tool_name":%q,"tool_response":{"job_id":%q,"state":"running"}}`, tool, id)
+// hookPayload builds the stdin JSON hook-wait expects from a PostToolUse
+// hook, with the given state carried in the tool response (the state the
+// tool call itself observed, distinct from whatever the job's state is on
+// disk by the time the hook runs).
+func hookPayload(tool, id, state string) string {
+	return fmt.Sprintf(`{"tool_name":%q,"tool_response":{"job_id":%q,"state":%q}}`, tool, id, state)
 }
 
 func TestHookWaitWakesOnDoneJob(t *testing.T) {
@@ -28,7 +31,7 @@ func TestHookWaitWakesOnDoneJob(t *testing.T) {
 	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
 
 	var errb bytes.Buffer
-	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1")), &errb)
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errb.String())
 	}
@@ -51,12 +54,34 @@ func TestHookWaitQuietWhenRunSyncAlreadyTerminal(t *testing.T) {
 	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
 
 	var errb bytes.Buffer
-	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run_sync", "job-hw-1")), &errb)
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run_sync", "job-hw-1", "done")), &errb)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 	if errb.String() != "" {
 		t.Fatalf("stderr = %q, want empty", errb.String())
+	}
+}
+
+// TestHookWaitWakesOnRunSyncOverrunRace covers the overrun-then-finished race:
+// a run_sync call overran its wait cap and returned with the response still
+// reporting state "running" (no result delivered inline), but by the time
+// this hook checks, the job has already finished on disk. The response state
+// says "running", so the result was never delivered inline; the wake is
+// owed regardless of what the live status now says.
+func TestHookWaitWakesOnRunSyncOverrunRace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run_sync", "job-hw-1", "running")), &errb)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "job-hw-1") {
+		t.Fatalf("stderr = %q, want it to mention the job id", errb.String())
 	}
 }
 
@@ -114,7 +139,7 @@ func TestHookWaitWakesOnTimeout(t *testing.T) {
 	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
 
 	var errb bytes.Buffer
-	code := hookWaitMain([]string{"-timeout", "100ms"}, strings.NewReader(hookPayload("mcp__agy__agy_run", job.ID)), &errb)
+	code := hookWaitMain([]string{"-timeout", "100ms"}, strings.NewReader(hookPayload("mcp__agy__agy_run", job.ID, "running")), &errb)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errb.String())
 	}
@@ -129,7 +154,7 @@ func TestHookWaitQuietOnUnknownJob(t *testing.T) {
 	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
 
 	var errb bytes.Buffer
-	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-none")), &errb)
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-none", "running")), &errb)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errb.String())
 	}

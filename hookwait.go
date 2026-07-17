@@ -26,14 +26,19 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 0
 	}
-	jobID, toolName, ok := hookinput.Parse(stdin)
+	jobID, toolName, respState, ok := hookinput.Parse(stdin)
 	if !ok {
 		return 0
 	}
 	// A sync tool that already returned a terminal result delivered it inline;
-	// waking Claude again would be noise. agy_run never delivers inline, so
-	// for it even an already-terminal job still gets its wake.
-	if strings.HasSuffix(toolName, "agy_run_sync") {
+	// waking Claude again would be noise. But if the response itself still
+	// says "running", the sync call overran its wait cap and returned before
+	// the job finished, so no result was delivered inline, no matter what the
+	// live status says by the time this hook runs (the job may well have
+	// finished on disk in the meantime): the wake is still owed. agy_run
+	// never delivers inline, so for it even an already-terminal job always
+	// gets its wake, regardless of respState.
+	if strings.HasSuffix(toolName, "agy_run_sync") && respState != "running" {
 		if cfg, err := config.ResolveWait(); err == nil {
 			if st, err := manager.New(cfg).Status(jobID); err == nil && st.State != manager.StateRunning {
 				return 0
