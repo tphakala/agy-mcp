@@ -70,9 +70,9 @@ func Resolve() (Config, error) {
 	}
 	c.AgyPath = abs
 
-	self, err := os.Executable()
+	self, err := resolveSupervisorExe()
 	if err != nil {
-		return Config{}, fmt.Errorf("resolve own executable: %w", err)
+		return Config{}, err
 	}
 	c.SupervisorExe = self
 
@@ -85,22 +85,42 @@ func Resolve() (Config, error) {
 	return c, nil
 }
 
-// resolveStateDir returns the job-state root: AGY_MCP_STATE_DIR verbatim, or
-// the XDG state-home fallback. Shared by Resolve and ResolveWait so the two
+// resolveStateDir returns the job-state root: AGY_MCP_STATE_DIR (made absolute)
+// or the XDG state-home fallback. Shared by Resolve and ResolveWait so the two
 // cannot drift.
 func resolveStateDir() (string, error) {
-	if stateRoot := os.Getenv("AGY_MCP_STATE_DIR"); stateRoot != "" {
-		return stateRoot, nil
-	}
-	xdg := os.Getenv("XDG_STATE_HOME")
-	if xdg == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home: %w", err)
+	stateRoot := os.Getenv("AGY_MCP_STATE_DIR")
+	if stateRoot == "" {
+		xdg := os.Getenv("XDG_STATE_HOME")
+		if xdg == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("resolve home: %w", err)
+			}
+			xdg = filepath.Join(home, ".local", "state")
 		}
-		xdg = filepath.Join(home, ".local", "state")
+		stateRoot = filepath.Join(xdg, "agy-mcp")
 	}
-	return filepath.Join(xdg, "agy-mcp"), nil
+	// A relative override resolves against each process's own cwd; hook-wait runs
+	// from the session cwd while the server does not, so the same relative value
+	// would silently split the job store. Absolutize so every consumer agrees,
+	// covering both the override and the XDG fallback.
+	abs, err := filepath.Abs(stateRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve state dir %q: %w", stateRoot, err)
+	}
+	return abs, nil
+}
+
+// resolveSupervisorExe returns the path to the running agy-mcp binary, used as
+// the run-job supervisor. Shared by Resolve and ResolveWait so the two cannot
+// drift.
+func resolveSupervisorExe() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve own executable: %w", err)
+	}
+	return self, nil
 }
 
 // ResolveWait builds the minimal Config the wait-only subcommands (wait-job,
@@ -118,12 +138,16 @@ func ResolveWait() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	self, err := os.Executable()
+	self, err := resolveSupervisorExe()
 	if err != nil {
-		return Config{}, fmt.Errorf("resolve own executable: %w", err)
+		return Config{}, err
 	}
 	c := baseConfig()
 	c.StateDir = stateDir
 	c.SupervisorExe = self
+	// Cheap env reads carried for uniformity with Resolve; the wait paths do not
+	// consume them today.
+	c.DefaultModel = os.Getenv("AGY_MCP_DEFAULT_MODEL")
+	c.HTTPToken = os.Getenv("AGY_MCP_HTTP_TOKEN")
 	return c, nil
 }
