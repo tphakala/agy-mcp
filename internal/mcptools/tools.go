@@ -131,13 +131,39 @@ var serverVersion = sync.OnceValue(func() string {
 	return "dev"
 })
 
+// serverInstructions is the MCP instructions string sent to clients at
+// initialize (injected into the client's system prompt). It is neutral
+// capability documentation: what agy is for and when a client should reach for
+// these tools. It deliberately encodes no single client's conventions or policy
+// (model choice, working-directory habits, review etiquette); those belong in
+// that client's own configuration, not in a server shared by everyone.
+const serverInstructions = `agy delegates a prompt to a background coding agent and manages the run as a restart-resilient job with output captured to disk. Use it to get an independent perspective or to offload self-contained work while you keep going:
+
+- Peer review: have another model review code, a design, or a plan for bugs, security, and correctness.
+- Rubber-duck: talk through a decision and get pushback that catches blind spots your own reasoning would skip.
+- Research: fact-check a claim or look into a topic.
+- Background delegation: fire off an independent task and reconcile the result later, so two things run at once.
+
+Choosing a tool:
+- agy_run_sync starts a run and waits inline (bounded by the wait argument). Use it when you need the answer before your next step.
+- agy_run returns a job_id immediately; poll it with agy_status or block on it with agy_wait. Use these for long runs or to fan several tasks out in parallel.
+- list_models enumerates models; call it only if you want to override the default. list_sessions lists known conversations.
+
+Notes:
+- Continue a prior thread with conversation_id or continue_latest instead of restating context.
+- Fresh runs sharing a cwd are not queued; a concurrent attempt returns a conflict error. To run tasks in parallel, continue an existing conversation or use a different directory.
+- agy runs a full agent that can edit files. For a review that must not touch the repo, say so explicitly in the prompt.
+- Always reconcile a backgrounded run: poll it to completion and fold the result back in.`
+
 // NewServer builds an MCP server with all agy tools registered.
 func NewServer(mgr *manager.Manager) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "agy-mcp", Version: serverVersion()}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "agy-mcp", Version: serverVersion()}, &mcp.ServerOptions{
+		Instructions: serverInstructions,
+	})
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        toolAgyRun,
-		Description: "Start an agy prompt (e.g. a peer review) as an async job. Returns a job_id to poll with agy_status.",
+		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id; poll with agy_status or block with agy_wait. Prefer this over agy_run_sync for long runs or to fan several tasks out in parallel.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
 		req, err := in.toStartRequest()
 		if err != nil {
@@ -183,7 +209,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 	registerWait(s, mgr)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: toolListModels, Description: "List available agy models.",
+		Name: toolListModels, Description: "List available agy models. Call this to see the options if you want to override the default model for agy_run or agy_run_sync.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, modelsOutput, error) {
 		models, err := mgr.ListModels(ctx)
 		if err != nil {

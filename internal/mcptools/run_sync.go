@@ -34,9 +34,11 @@ type runSyncOutput struct {
 func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: toolAgyRunSync,
-		Description: "Start an agy prompt and wait for it inline (bounded by wait, default 2m). " +
+		Description: "Delegate a prompt to an agy model and wait for the result inline (bounded by wait, default 2m). " +
+			"Use for peer review, a second opinion, research, or any task whose answer you need before your next step. " +
 			"Sends MCP progress notifications while waiting. If the job outlives the wait cap " +
-			"it keeps running and the returned job_id can be polled with agy_status.",
+			"it keeps running and the returned job_id can be polled with agy_status or waited on with agy_wait. " +
+			"For long runs or parallel work, prefer agy_run.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in runSyncInput) (*mcp.CallToolResult, runSyncOutput, error) {
 		wait, err := parseWait(in.Wait)
 		if err != nil {

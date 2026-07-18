@@ -172,3 +172,47 @@ func TestHTTPServeListsTools(t *testing.T) {
 		}
 	}
 }
+
+// TestHTTPServeAdvertisesInstructions guards the discovery surface: the server
+// must send a non-empty MCP instructions string at initialize (a regression to
+// nil ServerOptions would silently drop it), and the entry-point tools must keep
+// naming their use cases so a client under-reaching for them is less likely.
+func TestHTTPServeAdvertisesInstructions(t *testing.T) {
+	handler := HTTPHandler(testManager(t), "")
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "0"}, nil)
+	ctx := t.Context()
+	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: ts.URL}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	init := cs.InitializeResult()
+	if init == nil {
+		t.Fatal("no InitializeResult")
+	}
+	// Spot-check anchors, not the full text: a use-case cue, the sync entry-point
+	// tool name, and the parallelism caveat that mirrors the cwd conflict error.
+	for _, want := range []string{"Peer review", "agy_run_sync", "conflict error"} {
+		if !strings.Contains(init.Instructions, want) {
+			t.Errorf("server instructions missing %q; got:\n%s", want, init.Instructions)
+		}
+	}
+
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	desc := make(map[string]string, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		desc[tool.Name] = tool.Description
+	}
+	for _, name := range []string{"agy_run", "agy_run_sync"} {
+		if !strings.Contains(desc[name], "peer review") {
+			t.Errorf("tool %q description no longer names a use case: %q", name, desc[name])
+		}
+	}
+}
