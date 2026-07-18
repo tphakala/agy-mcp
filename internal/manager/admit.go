@@ -37,11 +37,27 @@ func (m *Manager) admit(key string) (acquireOutcome, error) {
 // for key. It pairs with admit and forceAdmit. The cross-process unlock is a no-op
 // for a key this process does not hold (a restored job whose lock a sibling held),
 // so it is always safe on the run's completion path.
+//
+// Release order mirrors admit's acquire order in reverse: admit takes the gate slot
+// first, then the cross-process lock, so releaseKey drops the cross-process lock
+// first, then the gate slot. Releasing the gate slot LAST is what makes the fix for
+// issue #81 correct rather than merely narrower: because admit checks the gate before
+// ever reaching xlock.tryLock, holding the gate key until the lock is already gone
+// means any concurrent same-key admit either bounces cleanly off the still-held gate
+// (acquireKeyBusy) or, once it passes the gate, is guaranteed the lock is free. The
+// gate.mu release-before-acquire edge orders this xlock.unlock ahead of that admit's
+// later xlock.tryLock. Releasing in the other order exposed a transient window where
+// the gate key was free but this process's own lock fd was still held, so a same-key
+// admit hit xlock's duplicate guard and surfaced a self-inflicted "already held by
+// this process" error instead of a clean refusal.
 func (m *Manager) releaseKey(key string) {
-	m.gate.release(key)
 	if key != "" {
 		m.xlock.unlock(key)
 	}
+	if m.testHookMidRelease != nil {
+		m.testHookMidRelease()
+	}
+	m.gate.release(key)
 }
 
 // forceAdmit tracks an already-running restored job (whose detached supervisor

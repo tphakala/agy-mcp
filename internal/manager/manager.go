@@ -81,6 +81,13 @@ type Manager struct {
 	// sysctl read failure (not reliably reproducible for a real child process)
 	// and without any risk of a package-level var leaking into another test.
 	readStartTimeTicks func(int) (uint64, bool)
+
+	// testHookMidRelease, when non-nil, is invoked by releaseKey between its two
+	// unlock steps (the cross-process xlock.unlock and the in-process gate.release).
+	// It exists only so a test can deterministically interpose a concurrent admit at
+	// that intermediate point and pin the release-ordering invariant (issue #81);
+	// production leaves it nil, so the check is a single never-taken branch.
+	testHookMidRelease func()
 }
 
 // defaultCaptureBudget bounds how long captureFreshConversationID waits for
@@ -456,12 +463,20 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	grp, err := proc.Track(cmd, false)
 	if err != nil {
 		// Started but untrackable (Track only fails before Start, which succeeded).
-		// Fail closed: kill the supervisor, reap it in the background, and clean up.
+		// Fail closed: kill the supervisor, then reap it and clean up in the
+		// background, releasing the gate key only once it has fully exited. Releasing
+		// after the supervisor is gone (rather than synchronously here) keeps a
+		// conflicting same-key run from starting while the dying agy still holds its
+		// session lock, matching abortSpawn's teardown contract. Track failed, so
+		// there is no group handle to terminate; the direct process Kill is all that
+		// is available.
 		_ = cmd.Process.Kill()
-		go func() { _ = cmd.Wait() }()
-		_ = m.store.Remove(id)
-		m.pendingCaptures.Delete(id)
-		m.releaseKey(key)
+		go func() {
+			_ = cmd.Wait()
+			_ = m.store.Remove(id)
+			m.pendingCaptures.Delete(id)
+			m.releaseKey(key)
+		}()
 		return Job{}, fmt.Errorf("track supervisor: %w", err)
 	}
 	// Record the supervisor PID (for liveness and cancel) and its start time (so a

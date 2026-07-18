@@ -102,17 +102,19 @@ func waitForEmptyStore(t *testing.T, m *Manager) {
 //   - "concurrency cap": admit's acquireAtCap branch, a sibling refusal for the
 //     same class of outcome (see concurrency.go's comment on why the two are
 //     reported with different text).
-//   - "already held by this process": releaseKey releases the in-process gate
-//     slot before the cross-process lock (admit.go), so a retry landing in that
-//     narrow window can observe the gate as free while xlock.tryLock still hits
-//     its own duplicate guard (keylock.go). Tracked for a real fix in #81; this
-//     is the test-side tolerance for it in the meantime.
+//
+// It deliberately does NOT tolerate "already held by this process": that was a
+// stopgap for the issue #81 self-race, where releaseKey released the in-process
+// gate slot before the cross-process lock and a same-key retry could observe the
+// gate free while xlock.tryLock still hit its own duplicate guard. releaseKey now
+// releases the cross-process lock first (admit.go), so that window is closed and
+// the error is unreachable through the admit path; a retry loop seeing it again
+// would be a real regression, not a transient to swallow.
 func isRetryableGateRefusal(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "conflicting") ||
-		strings.Contains(msg, "concurrency cap") ||
-		strings.Contains(msg, "already held by this process")
+		strings.Contains(msg, "concurrency cap")
 }

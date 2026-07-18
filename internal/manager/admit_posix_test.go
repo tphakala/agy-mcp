@@ -152,3 +152,45 @@ func TestForceAdmitTracksDespiteSiblingLock(t *testing.T) {
 		t.Fatalf("m3.admit while m2 still holds = (%v, %v), want (acquireKeyBusy, nil)", outcome, err)
 	}
 }
+
+// TestReleaseKeyReleasesCrossLockBeforeGate pins the release-ordering invariant from
+// issue #81: releaseKey must drop the cross-process lock BEFORE the in-process gate
+// slot, mirroring admit's acquire order (gate first, then xlock). If it releases in
+// the same order it acquires, the intermediate state "gate key free but this
+// process's own xlock fd still held" becomes observable: a concurrent same-key admit
+// passes gate.tryAcquire, then xlock.tryLock hits its own duplicate guard and returns
+// the self-inflicted error `crosslock: key %q already held by this process` instead
+// of a clean acquireKeyBusy refusal.
+//
+// The testHookMidRelease seam fires synchronously between releaseKey's two unlock
+// steps, so the concurrent admit is interposed at exactly the intermediate point with
+// no timing dependence (no goroutines, no sleeps). On the correct order the interposed
+// admit sees the gate key still held and returns (acquireKeyBusy, nil); on the buggy
+// order it sees the gate free but the lock held and returns (acquireOK, non-nil error).
+func TestReleaseKeyReleasesCrossLockBeforeGate(t *testing.T) {
+	m := newManager(t, managerOpts{maxConcurrency: 4})
+	const key = "cwd:/w"
+
+	if outcome, err := m.admit(key); err != nil || outcome != acquireOK {
+		t.Fatalf("admit = (%v, %v), want (acquireOK, nil)", outcome, err)
+	}
+
+	var midOutcome acquireOutcome
+	var midErr error
+	m.testHookMidRelease = func() {
+		m.testHookMidRelease = nil // fire once; the interposed admit must not re-enter
+		midOutcome, midErr = m.admit(key)
+	}
+
+	m.releaseKey(key)
+
+	if midErr != nil {
+		t.Fatalf("concurrent same-key admit interposed during releaseKey returned error %v; "+
+			"releaseKey must free the cross-process lock before the gate slot so the "+
+			"intermediate state is never observable", midErr)
+	}
+	if midOutcome != acquireKeyBusy {
+		t.Fatalf("concurrent same-key admit interposed during releaseKey = %v, want acquireKeyBusy "+
+			"(the gate key must stay held until the cross-process lock is released)", midOutcome)
+	}
+}
