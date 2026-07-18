@@ -24,6 +24,9 @@ func TestHookWaitWakesOnTimeout(t *testing.T) {
 	if !strings.Contains(errb.String(), "still running") {
 		t.Fatalf("stderr = %q, want it to mention still running", errb.String())
 	}
+	if !strings.Contains(errb.String(), "not an error") {
+		t.Fatalf("stderr = %q, want it to frame the wake as not an error", errb.String())
+	}
 }
 
 // TestHookWaitWakesOnInterrupt proves a SIGINT delivered to a waiting hook-wait
@@ -75,5 +78,8 @@ func TestHookWaitWakesOnInterrupt(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "wait interrupted") {
 		t.Fatalf("stderr = %q, want it to mention wait interrupted", errb.String())
+	}
+	if !strings.Contains(errb.String(), "not an error") {
+		t.Fatalf("stderr = %q, want it to frame the wake as not an error", errb.String())
 	}
 }

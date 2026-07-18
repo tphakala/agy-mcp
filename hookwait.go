@@ -22,6 +22,12 @@ import (
 // because a hook that fails must never disrupt the tool flow it observes.
 // A timeout also wakes (exit 2): the model should learn the job is
 // long-running rather than never hearing back.
+//
+// Claude Code renders any exit-2 hook under a "Stop hook blocking error from
+// command ..." wrapper it prepends itself; we cannot change that wrapper, only
+// the stderr body below. Each wake message therefore leads with an explicit
+// "(not an error)" framing so the completion signal is not misread as a
+// failure of the observed tool call. Keep that framing on every wake message.
 func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 	// Manager internals log via the std logger on rare error paths; any stray line
 	// would land in the transcript on a non-wake exit or prepend noise to the wake
@@ -71,14 +77,14 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 		if !errors.Is(err, context.Canceled) {
 			return 0
 		}
-		_, _ = fmt.Fprintf(stderr, "agy job %s wait interrupted; the job may still be running; poll agy_status with this job_id\n", jobID)
+		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s wait interrupted; the job may still be running; poll agy_status with this job_id\n", jobID)
 		return 2
 	}
 	if terminal {
-		_, _ = fmt.Fprintf(stderr, "agy job %s finished: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
+		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s finished: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
 			jobID, st.State, st.Elapsed.Round(time.Second))
 	} else {
-		_, _ = fmt.Fprintf(stderr, "agy job %s still running after %s; poll agy_status\n", jobID, *timeout)
+		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s still running after %s; poll agy_status\n", jobID, *timeout)
 	}
 	return 2
 }

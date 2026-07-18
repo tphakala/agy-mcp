@@ -32,6 +32,11 @@ func TestHookWaitWakesOnDoneJob(t *testing.T) {
 	if !strings.Contains(out, "agy_status") {
 		t.Fatalf("stderr = %q, want it to mention agy_status", out)
 	}
+	// The wake rides Claude Code's "Stop hook blocking error" wrapper, so the body
+	// must frame itself as a notification, not a failure. Guard that framing.
+	if !strings.Contains(out, "not an error") {
+		t.Fatalf("stderr = %q, want it to frame the wake as not an error", out)
+	}
 }
 
 func TestHookWaitQuietWhenRunSyncAlreadyTerminal(t *testing.T) {
