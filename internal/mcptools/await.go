@@ -27,7 +27,8 @@ func parseWait(s string) (time.Duration, error) {
 // once-per-second MCP progress notifications when the client supplied a
 // progress token. It is the wait phase shared by agy_run_sync and agy_wait,
 // so their semantics cannot drift. On a wait-cap overrun the returned output
-// carries the standard poll-with-agy_status note.
+// carries the standard still-running note, which names agy_wait before
+// agy_status.
 func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manager, jobID string, deadline time.Time) (runSyncOutput, error) {
 	token := req.Params.GetProgressToken()
 	// Notify once per elapsed second, not per poll tick: the message has
@@ -61,13 +62,20 @@ func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manage
 			// The client gave up on the call; the job stays alive under its
 			// detached supervisor. Carry the job id in the error so a
 			// gracefully-cancelling client can still find the job.
-			return runSyncOutput{}, fmt.Errorf("wait cancelled; job %s is still running, poll it with agy_status: %w", jobID, err)
+			return runSyncOutput{}, fmt.Errorf("wait cancelled; job %s is still running, wait for it with agy_wait or check it with agy_status: %w", jobID, err)
 		}
 		return runSyncOutput{}, fmt.Errorf("job %s status read failed: %w", jobID, err)
 	}
 	out := runSyncOutput{JobID: jobID, statusOutput: toStatusOutput(st)}
 	if !terminal {
-		out.Note = "wait cap reached; the job is still running, poll it with agy_status"
+		// Name agy_wait first: one blocking call is cheaper than an agy_status poll
+		// loop, and the note is the instruction a caller actually acts on at overrun
+		// (the tool description is far away by then). Saying the job is still running
+		// also has to be unambiguous, or a caller reads "not done" as "failed" and
+		// re-sends the same prompt, paying for the work twice.
+		out.Note = "wait cap reached; this is not a failure, the job is still running. " +
+			"Call agy_wait with this job_id to block until it finishes, or agy_status to check it now. " +
+			"Do not re-send the prompt."
 	}
 	return out, nil
 }

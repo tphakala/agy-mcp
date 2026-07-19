@@ -13,14 +13,14 @@ const (
 	// does not say otherwise; quick models finish well inside it.
 	defaultSyncWait = 2 * time.Minute
 	// maxSyncWait caps caller-supplied waits so a tool call cannot park a
-	// session indefinitely; longer runs are for agy_run + agy_status.
+	// session indefinitely; longer runs are for agy_run + agy_wait/agy_status.
 	maxSyncWait = 10 * time.Minute
 )
 
 // runSyncInput is runInput plus the inline wait cap.
 type runSyncInput struct {
 	runInput
-	Wait string `json:"wait,omitempty" jsonschema:"max time to wait inline (Go duration, default 2m, max 10m); on overrun the job keeps running and the job_id is returned for agy_status polling"`
+	Wait string `json:"wait,omitempty" jsonschema:"max time to wait inline (Go duration, default 2m, max 10m); on overrun the job keeps running and the job_id is returned for agy_wait or agy_status"`
 }
 
 type runSyncOutput struct {
@@ -35,10 +35,12 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: toolAgyRunSync,
 		Description: "Delegate a prompt to an agy model and wait for the result inline (bounded by wait, default 2m). " +
-			"Use for peer review, a second opinion, research, or any task whose answer you need before your next step. " +
+			"Use when the answer is needed before the next step AND the task is bounded enough to finish within the wait: " +
+			"a focused peer review, a second opinion, a rubber-duck question. " +
 			"Sends MCP progress notifications while waiting. If the job outlives the wait cap " +
-			"it keeps running and the returned job_id can be polled with agy_status or waited on with agy_wait. " +
-			"For long runs or parallel work, prefer agy_run.",
+			"it keeps running and the returned job_id can be waited on with agy_wait or polled with agy_status. " +
+			"For open-ended work that routinely runs past the wait cap (web research, a whole-codebase review), " +
+			"and for parallel work, prefer agy_run.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in runSyncInput) (*mcp.CallToolResult, runSyncOutput, error) {
 		wait, err := parseWait(in.Wait)
 		if err != nil {

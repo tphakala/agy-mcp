@@ -72,7 +72,7 @@ type runOutput struct {
 }
 
 type statusInput struct {
-	JobID string `json:"job_id" jsonschema:"the job id returned by agy_run"`
+	JobID string `json:"job_id" jsonschema:"the job id returned by agy_run or agy_run_sync"`
 }
 
 type statusOutput struct {
@@ -87,7 +87,7 @@ type statusOutput struct {
 }
 
 // toStatusOutput converts a manager status into its wire shape, shared by
-// agy_status and agy_run_sync so the two cannot drift.
+// agy_status, agy_run_sync and agy_wait so they cannot drift.
 func toStatusOutput(st manager.Status) statusOutput {
 	return statusOutput{
 		State:          st.State,
@@ -145,8 +145,9 @@ const serverInstructions = `agy delegates a prompt to a background coding agent 
 - Background delegation: fire off an independent task and reconcile the result later, so two things run at once.
 
 Choosing a tool:
-- agy_run_sync starts a run and waits inline (bounded by the wait argument). Use it when you need the answer before your next step.
-- agy_run returns a job_id immediately; poll it with agy_status or block on it with agy_wait. Use these for long runs or to fan several tasks out in parallel.
+- agy_run_sync starts a run and waits inline (bounded by the wait argument). Use it when you need the answer before your next step and the task is bounded enough to finish within that wait.
+- agy_run returns a job_id immediately; block on it with agy_wait or poll it with agy_status. Use these for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), or to fan several tasks out in parallel.
+- Outliving the inline wait is not a failure: the job keeps running under its own supervisor and the returned job_id still resolves to its outcome. Wait on it or poll it; do not re-send the prompt.
 - list_models enumerates models; call it only if you want to override the default. list_sessions lists known conversations.
 
 Notes:
@@ -163,7 +164,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        toolAgyRun,
-		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id; poll with agy_status or block with agy_wait. Prefer this over agy_run_sync for long runs or to fan several tasks out in parallel.",
+		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id; block on it with agy_wait or poll it with agy_status. Prefer this over agy_run_sync for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), or to fan several tasks out in parallel.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
 		req, err := in.toStartRequest()
 		if err != nil {

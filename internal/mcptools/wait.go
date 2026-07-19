@@ -21,10 +21,12 @@ type waitInput struct {
 func registerWait(s *mcp.Server, mgr *manager.Manager) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: toolAgyWait,
-		Description: "Block until an agy_run job finishes (bounded by wait, default 2m, max 10m). " +
-			"Sends MCP progress notifications while waiting. Prefer one agy_wait over repeated " +
-			"agy_status polling when the next step depends on the job's result. If the job " +
-			"outlives the wait cap it keeps running; call agy_wait again or poll agy_status.",
+		Description: "Block until an agy job finishes (bounded by wait, default 2m, max 10m). " +
+			"Accepts any job_id, whether it came from agy_run or from an agy_run_sync that " +
+			"outlived its inline wait. Sends MCP progress notifications while waiting. Prefer " +
+			"one agy_wait over repeated agy_status polling when the next step depends on the " +
+			"job's result. If the job outlives the wait cap that is not a failure: it keeps " +
+			"running; call agy_wait again or poll agy_status.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in waitInput) (*mcp.CallToolResult, runSyncOutput, error) {
 		wait, err := parseWait(in.Wait)
 		if err != nil {

@@ -70,21 +70,25 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 		// An externally delivered SIGINT/SIGTERM cancels only this observer, not the
 		// job, which keeps running under its detached supervisor. Exiting 0 would
 		// silently drop an owed wake, contradicting the documented guarantee, so wake
-		// with a distinct message and point the model at agy_status. Only cancellation
+		// with a distinct message and point the model at agy_wait. Only cancellation
 		// wakes here; a genuine internal error still exits 0 to stay out of the tool
 		// flow. When the outer hook timeout killed this process the parent has already
 		// stopped listening, so the extra exit 2 is harmless.
 		if !errors.Is(err, context.Canceled) {
 			return 0
 		}
-		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s wait interrupted; the job may still be running; poll agy_status with this job_id\n", jobID)
+		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s wait interrupted; the job may still be running; wait for it with agy_wait or check agy_status with this job_id\n", jobID)
 		return 2
 	}
 	if terminal {
 		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s finished: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
 			jobID, st.State, st.Elapsed.Round(time.Second))
 	} else {
-		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s still running after %s; poll agy_status\n", jobID, *timeout)
+		// Lead with agy_status here, unlike the tool-level note: this branch only
+		// fires once the job has already outrun hook-wait's own timeout (1h by
+		// default), so agy_wait's 10m cap would most likely just overrun again. One
+		// cheap status read is the better first move for a job this long-lived.
+		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s still running after %s; check agy_status, or call agy_wait to block for another bounded window\n", jobID, *timeout)
 	}
 	return 2
 }
