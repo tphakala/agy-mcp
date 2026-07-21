@@ -10,7 +10,11 @@ import (
 
 // ListModels runs `agy models` and returns the available model names.
 func (m *Manager) ListModels(ctx context.Context) ([]string, error) {
-	out, err := exec.CommandContext(ctx, m.cfg.AgyPath, "models").Output()
+	agy, err := m.cfg.AgyBinary()
+	if err != nil {
+		return nil, err
+	}
+	out, err := exec.CommandContext(ctx, agy, "models").Output()
 	if err != nil {
 		// Output() captures stderr into (*exec.ExitError).Stderr; include it so a
 		// real cause (an auth prompt, a usage error) is visible instead of a bare

@@ -62,14 +62,29 @@ func TestResolveDefaultModelAndJobTTL(t *testing.T) {
 	}
 }
 
-// TestResolveAgyNotOnPath: with no override and no agy on PATH, Resolve fails
-// fast with a clear error rather than deferring to exec time.
-func TestResolveAgyNotOnPath(t *testing.T) {
-	t.Setenv("AGY_MCP_AGY_PATH", "")
-	t.Setenv("PATH", t.TempDir()) // empty dir: no agy anywhere on PATH
+// TestResolveWaitSkipsAgyLookupWhenPresent pins the seam between the two
+// resolvers using the case that still separates them: with agy sitting on PATH,
+// Resolve records it and ResolveWait deliberately does not. The wait-only
+// subcommands are pure observers of the job store and must never grow a
+// dependency on the binary. (The no-agy direction is TestResolveWaitNeedsNoAgy,
+// kept untagged so it also covers Windows.)
+func TestResolveWaitSkipsAgyLookupWhenPresent(t *testing.T) {
+	fakeAgyOnPath(t)
+	t.Setenv("AGY_MCP_STATE_DIR", t.TempDir())
 
-	if _, err := Resolve(); err == nil || !strings.Contains(err.Error(), "agy not found on PATH") {
-		t.Fatalf("err = %v, want an 'agy not found on PATH' error", err)
+	c, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if c.AgyPath == "" {
+		t.Fatal("Resolve left AgyPath empty with agy on PATH; the control condition is broken")
+	}
+	w, err := ResolveWait()
+	if err != nil {
+		t.Fatalf("ResolveWait: %v", err)
+	}
+	if w.AgyPath != "" {
+		t.Errorf("wait config resolved a binary it must not need: agy=%q", w.AgyPath)
 	}
 }
 
@@ -157,6 +172,91 @@ func TestResolveAgyPathOverrideNotExecutable(t *testing.T) {
 	t.Setenv("AGY_MCP_AGY_PATH", agy)
 	if _, err := Resolve(); err == nil {
 		t.Fatal("Resolve should fail when AGY_MCP_AGY_PATH is not executable")
+	}
+}
+
+// TestResolveWithoutAgyOnPathDefers pins the asymmetry between the two lookup
+// branches. An explicit AGY_MCP_AGY_PATH is a claim about a specific binary, so
+// a bad one fails fast (see TestResolveAgyPathOverrideMissing). A bare PATH miss
+// is not: initialize, tools/list, and list_sessions never exec agy, so refusing
+// to start would make the server unusable for introspection (and unrunnable in
+// a container that has no agy). Defer that lookup to the first exec instead.
+func TestResolveWithoutAgyOnPathDefers(t *testing.T) {
+	t.Setenv("AGY_MCP_AGY_PATH", "")
+	t.Setenv("AGY_MCP_STATE_DIR", t.TempDir())
+	t.Setenv("PATH", t.TempDir()) // an empty dir: no agy anywhere on PATH
+
+	c, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve must succeed without agy on PATH: %v", err)
+	}
+	if c.AgyPath != "" {
+		t.Errorf("AgyPath = %q, want empty so the lookup is retried at exec time", c.AgyPath)
+	}
+}
+
+func TestAgyBinaryUsesPathResolvedAtStartup(t *testing.T) {
+	// A path already resolved by Resolve wins without consulting PATH again: a
+	// mid-session PATH change must not silently swap the binary under running jobs.
+	t.Setenv("PATH", t.TempDir())
+	got, err := Config{AgyPath: "/opt/agy/agy"}.AgyBinary()
+	if err != nil {
+		t.Fatalf("AgyBinary: %v", err)
+	}
+	if got != "/opt/agy/agy" {
+		t.Errorf("AgyBinary = %q, want the startup-resolved path", got)
+	}
+}
+
+func TestAgyBinaryLooksUpDeferredPath(t *testing.T) {
+	// The deferred case: agy was absent at startup but is present now, so the
+	// first job picks it up without needing a server restart.
+	dir := t.TempDir()
+	agy := filepath.Join(dir, "agy")
+	if err := os.WriteFile(agy, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := Config{}.AgyBinary()
+	if err != nil {
+		t.Fatalf("AgyBinary: %v", err)
+	}
+	if got != agy {
+		t.Errorf("AgyBinary = %q, want %q", got, agy)
+	}
+}
+
+func TestAgyBinaryRejectsRelativePathEntry(t *testing.T) {
+	// agy runs under the supervisor with cmd.Dir set to the job's cwd, so a
+	// binary found via a relative PATH entry would mean a different program per
+	// job. Go's LookPath refuses that outright (exec.ErrDot); the point here is
+	// that AgyBinary surfaces the refusal instead of execing something
+	// cwd-dependent.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("PATH", ".")
+
+	var c Config
+	if _, err := c.AgyBinary(); err == nil {
+		t.Fatal("AgyBinary must refuse an agy found via a relative PATH entry")
+	}
+}
+
+func TestAgyBinaryMissingNamesTheOverride(t *testing.T) {
+	// The deferred lookup carries the startup error's guidance: a user who never
+	// saw a startup failure meets this message on their first job instead.
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := Config{}.AgyBinary()
+	if err == nil {
+		t.Fatal("AgyBinary must fail when agy is not on PATH")
+	}
+	if !strings.Contains(err.Error(), "AGY_MCP_AGY_PATH") {
+		t.Errorf("error should point at the override env var, got: %v", err)
 	}
 }
 

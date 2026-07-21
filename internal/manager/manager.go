@@ -329,6 +329,14 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if !proc.Supported {
 		return Job{}, proc.ErrUnsupported
 	}
+	// Resolve agy before anything reservable is taken. config.Resolve tolerates a
+	// missing agy so the server can still serve introspection, which makes this
+	// the first point that genuinely needs the binary; doing it after admit would
+	// burn a concurrency slot and strand the cwd key on a run that cannot start.
+	agy, err := m.cfg.AgyBinary()
+	if err != nil {
+		return Job{}, err
+	}
 	id, err := newID()
 	if err != nil {
 		return Job{}, fmt.Errorf("generate job id: %w", err)
@@ -397,7 +405,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	args := buildAgyArgs(req)
 	meta := jobstore.Meta{
 		ID:             id,
-		AgyPath:        m.cfg.AgyPath,
+		AgyPath:        agy,
 		Args:           args,
 		Cwd:            req.Cwd,
 		Model:          req.Model,
