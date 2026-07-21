@@ -30,6 +30,16 @@ Driving `agy` from a shell for automation has two recurring problems:
 
 Session continuation rides `agy`'s own durable conversation store (`--conversation <id>`), so threads survive across calls without keeping a process warm.
 
+**A delegated run can modify your files.** `agy` is launched with
+`--dangerously-skip-permissions`, so the agent it starts can read *and write* anywhere under
+`cwd` and under every directory passed in `dirs`, without prompting. For a review that must
+not touch the repo, say so explicitly in the prompt. The tools declare this on the wire: `agy_run` and
+`agy_run_sync` are annotated `destructiveHint: true` / `openWorldHint: true`, `agy_cancel` is
+`destructiveHint: true` / `idempotentHint: true`, and `agy_status`, `agy_wait`, `list_models`
+and `list_sessions` are `readOnlyHint: true`. Annotations are hints, so a client is free to
+ignore them; one that does gate confirmation on them may stop prompting for the four
+read-only tools.
+
 Two transports run the same core:
 
 - **stdio** (default): zero-config, one line in your MCP client config.
@@ -84,6 +94,16 @@ Or add to your MCP client config:
 - `agy_cancel(job_id)` -> `{ state }`
 - `list_models()` -> `{ models }`
 - `list_sessions(dir?)` -> `{ sessions }`
+
+Parameter and result fields carry their own descriptions in the tool schemas, so a client sees
+them without consulting this file. The constraints worth knowing up front: `conversation_id`
+and `continue_latest` are mutually exclusive (setting `continue_latest` true alongside a
+`conversation_id` is an error); `timeout` is a Go duration and a value above 24h is rejected
+outright, and on expiry the
+`agy` process tree is killed and the job ends in state `failed`; `wait` defaults to 2m and is
+silently clamped to 10m, and it bounds only the inline wait, never the job itself. `agy_cancel`
+is asynchronous, so it usually returns `running` and the job settles to `cancelled` a moment
+later.
 
 A fresh `agy_run` (no `conversation_id`, no `continue_latest`) starts with an empty
 `conversation_id`; agy assigns one as the run proceeds, and `agy_status` reports it once the

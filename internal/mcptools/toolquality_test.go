@@ -1,6 +1,7 @@
 package mcptools
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -9,92 +10,126 @@ import (
 
 // listRegisteredTools returns the tools/list payload a real client receives, so
 // these assertions run against the wire shape rather than the registration
-// literals. NewServer takes a nil manager: listing tools never dispatches a
+// literals. connect takes a nil manager: listing tools never dispatches a
 // handler, so no manager is needed.
 func listRegisteredTools(t *testing.T) []*mcp.Tool {
 	t.Helper()
-	ctx := t.Context()
-	ct, st := mcp.NewInMemoryTransports()
-	srv := NewServer(nil)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = srv.Run(ctx, st)
-	}()
-	t.Cleanup(func() { <-done })
-
-	cs, err := mcp.NewClient(&mcp.Implementation{Name: "toolquality-test"}, nil).Connect(ctx, ct, nil)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
-
-	res, err := cs.ListTools(ctx, nil)
+	res, err := connect(t, nil, nil).ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
 	return res.Tools
 }
 
+// wantAnnotations is the expected annotation for every registered tool, written
+// out field by field rather than as "which shared var was used". Asserting the
+// values (not merely that some annotation is present) is the point: the choice
+// between destructive and read-only, and between an open and closed world, is
+// the claim this server makes to its clients, so a silent flip must fail here.
+var wantAnnotations = map[string]mcp.ToolAnnotations{
+	toolAgyRun:       {DestructiveHint: new(true), OpenWorldHint: new(true)},
+	toolAgyRunSync:   {DestructiveHint: new(true), OpenWorldHint: new(true)},
+	toolAgyCancel:    {DestructiveHint: new(true), IdempotentHint: true, OpenWorldHint: new(false)},
+	toolAgyStatus:    {ReadOnlyHint: true, OpenWorldHint: new(false)},
+	toolAgyWait:      {ReadOnlyHint: true, OpenWorldHint: new(false)},
+	toolListSessions: {ReadOnlyHint: true, OpenWorldHint: new(false)},
+	toolListModels:   {ReadOnlyHint: true, OpenWorldHint: new(true)},
+}
+
+// eqBoolPtr compares two optional hints. Nil is distinct from false: the MCP
+// spec defaults destructiveHint and openWorldHint to true, so "unset" and
+// "explicitly false" say different things on the wire.
+func eqBoolPtr(got, want *bool) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	return *got == *want
+}
+
 // TestToolDefinitionsDeclareAnnotations: absent annotations are not neutral. The
 // MCP spec defaults them to destructiveHint=true, openWorldHint=true,
 // readOnlyHint=false, so a tool that ships none advertises itself as a
-// destructive open-world mutation. Every tool must state its real behaviour, and
-// the read-only ones must say so explicitly or clients keep assuming the worst.
+// destructive open-world mutation. Every tool must state its real behaviour.
 func TestToolDefinitionsDeclareAnnotations(t *testing.T) {
-	readOnly := map[string]bool{
-		toolAgyStatus:    true,
-		toolAgyWait:      true,
-		toolListModels:   true,
-		toolListSessions: true,
-		toolAgyRun:       false,
-		toolAgyRunSync:   false,
-		toolAgyCancel:    false,
+	tools := listRegisteredTools(t)
+	// A tool registered but never classified here would otherwise be reviewed by
+	// nothing, so require the two sets to match exactly in both directions.
+	if len(tools) != len(wantAnnotations) {
+		t.Errorf("got %d tools, want %d; a tool was added or removed without updating wantAnnotations", len(tools), len(wantAnnotations))
 	}
-	for _, tool := range listRegisteredTools(t) {
+	for _, tool := range tools {
 		t.Run(tool.Name, func(t *testing.T) {
-			if tool.Annotations == nil {
+			want, known := wantAnnotations[tool.Name]
+			if !known {
+				t.Fatalf("tool %q is not classified here; add it to wantAnnotations", tool.Name)
+			}
+			got := tool.Annotations
+			if got == nil {
 				t.Fatal("no annotations: clients will assume destructive + open-world")
 			}
-			want, known := readOnly[tool.Name]
-			if !known {
-				t.Fatalf("tool %q is not classified here; add it to the readOnly map", tool.Name)
+			if got.ReadOnlyHint != want.ReadOnlyHint {
+				t.Errorf("readOnlyHint = %v, want %v", got.ReadOnlyHint, want.ReadOnlyHint)
 			}
-			if tool.Annotations.ReadOnlyHint != want {
-				t.Errorf("readOnlyHint = %v, want %v", tool.Annotations.ReadOnlyHint, want)
+			if got.IdempotentHint != want.IdempotentHint {
+				t.Errorf("idempotentHint = %v, want %v", got.IdempotentHint, want.IdempotentHint)
 			}
-			if tool.Annotations.OpenWorldHint == nil {
-				t.Error("openWorldHint unset; it defaults to true, so state it explicitly")
+			if !eqBoolPtr(got.DestructiveHint, want.DestructiveHint) {
+				t.Errorf("destructiveHint = %v, want %v", fmtHint(got.DestructiveHint), fmtHint(want.DestructiveHint))
+			}
+			if !eqBoolPtr(got.OpenWorldHint, want.OpenWorldHint) {
+				t.Errorf("openWorldHint = %v, want %v", fmtHint(got.OpenWorldHint), fmtHint(want.OpenWorldHint))
 			}
 			// destructiveHint and idempotentHint are meaningful only when
-			// readOnlyHint is false, so require them exactly where they carry meaning.
-			if !want && tool.Annotations.DestructiveHint == nil {
-				t.Error("mutating tool must state destructiveHint")
-			}
-			if want && tool.Annotations.DestructiveHint != nil {
+			// readOnlyHint is false, so a read-only tool carrying either is stating
+			// something the spec says nothing reads.
+			if want.ReadOnlyHint && got.DestructiveHint != nil {
 				t.Error("read-only tool should not carry a decorative destructiveHint")
 			}
 		})
 	}
 }
 
-// TestToolDefinitionsDescribeThemselves guards the qualities a tool description
-// is actually judged on: it must exist, must not merely restate the tool's own
-// name, and must point at the sibling tools an agent could otherwise confuse it
-// with. Every input property needs its own description too, since that is where
-// parameter meaning belongs rather than duplicated into the prose.
-func TestToolDefinitionsDescribeThemselves(t *testing.T) {
-	// Each tool names at least one sibling, so an agent reading one definition
-	// learns when to reach for a different one instead.
-	wantSiblings := map[string][]string{
-		toolAgyRun:       {toolAgyRunSync, toolAgyWait, toolAgyStatus},
-		toolAgyRunSync:   {toolAgyRun, toolAgyWait, toolAgyStatus},
-		toolAgyWait:      {toolAgyRun, toolAgyStatus},
-		toolAgyStatus:    {toolAgyWait},
-		toolAgyCancel:    {toolAgyRun},
-		toolListModels:   {toolAgyRun, toolAgyRunSync},
-		toolListSessions: {toolAgyRun, toolAgyRunSync},
+// fmtHint renders an optional hint so a failure distinguishes unset from false.
+func fmtHint(b *bool) string {
+	if b == nil {
+		return "unset"
 	}
+	if *b {
+		return "true"
+	}
+	return "false"
+}
+
+// wantSiblings names, per tool, the other tools its description must mention, so
+// an agent reading one definition learns when to reach for a different one.
+var wantSiblings = map[string][]string{
+	toolAgyRun:     {toolAgyRunSync, toolAgyWait, toolAgyStatus},
+	toolAgyRunSync: {toolAgyRun, toolAgyWait, toolAgyStatus},
+	toolAgyWait:    {toolAgyRun, toolAgyStatus},
+	// agy_status routes to agy_wait (the blocking alternative) and no further:
+	// requiring it to name agy_cancel too bought nothing an agent needs at a
+	// status check, and the first attempt to satisfy that invented a claim about
+	// polling cost that the code did not support.
+	toolAgyStatus:    {toolAgyWait},
+	toolAgyCancel:    {toolAgyRun},
+	toolListModels:   {toolAgyRun, toolAgyRunSync},
+	toolListSessions: {toolAgyRun, toolAgyRunSync},
+}
+
+// mentions reports whether desc names tool as a whole word. A plain substring
+// test would let "agy_run_sync" satisfy a requirement to mention "agy_run",
+// which silently hollows out the cross-reference check for every tool whose
+// description happens to name the sync variant.
+func mentions(desc, tool string) bool {
+	return regexp.MustCompile(`\b` + regexp.QuoteMeta(tool) + `\b`).MatchString(desc)
+}
+
+// TestToolDefinitionsDescribeThemselves guards the qualities a tool description
+// is judged on: it must exist, must not merely restate the tool's own name, and
+// must route to the sibling tools an agent could otherwise confuse it with.
+// Every input and output property needs its own description too, since that is
+// where per-field meaning belongs rather than duplicated into the prose.
+func TestToolDefinitionsDescribeThemselves(t *testing.T) {
 	for _, tool := range listRegisteredTools(t) {
 		t.Run(tool.Name, func(t *testing.T) {
 			if tool.Title == "" {
@@ -115,26 +150,58 @@ func TestToolDefinitionsDescribeThemselves(t *testing.T) {
 					t.Errorf("description merely restates %q", tautology)
 				}
 			}
-			for _, sibling := range wantSiblings[tool.Name] {
-				if !strings.Contains(desc, sibling) {
+			siblings, known := wantSiblings[tool.Name]
+			if !known {
+				t.Fatalf("tool %q has no routing requirement; add it to wantSiblings", tool.Name)
+			}
+			for _, sibling := range siblings {
+				if !mentions(desc, sibling) {
 					t.Errorf("description never mentions sibling %q, so an agent cannot route between them", sibling)
 				}
 			}
-			schema, ok := tool.InputSchema.(map[string]any)
-			if !ok {
-				t.Fatalf("input schema has unexpected type %T", tool.InputSchema)
-			}
-			props, _ := schema["properties"].(map[string]any)
-			for name, raw := range props {
-				prop, ok := raw.(map[string]any)
-				if !ok {
-					t.Errorf("property %q has unexpected type %T", name, raw)
-					continue
-				}
-				if d, _ := prop["description"].(string); strings.TrimSpace(d) == "" {
-					t.Errorf("property %q has no description", name)
-				}
-			}
+			assertPropertiesDescribed(t, "input", tool.InputSchema)
+			assertPropertiesDescribed(t, "output", tool.OutputSchema)
 		})
+	}
+}
+
+// assertPropertiesDescribed requires every property of a tool's schema to carry
+// a description. An undescribed field forces the tool description to explain it
+// in prose instead, which is what the per-property descriptions exist to avoid.
+func assertPropertiesDescribed(t *testing.T, which string, raw any) {
+	t.Helper()
+	if raw == nil {
+		t.Errorf("%s schema is absent", which)
+		return
+	}
+	schema, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("%s schema has unexpected type %T", which, raw)
+	}
+	// A schema with no properties at all is legitimate (list_models takes no
+	// arguments), but a properties key of the wrong shape is not.
+	rawProps, present := schema["properties"]
+	if !present {
+		return
+	}
+	props, ok := rawProps.(map[string]any)
+	if !ok {
+		t.Fatalf("%s schema properties have unexpected type %T", which, rawProps)
+	}
+	for name, rawProp := range props {
+		prop, ok := rawProp.(map[string]any)
+		if !ok {
+			t.Errorf("%s property %q has unexpected type %T", which, name, rawProp)
+			continue
+		}
+		if d, _ := prop["description"].(string); strings.TrimSpace(d) == "" {
+			t.Errorf("%s property %q has no description", which, name)
+		}
+		// Recurse into an array's element schema. list_sessions returns its payload
+		// as a list of objects, so without this the fields a client actually reads
+		// (workspace, conversation_id) escape the requirement entirely.
+		if items, ok := prop["items"].(map[string]any); ok {
+			assertPropertiesDescribed(t, which+" "+name+" item", items)
+		}
 	}
 }

@@ -19,24 +19,6 @@ import (
 	"github.com/tphakala/agy-mcp/internal/testutil"
 )
 
-// connect wires a NewServer(mgr) to a fresh client over in-memory transports
-// and returns the client session.
-func connect(t *testing.T, mgr *manager.Manager, opts *mcp.ClientOptions) *mcp.ClientSession {
-	t.Helper()
-	srv := NewServer(mgr)
-	ct, st := mcp.NewInMemoryTransports()
-	if _, err := srv.Connect(t.Context(), st, nil); err != nil {
-		t.Fatalf("server connect: %v", err)
-	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, opts)
-	cs, err := client.Connect(t.Context(), ct, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
-	return cs
-}
-
 // testConversationID is the id the fake supervisor's cache write attributes to
 // fresh runs started by newTestManager.
 const testConversationID = "abcdabcd-1234-5678-9abc-def012345678"

@@ -20,12 +20,12 @@ import (
 // here rather than in the tool description avoids restating the schema in prose.
 type runInput struct {
 	Prompt         string   `json:"prompt" jsonschema:"the complete task for the delegated agent: what to do, the context needed to do it, and the output wanted back; the agent cannot see this conversation, so the prompt must stand alone"`
-	Model          string   `json:"model,omitempty" jsonschema:"agy model name; omit to use agy's configured default. Call list_models for the accepted values"`
-	Dirs           []string `json:"dirs,omitempty" jsonschema:"absolute paths of extra directories the agent may read beyond cwd (agy --add-dir), e.g. a spec or a sibling repo outside the project"`
+	Model          string   `json:"model,omitempty" jsonschema:"agy model name; omit to use the server's default model, or agy's own default when the server sets none. Call list_models for the accepted values"`
+	Dirs           []string `json:"dirs,omitempty" jsonschema:"extra directories to grant the agent beyond cwd (agy --add-dir), e.g. a spec or a sibling repo. The agent can read and write there exactly as under cwd, so this widens the blast radius; prefer absolute paths"`
 	ConversationID string   `json:"conversation_id,omitempty" jsonschema:"continue this specific conversation instead of starting fresh, so earlier context need not be restated; take it from a previous run's conversation_id or from list_sessions. Mutually exclusive with continue_latest"`
-	ContinueLatest bool     `json:"continue_latest,omitempty" jsonschema:"continue the most recent conversation for cwd instead of starting fresh. Mutually exclusive with conversation_id: supplying both is an error"`
-	Cwd            string   `json:"cwd,omitempty" jsonschema:"absolute path the agent runs in and may edit files under; also scopes continue_latest and the same-cwd concurrency gate. Defaults to the server's own working directory"`
-	Timeout        string   `json:"timeout,omitempty" jsonschema:"max wall-clock duration for the whole run (Go duration, e.g. 20m; max 24h); on expiry the agy process group is killed and the job ends in state failed. Omit to use the server's configured default"`
+	ContinueLatest bool     `json:"continue_latest,omitempty" jsonschema:"continue the most recent conversation for cwd instead of starting fresh. Mutually exclusive with conversation_id: setting this true together with a conversation_id is an error, though leaving it false alongside one is fine"`
+	Cwd            string   `json:"cwd,omitempty" jsonschema:"absolute path of the directory the agent runs in and may edit files under; also scopes continue_latest and the concurrency gate, so two fresh runs sharing a cwd conflict rather than queueing. A relative path is resolved against the server's working directory, which is not necessarily yours, so pass an absolute one. Symlinks are resolved. Defaults to the server's own working directory"`
+	Timeout        string   `json:"timeout,omitempty" jsonschema:"max wall-clock duration for the whole run (Go duration, e.g. 20m); a value over 24h is rejected. On expiry the agy process tree is killed and the job ends in state failed. Omit to use the server's default"`
 }
 
 // maxJobTimeout caps a client-supplied per-job timeout. It bounds both the agy
@@ -60,35 +60,46 @@ const (
 // declare the truth instead.
 //
 // destructiveHint and idempotentHint are meaningful only when readOnlyHint is
-// false (see mcp.ToolAnnotations), so the read-only tools deliberately leave
-// them unset rather than carrying decorative values.
+// false (see mcp.ToolAnnotations), so the read-only sets below deliberately
+// leave them unset rather than carrying decorative values.
+//
+// Each var describes the PROPERTY it asserts, not the tools that currently use
+// it: a list of tool names in a comment has nothing enforcing it and goes stale
+// the moment a tool is added or reclassified. TestToolDefinitionsDeclareAnnotations
+// pins the per-tool mapping instead, where a drift fails the build.
 var (
-	// annDelegate covers agy_run and agy_run_sync. Both spawn a full agy agent
-	// that can edit files under cwd and reach the network, and each call starts a
-	// distinct job, so nothing here is read-only, safe, or idempotent.
-	// destructiveHint stays true on purpose: setting it false would soften
-	// confirmation prompts in some clients, but the delegated agent really can
-	// overwrite the repo, and an accurate hint is worth more than the friction it
-	// saves.
+	// annDelegate: spawns a full agy agent under --dangerously-skip-permissions,
+	// so it can edit files under cwd and under every dir passed in, and may reach
+	// the network. Each call starts a distinct job, so it is not idempotent.
+	// destructiveHint is stated rather than left to default because the delegated
+	// agent really can overwrite the repo; the SDK notes annotations are hints a
+	// client need not honour, so this documents intent rather than enforcing it.
 	annDelegate = &mcp.ToolAnnotations{
 		DestructiveHint: new(true),
 		OpenWorldHint:   new(true),
 	}
-	// annReadLocal covers agy_status, agy_wait and list_sessions: they only read
-	// the local job store or agy's conversation cache.
+	// annReadLocal: answers from local state (the job store, agy's conversation
+	// cache) and changes nothing the caller can observe. Not literally
+	// side-effect-free: reading a finished job's status memoizes the captured
+	// conversation id into the job's meta (manager.persistCapturedID). That write
+	// is idempotent bookkeeping over a value the job already produced, so
+	// readOnlyHint still describes the blast radius accurately.
 	annReadLocal = &mcp.ToolAnnotations{
 		ReadOnlyHint:  true,
 		OpenWorldHint: new(false),
 	}
-	// annReadExternal covers list_models: read-only, but it shells out to the agy
-	// CLI, whose model registry lives outside this server.
+	// annReadExternal: read-only like annReadLocal, but answers by shelling out to
+	// the agy CLI, whose model registry lives outside this server.
 	annReadExternal = &mcp.ToolAnnotations{
 		ReadOnlyHint:  true,
 		OpenWorldHint: new(true),
 	}
-	// annCancel covers agy_cancel: it terminates work in progress, which is
-	// destructive, but re-cancelling an already-cancelled job has no further
-	// effect, so it is idempotent.
+	// annCancel: terminates work in progress, which is destructive, but
+	// re-cancelling an already-cancelled job has no further effect. idempotentHint
+	// is a third field whose default this flips (false to true); some clients read
+	// it as licence to retry the call after a transport failure. Retrying re-sends
+	// the cancel request, which the supervisor's buffered signal channel absorbs
+	// while it is still listening.
 	annCancel = &mcp.ToolAnnotations{
 		DestructiveHint: new(true),
 		IdempotentHint:  true,
@@ -117,9 +128,9 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 }
 
 type runOutput struct {
-	JobID          string `json:"job_id"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	State          string `json:"state"`
+	JobID          string `json:"job_id" jsonschema:"handle for this run; pass it to agy_wait, agy_status or agy_cancel"`
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; empty on a fresh run until agy assigns one, which agy_status reports once known"`
+	State          string `json:"state" jsonschema:"always running: the job has been started and cannot have finished yet. Block with agy_wait or check agy_status for the outcome"`
 }
 
 type statusInput struct {
@@ -127,14 +138,14 @@ type statusInput struct {
 }
 
 type statusOutput struct {
-	State          string `json:"state"`
-	Elapsed        string `json:"elapsed"`
-	Result         string `json:"result,omitempty"`
-	Error          string `json:"error,omitempty"`
-	ConversationID string `json:"conversation_id,omitempty"`
+	State          string `json:"state" jsonschema:"running, done, failed or cancelled; only done carries a result"`
+	Elapsed        string `json:"elapsed" jsonschema:"wall-clock time the job has run, frozen at completion once terminal"`
+	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output; present only when state is done"`
+	Error          string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
+	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread"`
 	// Partial is set when a done job's result was recovered without a completion
 	// sentinel and so may be truncated; see manager.Status.Partial.
-	Partial bool `json:"partial,omitempty"`
+	Partial bool `json:"partial,omitempty" jsonschema:"true when the result was recovered without a completion sentinel and may be truncated; treat the output as incomplete"`
 }
 
 // toStatusOutput converts a manager status into its wire shape, shared by
@@ -154,20 +165,20 @@ type cancelInput struct {
 	JobID string `json:"job_id" jsonschema:"job id to cancel, as returned by agy_run or agy_run_sync"`
 }
 type cancelOutput struct {
-	State string `json:"state"`
+	State string `json:"state" jsonschema:"state right after the cancel was requested: usually still running, since termination is asynchronous and settles to cancelled shortly after; a terminal state if the job had already finished, or unknown if the state could not be read"`
 }
 
 type emptyInput struct{}
 
 type modelsOutput struct {
-	Models []string `json:"models"`
+	Models []string `json:"models" jsonschema:"model names accepted by the model parameter of agy_run and agy_run_sync"`
 }
 
 type sessionsInput struct {
-	Dir string `json:"dir,omitempty" jsonschema:"absolute path of a workspace directory to filter to; omit to list every known conversation. Relative paths and symlinks are canonicalized before matching"`
+	Dir string `json:"dir,omitempty" jsonschema:"absolute path of a workspace directory to filter to; omit to list every known conversation. The filter is canonicalized (made absolute against the server's working directory, symlinks resolved) before matching, so a path agy cached in some other spelling may not match"`
 }
 type sessionsOutput struct {
-	Sessions []manager.Session `json:"sessions"`
+	Sessions []manager.Session `json:"sessions" jsonschema:"one entry per workspace directory, each holding that directory's most recent conversation id"`
 }
 
 // serverVersion reports the module version the Go toolchain stamped into the
@@ -217,7 +228,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolAgyRun,
 		Title:       "Delegate to agy (async)",
 		Annotations: annDelegate,
-		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id immediately; block on it with agy_wait or poll it with agy_status. Prefer this over agy_run_sync for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), and to fan several tasks out in parallel; use agy_run_sync instead when you need the answer before your next step. The delegated agent has web access and can edit files under cwd, so say so in the prompt if the run must not touch the repo. Two fresh runs in the same cwd conflict rather than queueing: vary cwd or continue a conversation to parallelize.",
+		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id; block on it with agy_wait or poll it with agy_status. Prefer this over agy_run_sync for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), and to fan several tasks out in parallel; use agy_run_sync instead when you need the answer before your next step. The delegated agent runs with permission checks disabled: it can edit files under cwd and under any dirs, and may reach the network. Say so in the prompt if the run must not touch the repo.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
 		req, err := in.toStartRequest()
 		if err != nil {
@@ -234,7 +245,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolAgyStatus,
 		Title:       "Check an agy job",
 		Annotations: annReadLocal,
-		Description: `Check an agy job once, without blocking. Returns running, done (with result), failed, or cancelled. Use it for a cheap liveness check or to sweep several jobs at once; when the next step depends on one job's result, prefer a single agy_wait over a poll loop. A done result with "partial": true was recovered without a completion sentinel and may be truncated.`,
+		Description: "Check an agy job once, without blocking. Use it for a single snapshot, or to check several jobs in turn; when the next step depends on one job's result, prefer a single agy_wait over a poll loop. Checking a still-running job is cheap, but every check on a finished one re-reads its full output, so collect a result once rather than repeatedly.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in statusInput) (*mcp.CallToolResult, statusOutput, error) {
 		st, err := mgr.Status(in.JobID)
 		if err != nil {
@@ -247,7 +258,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolAgyCancel,
 		Title:       "Cancel an agy job",
 		Annotations: annCancel,
-		Description: `Stop a running agy job and terminate its agy process group. Use it to abandon a job whose result is no longer needed, or one that is stuck; there is no resume, so a cancelled run has to be re-sent as a new agy_run. Calling it on an already-finished job is a harmless no-op. Returns "cancelled", the job's terminal state if it had already finished, or "unknown" if the state could not be read after cancelling. Files the delegated agent already wrote under cwd are not rolled back.`,
+		Description: "Stop a running agy job: asks its supervisor to terminate the agy process tree. Use it to abandon a job whose result is no longer needed, or one that is stuck; there is no resume, so a cancelled run has to be re-sent as a new agy_run. Termination is asynchronous, so the returned state is usually still running and settles to cancelled a moment later; that is a delivered cancel, not a failed one. Calling it on an already-finished job is a harmless no-op. Files the delegated agent already wrote are not rolled back.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cancelInput) (*mcp.CallToolResult, cancelOutput, error) {
 		if err := mgr.Cancel(in.JobID); err != nil {
 			return nil, cancelOutput{}, err
@@ -270,7 +281,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolListModels,
 		Title:       "List agy models",
 		Annotations: annReadExternal,
-		Description: "List the agy model names accepted by the model parameter of agy_run and agy_run_sync. Call it only when you intend to override the default; omitting model uses agy's configured default, so most runs need no call here. Shells out to the agy CLI, so it fails if agy is missing from PATH or not authenticated.",
+		Description: "List the agy model names accepted by the model parameter of agy_run and agy_run_sync. Call it only when you intend to override the default; omitting model picks a default already, so most runs need no call here. Shells out to the agy CLI, so it fails if agy is missing from PATH or not authenticated.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, modelsOutput, error) {
 		models, err := mgr.ListModels(ctx)
 		if err != nil {

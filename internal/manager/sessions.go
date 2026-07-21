@@ -8,9 +8,12 @@ import (
 )
 
 // Session pairs a workspace path with its most recent agy conversation UUID.
+//
+// The jsonschema tags reach clients through list_sessions' output schema, which
+// nests this type under "sessions"; see TestToolDefinitionsDescribeThemselves.
 type Session struct {
-	Workspace      string `json:"workspace"`
-	ConversationID string `json:"conversation_id"`
+	Workspace      string `json:"workspace" jsonschema:"absolute path of the workspace directory this conversation belongs to; pass it as cwd to continue the thread there"`
+	ConversationID string `json:"conversation_id" jsonschema:"most recent conversation id agy recorded for this workspace; pass it as conversation_id to agy_run or agy_run_sync"`
 }
 
 // agyCachePath returns the path to last_conversations.json, honoring HOME. An

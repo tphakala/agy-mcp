@@ -20,13 +20,13 @@ const (
 // runSyncInput is runInput plus the inline wait cap.
 type runSyncInput struct {
 	runInput
-	Wait string `json:"wait,omitempty" jsonschema:"max time to block inline (Go duration, default 2m, max 10m). Caps only the inline wait, not the job itself: on overrun the job keeps running and the returned job_id can be waited on with agy_wait or polled with agy_status"`
+	Wait string `json:"wait,omitempty" jsonschema:"max time to block inline (Go duration, default 2m); a larger value is silently clamped to 10m. Caps only the inline wait, not the job itself: on overrun the job keeps running and the returned job_id can be waited on with agy_wait or polled with agy_status, so never re-send the prompt"`
 }
 
 type runSyncOutput struct {
-	JobID string `json:"job_id"`
+	JobID string `json:"job_id" jsonschema:"handle for this run; still valid after the inline wait runs out, for agy_wait, agy_status or agy_cancel"`
 	statusOutput
-	Note string `json:"note,omitempty"`
+	Note string `json:"note,omitempty" jsonschema:"set when the job outlived the inline wait, explaining that it is still running and how to collect it"`
 }
 
 // registerRunSync adds the agy_run_sync tool: start a job, wait inline for it
@@ -36,15 +36,15 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 		Name:        toolAgyRunSync,
 		Title:       "Delegate to agy (wait inline)",
 		Annotations: annDelegate,
-		Description: "Delegate a prompt to an agy model and wait for the result inline (bounded by wait, default 2m, max 10m). " +
+		Description: "Delegate a prompt to an agy model and wait for the result inline (bounded by wait). " +
 			"Use when the answer is needed before your next step AND the task is bounded enough to finish within the wait: " +
 			"a focused peer review, a second opinion, a rubber-duck question. " +
-			"Sends MCP progress notifications while waiting. Outliving the wait cap is not a failure: the job keeps " +
-			"running and the returned job_id resolves through agy_wait or agy_status, so never re-send the prompt. " +
 			"For open-ended work that routinely runs past the wait cap (web research, a whole-codebase review), " +
-			"and for parallel work, prefer agy_run. " +
-			"The delegated agent has web access and can edit files under cwd, so say so in the prompt if the run " +
-			"must not touch the repo. Two fresh runs in the same cwd conflict rather than queueing.",
+			"and for parallel work, prefer agy_run. If this call outlives its wait the job keeps running: " +
+			"block on the returned job_id with agy_wait, or take a single non-blocking look with agy_status. " +
+			"Streams progress notifications while waiting when the client asks for them. " +
+			"The delegated agent runs with permission checks disabled: it can edit files under cwd and under any " +
+			"dirs, and may reach the network. Say so in the prompt if the run must not touch the repo.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in runSyncInput) (*mcp.CallToolResult, runSyncOutput, error) {
 		wait, err := parseWait(in.Wait)
 		if err != nil {
