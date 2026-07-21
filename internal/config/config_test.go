@@ -232,7 +232,8 @@ func TestAgyBinaryRejectsRelativePathEntry(t *testing.T) {
 	// binary found via a relative PATH entry would mean a different program per
 	// job. Go's LookPath refuses that outright (exec.ErrDot); the point here is
 	// that AgyBinary surfaces the refusal instead of execing something
-	// cwd-dependent.
+	// cwd-dependent, and explains it as what it is. "not found" would be a lie:
+	// agy is right there, it just cannot be addressed safely.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -241,8 +242,34 @@ func TestAgyBinaryRejectsRelativePathEntry(t *testing.T) {
 	t.Setenv("PATH", ".")
 
 	var c Config
-	if _, err := c.AgyBinary(); err == nil {
+	_, err := c.AgyBinary()
+	if err == nil {
 		t.Fatal("AgyBinary must refuse an agy found via a relative PATH entry")
+	}
+	if !strings.Contains(err.Error(), "relative") {
+		t.Errorf("error should explain the relative PATH entry, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "not found on PATH") {
+		t.Errorf("agy was found, just not usably; error must not claim otherwise: %v", err)
+	}
+}
+
+func TestResolveOverrideErrorDoesNotEchoTheFix(t *testing.T) {
+	// The override branch must not inherit the PATH branch's guidance. Telling
+	// someone who just set AGY_MCP_AGY_PATH to "set AGY_MCP_AGY_PATH" sends them
+	// looking in the wrong place; the useful part is which value failed and why.
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	t.Setenv("AGY_MCP_AGY_PATH", missing)
+
+	_, err := Resolve()
+	if err == nil {
+		t.Fatal("Resolve should fail when AGY_MCP_AGY_PATH points at a missing file")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error should name the value that failed, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "set AGY_MCP_AGY_PATH") {
+		t.Errorf("error tells the user to set the variable they already set: %v", err)
 	}
 }
 

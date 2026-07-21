@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -96,7 +97,11 @@ func (c Config) AgyBinary() (string, error) {
 	if c.AgyPath != "" {
 		return c.AgyPath, nil
 	}
-	return lookupAgy("agy")
+	p, err := lookupAgy("agy")
+	if err != nil {
+		return "", pathLookupGuidance(err)
+	}
+	return p, nil
 }
 
 // lookupAgy resolves an agy name or path to an absolute executable path. It is
@@ -105,16 +110,36 @@ func (c Config) AgyBinary() (string, error) {
 // supervisor with cmd.Dir set to the job's cwd, so a relative result (a relative
 // override, or a relative PATH entry) would resolve against the wrong directory.
 // Report the pre-Abs value on failure since Abs returns "" then.
+//
+// The LookPath error is returned unwrapped. Each caller knows what the name it
+// passed meant and adds guidance to match: an explicit override that fails is a
+// different problem from a bare PATH miss, and telling someone who just set
+// AGY_MCP_AGY_PATH to set AGY_MCP_AGY_PATH points them away from the real fault.
 func lookupAgy(name string) (string, error) {
 	p, err := exec.LookPath(name)
 	if err != nil {
-		return "", fmt.Errorf("agy not found on PATH; set AGY_MCP_AGY_PATH: %w", err)
+		return "", err
 	}
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", fmt.Errorf("resolve agy path %q: %w", p, err)
 	}
 	return abs, nil
+}
+
+// pathLookupGuidance annotates a failed bare-name PATH lookup with the fix.
+//
+// exec.ErrDot is called out separately because it is not a missing binary at
+// all: agy was found, through a relative PATH entry, and Go refuses to run it
+// because the result would depend on the caller's working directory. That is
+// precisely the situation a job hits, since each one runs with cmd.Dir set to
+// its own cwd, so reporting it as "not found" would send the reader hunting for
+// an installation that is already there.
+func pathLookupGuidance(err error) error {
+	if errors.Is(err, exec.ErrDot) {
+		return fmt.Errorf("agy is on PATH only through a relative entry, which cannot be used because each job runs in its own working directory; set AGY_MCP_AGY_PATH to an absolute path: %w", err)
+	}
+	return fmt.Errorf("agy not found on PATH; set AGY_MCP_AGY_PATH: %w", err)
 }
 
 // resolveStateDir returns the job-state root: AGY_MCP_STATE_DIR (made absolute)
