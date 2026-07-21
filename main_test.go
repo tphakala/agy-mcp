@@ -34,7 +34,15 @@ var builtBin string
 // are per-test and unavailable here (this is package-level, with no *testing.T),
 // so TestMain owns the cleanup instead.
 var buildBinary = sync.OnceValues(func() (string, error) {
-	f, err := os.CreateTemp("", "agy-mcp-*")
+	// Windows resolves an executable through PATHEXT, so an extensionless file is
+	// not runnable there no matter that it is a valid PE binary: exec.Command
+	// reports "executable file not found in %PATH%" for it. CreateTemp substitutes
+	// the last "*", so the suffix survives.
+	pattern := "agy-mcp-*"
+	if runtime.GOOS == "windows" {
+		pattern = "agy-mcp-*.exe"
+	}
+	f, err := os.CreateTemp("", pattern)
 	if err != nil {
 		return "", err
 	}
