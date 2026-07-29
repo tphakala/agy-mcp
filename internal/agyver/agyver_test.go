@@ -207,6 +207,72 @@ var parseCases = []parseCase{
 		name: "a trailing platform suffix is not a path component",
 		raw:  "1.1.8/linux-amd64\nplugin api 0.9.0\n",
 		want: Version{1, 1, 8},
+	},
+
+	// --- v6's bug, both directions. Requiring a separator on BOTH sides so
+	// that only a middle component counted looked like the fix for the two rows
+	// above, and broke every versioned directory named at the END of a line,
+	// which is the ordinary way a diagnostic mentions one. What separates the
+	// two is a second separator earlier in the same token: a path names a
+	// directory before the component, where "agy/1.1.8" names none.
+	{
+		name: "a versioned cache directory at end of line is not the version",
+		raw:  "agy: warning: could not remove ~/.cache/agy/0.9.1\nagy 1.1.8 (linux/amd64)\n",
+		want: Version{1, 1, 8},
+	}, {
+		name: "a versioned plugin directory at end of line is not the version",
+		raw:  "warning: no plugins in /usr/lib/agy/1.0.5\nagy 1.1.8 (linux/amd64)\n",
+		want: Version{1, 1, 8},
+	}, {
+		// The permanent fixture above with one component removed. It used to
+		// flip the answer, which is how thin the both-sides rule was.
+		name: "a two-component path is still a path",
+		raw:  "config ~/.agy/2.0.0\nagy 1.0.5 (linux/amd64)\n",
+		want: Version{1, 0, 5},
+	}, {
+		name: "a quoted path at end of line is not the version",
+		raw:  "cannot open \"/opt/agy/2.0.0\"\nagy 1.0.5 (linux/amd64)\n",
+		want: Version{1, 0, 5},
+	}, {
+		name: "a path followed by a colon is not the version",
+		raw:  "/opt/agy/2.0.0: permission denied\nagy 1.0.5 (linux/amd64)\n",
+		want: Version{1, 0, 5},
+	}, {
+		name: "a versioned URL is not the version",
+		raw:  "see https://agy.dev/docs/9.9.9\nagy 1.0.5 (linux/amd64)\n",
+		want: Version{1, 0, 5},
+	}, {
+		name: "a truncated Windows path is still a path",
+		raw:  "C:\\tools\\agy\\9.9.9 loaded\nagy 1.1.8 (linux/amd64)\n",
+		want: Version{1, 1, 8},
+	},
+
+	// --- v6's other bug: an upgrade notice that puts the new version on its
+	// own INDENTED line took the whole-line tier and beat the decorated real
+	// version, whichever came first. agy prints its version flush left, so
+	// indentation says the line is a sub-item of something else.
+	{
+		name: "an indented release notice does not outrank the version",
+		raw:  "agy 1.0.5 (linux/amd64)\nA new release of agy is available:\n  9.9.9\n",
+		want: Version{1, 0, 5},
+	}, {
+		name: "an indented v-prefixed release notice",
+		raw:  "agy 1.0.5 (linux/amd64)\nlatest release:\n  v9.9.9\n",
+		want: Version{1, 0, 5},
+	}, {
+		name: "an indented download filename",
+		raw:  "agy 1.0.5 (linux/amd64)\ndownload:\n  9.9.9-linux-amd64.tar.gz\n",
+		want: Version{1, 0, 5},
+	}, {
+		// implausibleMajor only catches four-digit years, so a two-digit build
+		// stamp alone on a line would otherwise sit in the top tier.
+		name: "an indented two-digit-year build stamp",
+		raw:  "agy 1.0.5 (linux/amd64)\nbuild date:\n  26.07.29\n",
+		want: Version{1, 0, 5},
+	}, {
+		name: "an indented lower protocol version does not refuse the binary",
+		raw:  "agy 1.1.8 (linux/amd64)\nmcp protocol:\n  0.1.0\n",
+		want: Version{1, 1, 8},
 	}, {
 		name: "a quoted version",
 		raw:  "agy version \"1.2.0\" (linux/amd64)\n",

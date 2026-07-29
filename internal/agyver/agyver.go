@@ -38,8 +38,9 @@ func (v Version) AtLeast(o Version) bool {
 	return v.Patch >= o.Patch
 }
 
-// tier says whether a dotted triple's surroundings rule it out as a version. It
-// is deliberately coarse: two levels, because every finer distinction tried
+// tier ranks how strongly a dotted triple's surroundings say it is the version.
+// It is deliberately coarse: one level for "ruled out", one for "could be", and
+// one for the single framing agy actually uses. Every finer distinction tried
 // here has turned out to be an accept-too-much bug in one direction or the
 // other.
 //
@@ -83,10 +84,22 @@ const (
 // future "agy version 1.2.0" or "1.2.0-preview.3" keeps a cosmetic change from
 // becoming a hard refusal to run.
 //
-// It no longer earns a tier of its own, only the same tierCredible a
-// free-standing triple gets. What it still does is stop the build suffix being
-// rescanned: "1.2.0-preview.2.3.4" is one version, not two.
-var wholeLineRE = regexp.MustCompile(`^\s*(?:agy\s+)?(?:version\s+)?v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]*)?\s*$`)
+// A match earns tierWholeLine, the top tier, because this is the framing agy
+// itself uses and a line holding nothing else is the strongest evidence the
+// output can offer. It also stops the build suffix being rescanned:
+// "1.2.0-preview.2.3.4" is one version, not two.
+// The line must start at column 0. Leading whitespace was tolerated here and
+// handed the top tier to the INDENTED continuation of an upgrade notice:
+//
+//	agy 1.0.5 (linux/amd64)
+//	A new release of agy is available:
+//	  9.9.9
+//
+// resolved to 9.9.9 and cleared the floor. agy prints its own version flush
+// left, so indentation is evidence the line is a sub-item of something else,
+// not the version. An indented triple is still read, just as an ordinary
+// candidate rather than the strongest one in the output.
+var wholeLineRE = regexp.MustCompile(`^(?:agy\s+)?(?:version\s+)?v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]*)?\s*$`)
 
 // tripleRE matches a dotted triple wherever it appears. On its own it accepts
 // far too much (a path like ~/.agy/1.0.0/config, a date rendered 2026.07.29, an
@@ -247,18 +260,44 @@ func classify(line string, start, end int) tier {
 	if endsWithDigitDot(before) || startsWithDotDigit(after) {
 		return tierEmbedded
 	}
-	// A path component: /opt/agy/2.0.0/bin, or C:\agy\2.0.0\bin. This is the
-	// demotion issue #98 turned on, so it is the one worth keeping.
-	//
-	// A separator is required on BOTH sides, because a component of a path has
-	// one. Accepting either side alone swept up the "prog/x.y.z" framing that
-	// curl, wget and git all print: "agy/1.1.8" is a version, not a directory,
-	// and demoting it let an unrelated triple further down the output win. The
-	// same goes for a trailing platform suffix like "1.1.8/linux-amd64".
-	if endsWithPathSep(trimVPrefix(before)) && startsWithPathSep(after) {
+	// A path component: /opt/agy/2.0.0/bin, ~/.agy/2.0.0/cfg.toml, or
+	// C:\agy\2.0.0\bin. This is the demotion issue #98 turned on, so it is the
+	// one worth keeping.
+	if inPathToken(trimVPrefix(before)) {
 		return tierEmbedded
 	}
 	return tierCredible
+}
+
+// inPathToken reports whether the text immediately before a triple makes it a
+// component of a path rather than a version.
+//
+// The test is a separator directly before the triple AND another one earlier in
+// the same token, and both halves are load bearing:
+//
+//   - Requiring only the separator directly before swept up the "prog/x.y.z"
+//     framing curl, wget and git all print. "agy/1.1.8" is a version with a
+//     slash in front of it, not a directory, and demoting it let an unrelated
+//     triple further down the output win.
+//   - Requiring a separator on both SIDES instead (so that only a middle
+//     component counts) looked like the fix and was worse: a versioned
+//     directory named at the END of a line has nothing after it, so an ordinary
+//     "could not remove ~/.cache/agy/0.9.1" was read as a version and refused a
+//     working binary.
+//
+// A second separator earlier in the token is what actually separates the two:
+// a path names at least one directory before the component, where "agy/1.1.8"
+// names none.
+func inPathToken(before string) bool {
+	// Narrow to the token the triple sits in, so a separator in an unrelated
+	// earlier word cannot vouch for it.
+	if i := strings.LastIndexAny(before, " \t\"'`(<[{,=:"); i >= 0 {
+		before = before[i+1:]
+	}
+	if !endsWithPathSep(before) {
+		return false
+	}
+	return strings.ContainsAny(before[:len(before)-1], `/\`)
 }
 
 // endsWithDigitDot and startsWithDotDigit report whether the triple continues a
@@ -285,10 +324,6 @@ func trimVPrefix(before string) string {
 
 func endsWithPathSep(s string) bool {
 	return strings.HasSuffix(s, "/") || strings.HasSuffix(s, `\`)
-}
-
-func startsWithPathSep(s string) bool {
-	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, `\`)
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
