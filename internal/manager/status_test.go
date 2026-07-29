@@ -105,74 +105,214 @@ func writeResultPayload(t *testing.T, dir string, res streamjson.Result) {
 	}
 }
 
-// A clean exit with no terminal result event reports whatever text streamed,
-// flagged partial: agy finished, but the answer it summarized never arrived.
-func TestStatusDoneWithoutResultIsPartial(t *testing.T) {
-	m := newManager(t, managerOpts{})
-	// Args carrying the output format mark this as a job this build started, so a
-	// missing payload really does mean the run was cut short.
-	dir, _ := m.store.Create(jobstore.Meta{
-		ID: "j", StartedAt: time.Now(), BootID: readBootID(),
-		Args: []string{outputFormatFlag, streamJSONFormat, "-p", "hi"},
-	})
-	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("half an answer"), 0o644)
-	_ = m.store.WriteExitCode("j", 0)
+// TestStatusTerminalContract is the whole Result/Partial contract in one table.
+//
+// It exists because this file regressed under three successive incremental fix
+// waves, each of which closed one branch's case and left the identical case open
+// in a sibling branch: no single test held all the cases together, so a change
+// could satisfy the test it was written for while breaking an untested peer.
+// Every terminal path appears here, so it cannot happen again silently.
+//
+// The contract the rows encode:
+//
+//   - Every terminal state carries whatever answer the run produced. A cancel, a
+//     timeout, a crash and a 127 all lose the same work, so none of them may
+//     report nothing while a sibling reports text.
+//   - Partial is decided by where that text came from, not by the state. A
+//     response agy itself marked SUCCESS is complete even if the job was then
+//     killed; any other payload status is agy declining to vouch for it; text
+//     rebuilt from the stream is always partial. The one exception is a job an
+//     older build wrote, whose plain-text out really is complete.
+func TestStatusTerminalContract(t *testing.T) {
+	t.Parallel()
+	streamArgs := []string{outputFormatFlag, streamJSONFormat, "-p", "hi"}
+	legacyArgs := []string{"--dangerously-skip-permissions", "-p", "hi"}
+	for _, tc := range []struct {
+		name string
+		code int
+		// res is the terminal payload; nil means the run never reached one.
+		res         *streamjson.Result
+		out         string // streamed text on disk, "" writes no out file
+		errFile     string // captured stderr, "" writes no err file
+		args        []string
+		wantState   string
+		wantResult  string
+		wantPartial bool
+		wantErrSub  string
+	}{
+		// --- clean exit, terminal payload present -------------------------------
+		{
+			name: "success payload is the complete answer",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "final"},
+			out: "streamed", wantState: StateDone, wantResult: "final",
+		}, {
+			// agy vouched for the run but the payload carried no text, so the stream
+			// is the only answer there is; reporting done-and-empty would assert a
+			// completed empty answer.
+			name: "success payload with no text falls back to the stream",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess},
+			out: "streamed", wantState: StateDone, wantResult: "streamed", wantPartial: true,
+		}, {
+			// The bug: an ERROR payload's response used to be discarded entirely on a
+			// clean exit, while the unrecognized-status branch beside it kept exactly
+			// this text.
+			name: "error payload keeps the text it carried",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusError, Response: "got this far", Error: "model unavailable"},
+			out: "streamed", wantState: StateFailed, wantResult: "got this far", wantPartial: true,
+			wantErrSub: "model unavailable",
+		}, {
+			name: "error payload with no text falls back to the stream",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusError, Error: "model unavailable"},
+			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
+			wantErrSub: "model unavailable",
+		}, {
+			name: "error payload with no message still explains itself",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusError},
+			wantState: StateFailed, wantErrSub: "without a message",
+		}, {
+			// The bug: a response with no status used to report done and NOT partial,
+			// so a future agy that renames the status field would have a run cut
+			// short by MAX_TURNS reported as a clean, complete answer.
+			name: "a response with no status is recoverable but unverified",
+			code: 0, res: &streamjson.Result{Response: "an answer"},
+			wantState: StateDone, wantResult: "an answer", wantPartial: true,
+		}, {
+			name: "a payload with no recognized field at all is indeterminate",
+			code: 0, res: &streamjson.Result{},
+			wantState: StateFailed, wantErrSub: "no status and no response",
+		}, {
+			name: "an indeterminate payload still falls back to the stream",
+			code: 0, res: &streamjson.Result{},
+			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
+			wantErrSub: "no status and no response",
+		}, {
+			name: "an unrecognized status keeps its response",
+			code: 0, res: &streamjson.Result{Status: "MAX_TURNS", Response: "as far as I got"},
+			wantState: StateFailed, wantResult: "as far as I got", wantPartial: true,
+			wantErrSub: "unrecognized result status",
+		},
+		// --- clean exit, no terminal payload ------------------------------------
+		{
+			name: "a stream-json run with no payload was cut short",
+			code: 0, out: "half an answer", args: streamArgs,
+			wantState: StateDone, wantResult: "half an answer", wantPartial: true,
+		}, {
+			// A job an older agy-mcp wrote has a complete plain-text out and no
+			// payload, because that build never wrote one. Calling it partial would
+			// tell the caller a finished answer may be truncated for the whole TTL
+			// after an upgrade.
+			name: "a legacy job's plain-text output is complete",
+			code: 0, out: "a complete v1 answer", args: legacyArgs,
+			wantState: StateDone, wantResult: "a complete v1 answer",
+		},
+		// --- cancelled ----------------------------------------------------------
+		{
+			name: "a cancel with no payload carries the stream",
+			code: jobstore.ExitSIGTERM, out: "got this far",
+			wantState: StateCancelled, wantResult: "got this far", wantPartial: true,
+		}, {
+			// agy printed its result and then hung, so the run was killed with a
+			// finished answer already on disk. Preferring the stream, or flagging the
+			// payload because the state is not done, would both discard a complete
+			// answer the caller asked for.
+			name: "a cancel after a success payload is not partial",
+			code: jobstore.ExitSIGTERM, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "finished"},
+			out: "streamed", wantState: StateCancelled, wantResult: "finished",
+		}, {
+			// The bug: the payload branch never set Partial, so truncated text
+			// arriving with an ERROR status was reported as a complete answer.
+			name: "a cancel after an error payload is partial",
+			code: jobstore.ExitSIGTERM, res: &streamjson.Result{Status: streamjson.StatusError, Response: "partial text"},
+			out: "streamed", wantState: StateCancelled, wantResult: "partial text", wantPartial: true,
+		}, {
+			name: "a SIGINT is a cancel like a SIGTERM",
+			code: jobstore.ExitSIGINT, out: "got this far",
+			wantState: StateCancelled, wantResult: "got this far", wantPartial: true,
+		},
+		// --- timed out, crashed, spawn-failed -----------------------------------
+		{
+			name: "a timeout carries the stream",
+			code: jobstore.ExitTimeout, out: "as far as I got",
+			wantState: StateFailed, wantResult: "as far as I got", wantPartial: true,
+			wantErrSub: "timeout",
+		}, {
+			// The bug: 127 never carried any text, though the branch beside it
+			// argues that a crashed run loses its answer exactly as a timed-out one
+			// does. A true spawn failure has no text, so nothing is lost there; a
+			// genuine agy exiting 127 does.
+			name: "a real agy 127 carries the stream",
+			code: jobstore.ExitSpawnFail, out: "agy said this much",
+			wantState: StateFailed, wantResult: "agy said this much", wantPartial: true,
+			wantErrSub: "could not exec the agy binary",
+		}, {
+			name: "a true spawn failure has nothing to carry",
+			code: jobstore.ExitSpawnFail,
+			wantState: StateFailed, wantErrSub: "could not exec the agy binary",
+		}, {
+			name: "a crash carries the stream and the stderr tail",
+			code: 1, out: "partial", errFile: "panic: boom",
+			wantState: StateFailed, wantResult: "partial", wantPartial: true,
+			wantErrSub: "panic: boom",
+		}, {
+			// A payload's own message outranks the stderr tail: agy reports failures
+			// it survives in band, where the exit code is only ever 1.
+			name: "a crash with an error payload uses its message and text",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Response: "partial text", Error: "model unavailable"},
+			out: "streamed", errFile: "some stderr",
+			wantState: StateFailed, wantResult: "partial text", wantPartial: true,
+			wantErrSub: "model unavailable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := newManager(t, managerOpts{})
+			dir, err := m.store.Create(jobstore.Meta{
+				ID: "j", StartedAt: time.Now(), BootID: readBootID(), Args: tc.args,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.res != nil {
+				writeResultPayload(t, dir, *tc.res)
+			}
+			if tc.out != "" {
+				if werr := os.WriteFile(jobstore.OutPath(dir), []byte(tc.out), 0o600); werr != nil {
+					t.Fatal(werr)
+				}
+			}
+			if tc.errFile != "" {
+				if werr := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.errFile), 0o600); werr != nil {
+					t.Fatal(werr)
+				}
+			}
+			if werr := m.store.WriteExitCode("j", tc.code); werr != nil {
+				t.Fatal(werr)
+			}
 
-	st, err := m.Status("j")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.State != StateDone || st.Result != "half an answer" {
-		t.Fatalf("status = %+v", st)
-	}
-	if !st.Partial {
-		t.Fatalf("a job with no terminal result must be marked partial: %+v", st)
-	}
-}
-
-// A job left behind by an older agy-mcp has a complete plain-text out and no
-// result payload, because that build never wrote one. Reporting it partial would
-// tell the caller a finished answer may be truncated, for the whole TTL after an
-// upgrade.
-func TestStatusLegacyJobIsNotPartial(t *testing.T) {
-	m := newManager(t, managerOpts{})
-	// No output-format flag: the shape an older binary persisted.
-	dir, _ := m.store.Create(jobstore.Meta{
-		ID: "j", StartedAt: time.Now(), BootID: readBootID(),
-		Args: []string{"--dangerously-skip-permissions", "-p", "hi"},
-	})
-	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("a complete v1 answer"), 0o644)
-	_ = m.store.WriteExitCode("j", 0)
-
-	st, err := m.Status("j")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.State != StateDone || st.Result != "a complete v1 answer" {
-		t.Fatalf("status = %+v", st)
-	}
-	if st.Partial {
-		t.Fatalf("a job from an older build must not be reported partial: %+v", st)
-	}
-}
-
-// A cancelled run never reaches a terminal result, so the text that did stream
-// is the only answer there will be. Reporting nothing would discard it.
-func TestStatusCancelledCarriesStreamedText(t *testing.T) {
-	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("got this far"), 0o644)
-	_ = m.store.WriteExitCode("j", jobstore.ExitSIGTERM)
-
-	st, err := m.Status("j")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.State != StateCancelled {
-		t.Fatalf("state = %q, want cancelled", st.State)
-	}
-	if st.Result != "got this far" || !st.Partial {
-		t.Fatalf("cancelled run must carry its streamed text as partial: %+v", st)
+			st, err := m.Status("j")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.State != tc.wantState {
+				t.Errorf("state = %q, want %q", st.State, tc.wantState)
+			}
+			if st.Result != tc.wantResult {
+				t.Errorf("result = %q, want %q", st.Result, tc.wantResult)
+			}
+			if st.Partial != tc.wantPartial {
+				t.Errorf("partial = %v, want %v", st.Partial, tc.wantPartial)
+			}
+			if tc.wantErrSub == "" {
+				if st.Error != "" {
+					t.Errorf("error = %q, want none", st.Error)
+				}
+			} else if !strings.Contains(st.Error, tc.wantErrSub) {
+				t.Errorf("error = %q, want it to mention %q", st.Error, tc.wantErrSub)
+			}
+			if st.State != StateDone && st.Result != "" && !st.Partial && (tc.res == nil || tc.res.Status != streamjson.StatusSuccess) {
+				t.Errorf("result reported on state %q without Partial, and no payload vouched for it: %+v", st.State, st)
+			}
+		})
 	}
 }
 
@@ -462,47 +602,88 @@ func TestStateMatchesStatusOnUnreadableCleanExit(t *testing.T) {
 	}
 }
 
-// A result payload whose recognized fields are all absent is indeterminate, not
-// a completed empty answer. Reading absence alone as success would hand the
-// caller "done" with nothing in it the moment agy renames or restructures those
-// fields, which is precisely what the version floor cannot prevent.
-func TestStatusEmptyResultPayloadIsNotSuccess(t *testing.T) {
+// A job an older manager queued and a newer supervisor ran has no output-format
+// flag in its persisted args, because the upgrade is applied to a copy at exec
+// time. If its agy then emits nothing at all and exits 0, the args are the only
+// thing left to go on and they say "legacy", so the run reads as a complete,
+// empty answer: an outcome-less run reported as a verified one. The supervisor's
+// spawn-time marker is what closes that, and this is the manager side of it.
+func TestStatusUpgradedJobWithNoEventsIsPartial(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	// The shape an older manager persisted: no output format anywhere in args.
+	dir, err := m.store.Create(jobstore.Meta{
+		ID: "j", StartedAt: time.Now(), BootID: readBootID(),
+		Args: []string{"--dangerously-skip-permissions", "-p", "hi"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What the supervisor leaves before exec: a progress file with nothing in it
+	// yet, because agy has not spoken.
+	if werr := jobstore.WriteProgressDir(dir, jobstore.Progress{UpdatedAt: time.Now().UTC()}); werr != nil {
+		t.Fatal(werr)
+	}
+	// agy exited 0 having emitted neither an event stream nor a result.
+	if werr := m.store.WriteExitCode("j", 0); werr != nil {
+		t.Fatal(werr)
+	}
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateDone || st.Result != "" {
+		t.Fatalf("status = %+v, want done with no result", st)
+	}
+	if !st.Partial {
+		t.Fatal("an upgraded run that produced no outcome must not be reported as a verified empty answer")
+	}
+	if st.ConversationID != "" {
+		t.Fatalf("conversation_id = %q, want empty: the marker carries no id", st.ConversationID)
+	}
+}
+
+// A job recovered without an exit-code sentinel takes its outcome from the
+// terminal payload when the supervisor managed to write one before dying. The
+// same Result/Partial contract applies: TestStatusTerminalContract covers the
+// sentinel paths, this covers the recovery path that bypasses them.
+func TestStatusRecoveredFromPayload(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		res         streamjson.Result
-		want        string
-		wantRes     string
+		out         string
+		wantState   string
+		wantResult  string
 		wantPartial bool
 	}{
-		{"no status and no response", streamjson.Result{}, StateFailed, "", false},
-		{"no status but a response is recoverable", streamjson.Result{Response: "an answer"}, StateDone, "an answer", false},
-		{"explicit success", streamjson.Result{Status: streamjson.StatusSuccess, Response: "ok"}, StateDone, "ok", false},
-		// A status from a newer agy this build has never heard of. The run is not
-		// vouched for, so it fails, but the text it produced is handed back rather
-		// than dropped, and Partial says the caller must not trust it as final.
-		// This is the case the Result/Partial field docs and the agy_status
-		// jsonschema describe: a result present on a state that is not done.
-		{"unrecognized status keeps its response", streamjson.Result{Status: "MAX_TURNS", Response: "as far as I got"}, StateFailed, "as far as I got", true},
-		{"unrecognized status with no response", streamjson.Result{Status: "MAX_TURNS"}, StateFailed, "", false},
+		// A supervisor that died between writing the result and writing the
+		// sentinel left a complete, trustworthy answer.
+		{"success payload", streamjson.Result{Status: streamjson.StatusSuccess, Response: "complete"}, "streamed", StateDone, "complete", false},
+		{"error payload keeps its text", streamjson.Result{Status: streamjson.StatusError, Response: "got this far"}, "", StateFailed, "got this far", true},
+		{"a response with no status is unverified", streamjson.Result{Response: "an answer"}, "", StateDone, "an answer", true},
+		{"an empty payload falls back to the stream", streamjson.Result{}, "streamed", StateFailed, "streamed", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
-			dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+			// A dead PID from a previous boot and no sentinel: the recovery path.
+			dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
+			if err != nil {
+				t.Fatal(err)
+			}
 			writeResultPayload(t, dir, tc.res)
-			_ = m.store.WriteExitCode("j", 0)
+			if tc.out != "" {
+				if werr := os.WriteFile(jobstore.OutPath(dir), []byte(tc.out), 0o600); werr != nil {
+					t.Fatal(werr)
+				}
+			}
 
 			st, err := m.Status("j")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if st.State != tc.want || st.Result != tc.wantRes {
-				t.Fatalf("state = %q result = %q, want %q / %q", st.State, st.Result, tc.want, tc.wantRes)
-			}
-			if st.Partial != tc.wantPartial {
-				t.Fatalf("partial = %v, want %v", st.Partial, tc.wantPartial)
-			}
-			if tc.want == StateFailed && st.Error == "" {
-				t.Fatal("an indeterminate payload must carry an explanation")
+			if st.State != tc.wantState || st.Result != tc.wantResult || st.Partial != tc.wantPartial {
+				t.Fatalf("status = %+v, want state %q result %q partial %v",
+					st, tc.wantState, tc.wantResult, tc.wantPartial)
 			}
 		})
 	}

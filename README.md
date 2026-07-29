@@ -101,7 +101,9 @@ Or add to your MCP client config:
 - `list_models()` -> `{ models }`
 - `list_sessions(dir?)` -> `{ sessions }`
 
-`usage` is agy's own token accounting (`input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens`), and together with `num_turns` it appears once a run reports a terminal result. `partial` marks a result reconstructed from the streamed text because agy never reported a final one, which happens when a run is cancelled, times out, or its supervisor dies mid-stream.
+`usage` is agy's own token accounting (`input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens`), and together with `num_turns` it appears once a run reports a terminal result.
+
+A run that ends badly still hands back whatever it managed to say, so `result` is set on `failed` and `cancelled` jobs too and is worth reading rather than discarding. `partial` is what says whether to trust it as the final answer, and it follows from where the text came from rather than from the state. It is true when the text was reconstructed from the streamed events because agy never reported a terminal result (a cancel, a timeout, a supervisor that died mid-stream), and when agy did report one but not as a success, in which case the text is only what the run had produced by the time it stopped. A response agy itself marked successful is never `partial`, even on a job that was then cancelled or killed: agy prints its result and can hang on the way out, so the answer was already complete when the job was terminated.
 
 Parameter and result fields carry their own descriptions in the tool schemas, so a client sees
 them without consulting this file. The constraints worth knowing up front: `conversation_id`

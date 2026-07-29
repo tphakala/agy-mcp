@@ -145,7 +145,7 @@ type statusOutput struct {
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread"`
 	// Partial marks a result that is not a verified final answer; see
 	// manager.Status.Partial.
-	Partial bool `json:"partial,omitempty" jsonschema:"true when result is not the verified final answer, because agy never reported a terminal result and the text was reconstructed from the stream, or because it reported an outcome this build does not recognize; treat the result as incomplete"`
+	Partial bool `json:"partial,omitempty" jsonschema:"true when result is not the verified final answer: either agy never reported a terminal result and the text was reconstructed from the stream, or it reported one that was not a success, so the text is only what the run had produced when it stopped; treat the result as incomplete. A result agy itself marked successful is never partial, even on a job that was then cancelled"`
 	// NumTurns and Usage are agy's own accounting, present once the run reported
 	// a terminal result.
 	NumTurns int          `json:"num_turns,omitempty" jsonschema:"how many turns the conversation has taken, as reported by agy"`
