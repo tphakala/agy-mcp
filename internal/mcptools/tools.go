@@ -138,15 +138,14 @@ type statusInput struct {
 }
 
 type statusOutput struct {
-	State          string `json:"state" jsonschema:"running, done, failed or cancelled; only done carries a result"`
+	State          string `json:"state" jsonschema:"running, done, failed or cancelled"`
 	Elapsed        string `json:"elapsed" jsonschema:"wall-clock time the job has run, frozen at completion once terminal"`
-	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output; present only when state is done"`
+	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set whenever the run produced any text, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first"`
 	Error          string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread"`
-	// Partial is set when a done job's result was reconstructed from the streamed
-	// text because agy never emitted a terminal result event; see
+	// Partial marks a result that is not a verified final answer; see
 	// manager.Status.Partial.
-	Partial bool `json:"partial,omitempty" jsonschema:"true when agy never reported a final result and the output was reconstructed from partial streamed text; treat it as incomplete"`
+	Partial bool `json:"partial,omitempty" jsonschema:"true when result is not the verified final answer, because agy never reported a terminal result and the text was reconstructed from the stream, or because it reported an outcome this build does not recognize; treat the result as incomplete"`
 	// NumTurns and Usage are agy's own accounting, present once the run reported
 	// a terminal result.
 	NumTurns int          `json:"num_turns,omitempty" jsonschema:"how many turns the conversation has taken, as reported by agy"`

@@ -38,14 +38,20 @@ const (
 
 // Status is the observable state of a job.
 type Status struct {
-	State          string // running | done | failed | cancelled
-	Elapsed        time.Duration
-	Result         string // present when done: the assistant's response
+	State   string // running | done | failed | cancelled
+	Elapsed time.Duration
+	// Result is the assistant's response. It is set whenever the job produced
+	// any text, which is NOT only when State is done: a cancelled, timed-out or
+	// crashed run carries whatever it managed to say, so that work is offered
+	// back rather than discarded. Consult Partial before treating it as final.
+	Result         string
 	Error          string // present when failed: agy's own message, or a stderr tail + exit code
 	ConversationID string
-	// Partial marks a done job whose result was reconstructed from the streamed
-	// text because agy never emitted a terminal result event (it was killed, or
-	// the supervisor died mid-stream). The text may be truncated or may include
+	// Partial marks a Result this build cannot vouch for as the complete final
+	// answer, either because agy never emitted a terminal result event (it was
+	// killed, or the supervisor died mid-stream) so the text was reconstructed
+	// from the stream, or because the terminal event carried an outcome this
+	// build does not recognize. The text may be truncated or may include
 	// intermediate turns, so a caller should not treat it as the final answer.
 	Partial bool
 	// NumTurns and Usage are agy's own accounting, present only once a terminal

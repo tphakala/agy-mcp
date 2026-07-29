@@ -21,13 +21,14 @@ type Config struct {
 	JobTTL         time.Duration // age after which finished jobs are GC'd
 	HTTPToken      string        // optional bearer token for HTTP mode; empty = unauthenticated
 
-	// RunIDWait bounds how long StartJob blocks waiting for agy to name the
+	// ConversationIDWait bounds how long StartJob blocks waiting for agy to name the
 	// conversation it created, so a fresh run can report a real conversation id
-	// instead of an empty one. It is the only place agy_run is not
-	// return-immediately, so it is a field rather than a constant: a test with a
-	// fake supervisor that never writes a progress file would otherwise pay the
-	// full budget on every start. Zero disables the wait.
-	RunIDWait time.Duration
+	// instead of an empty one. It is the largest of the bounded waits StartJob
+	// performs before returning (the agy version gate is the other, and is
+	// cached after the first success), so it is a field rather than a constant:
+	// a test with a fake supervisor that never writes a progress file would
+	// otherwise pay the full budget on every start. Zero disables the wait.
+	ConversationIDWait time.Duration
 
 	// ConversationCacheFile overrides where agy's conversation cache
 	// (last_conversations.json) is read from. Empty means agy's default
@@ -40,20 +41,20 @@ type Config struct {
 // source of those defaults, so the two resolvers cannot drift apart.
 func baseConfig() Config {
 	return Config{
-		DefaultTimeout: 30 * time.Minute,
-		MaxConcurrency: 4,
-		JobTTL:         24 * time.Hour,
-		RunIDWait:      DefaultRunIDWait,
+		DefaultTimeout:     30 * time.Minute,
+		MaxConcurrency:     4,
+		JobTTL:             24 * time.Hour,
+		ConversationIDWait: DefaultConversationIDWait,
 	}
 }
 
-// DefaultRunIDWait is how long StartJob waits for agy's init event to name the
+// DefaultConversationIDWait is how long StartJob waits for agy's init event to name the
 // conversation. agy emits it before any model work but after its own startup,
 // which includes launching whatever MCP servers it is configured with, so the
 // budget is generous relative to the roughly one second observed against a warm
 // 1.1.8. Expiry is not a failure: agy_status reports the id once the event
 // lands.
-const DefaultRunIDWait = 2 * time.Second
+const DefaultConversationIDWait = 2 * time.Second
 
 // Resolve builds a Config from environment variables and defaults.
 func Resolve() (Config, error) {

@@ -83,7 +83,7 @@ func New(c config.Config) *Manager {
 		gate:                 newGate(c.MaxConcurrency),
 		xlock:                newCrossLock(c.StateDir),
 		cacheFile:            cacheFile,
-		conversationIDWait:   c.RunIDWait,
+		conversationIDWait:   c.ConversationIDWait,
 		restoredPollInterval: 2 * time.Second,
 		readStartTimeTicks:   readStartTimeTicks,
 		readAgyVersion:       readAgyVersion,
@@ -208,7 +208,7 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 }
 
 // conversationIDPoll is how often the conversation-id wait re-reads the
-// progress file. Its budget is config.RunIDWait.
+// progress file. Its budget is config.ConversationIDWait.
 const conversationIDPoll = 50 * time.Millisecond
 
 // awaitConversationID polls a freshly spawned job's progress file until the

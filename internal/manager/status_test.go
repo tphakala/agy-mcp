@@ -468,14 +468,22 @@ func TestStateMatchesStatusOnUnreadableCleanExit(t *testing.T) {
 // fields, which is precisely what the version floor cannot prevent.
 func TestStatusEmptyResultPayloadIsNotSuccess(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		res     streamjson.Result
-		want    string
-		wantRes string
+		name        string
+		res         streamjson.Result
+		want        string
+		wantRes     string
+		wantPartial bool
 	}{
-		{"no status and no response", streamjson.Result{}, StateFailed, ""},
-		{"no status but a response is recoverable", streamjson.Result{Response: "an answer"}, StateDone, "an answer"},
-		{"explicit success", streamjson.Result{Status: streamjson.StatusSuccess, Response: "ok"}, StateDone, "ok"},
+		{"no status and no response", streamjson.Result{}, StateFailed, "", false},
+		{"no status but a response is recoverable", streamjson.Result{Response: "an answer"}, StateDone, "an answer", false},
+		{"explicit success", streamjson.Result{Status: streamjson.StatusSuccess, Response: "ok"}, StateDone, "ok", false},
+		// A status from a newer agy this build has never heard of. The run is not
+		// vouched for, so it fails, but the text it produced is handed back rather
+		// than dropped, and Partial says the caller must not trust it as final.
+		// This is the case the Result/Partial field docs and the agy_status
+		// jsonschema describe: a result present on a state that is not done.
+		{"unrecognized status keeps its response", streamjson.Result{Status: "MAX_TURNS", Response: "as far as I got"}, StateFailed, "as far as I got", true},
+		{"unrecognized status with no response", streamjson.Result{Status: "MAX_TURNS"}, StateFailed, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
@@ -489,6 +497,9 @@ func TestStatusEmptyResultPayloadIsNotSuccess(t *testing.T) {
 			}
 			if st.State != tc.want || st.Result != tc.wantRes {
 				t.Fatalf("state = %q result = %q, want %q / %q", st.State, st.Result, tc.want, tc.wantRes)
+			}
+			if st.Partial != tc.wantPartial {
+				t.Fatalf("partial = %v, want %v", st.Partial, tc.wantPartial)
 			}
 			if tc.want == StateFailed && st.Error == "" {
 				t.Fatal("an indeterminate payload must carry an explanation")

@@ -120,8 +120,10 @@ func NewReader(r io.Reader) *Reader {
 	return &Reader{br: bufio.NewReader(r)}
 }
 
-// Malformed returns how many lines were skipped as blank-after-trim-free
-// garbage or over-long. It is meaningful once Next has returned io.EOF.
+// Malformed returns how many lines have been skipped so far because they
+// exceeded maxLineBytes or failed to decode. Blank lines are padding and are
+// not counted. It is a running total, updated as the stream is consumed, so it
+// is readable at any point and is final once Next has returned an error.
 func (r *Reader) Malformed() int { return r.malformed }
 
 // Next returns the next decodable event, or io.EOF at end of stream.
