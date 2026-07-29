@@ -55,25 +55,16 @@ type parseCase struct {
 
 // parseCases is the whole contract in one table.
 //
-// Every row is an input that some previous shape of this function got wrong,
-// and they are held together deliberately: the parser has been reworked four
-// times and regressed each time, because each fix was pinned by a test covering
-// only the input it was written for. A change that satisfies one row and breaks
-// another must fail here rather than ship.
+// Every row is an input that some previous shape of the parser got wrong, and
+// they are held together deliberately: it has been reworked repeatedly and
+// regressed each time, because each fix was pinned by a test covering only the
+// input it was written for. A change that satisfies one row and breaks another
+// must fail here rather than ship.
 //
-// History, for the reader deciding whether a fifth rework is safe:
-//
-//   - v1 took the first dotted triple anywhere, so a date, a path or an address
-//     printed before the version won.
-//   - v2 anchored the match to the START of a line, which made a real mid-line
-//     version ineligible and handed the win to a log line beginning with a date.
-//   - v3 anchored it to the WHOLE line, which fixed that and introduced the
-//     mirror: a DECORATED version line is not a whole-line match either, so an
-//     unrelated triple appearing earlier won instead.
-//   - v4 ranked a triple higher when an "agy" or "version" word preceded it,
-//     which fixed v3 and broke on an upgrade notice: "upgrade to agy 9.9.9" is
-//     marked by that rule and names a HIGHER version than the binary printing
-//     it, so it outranked the real one and cleared the floor.
+// The numbered history of those reworks lives on the tier type in agyver.go,
+// next to the design it argues for; the section comments below name which one
+// each group of rows came from rather than restating it, so the two cannot
+// drift apart.
 var parseCases = []parseCase{
 	{
 		// v3's bug, mirrored from v2's. The version line is decorated with a

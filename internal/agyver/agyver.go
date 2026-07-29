@@ -44,7 +44,9 @@ func (v Version) AtLeast(o Version) bool {
 // here has turned out to be an accept-too-much bug in one direction or the
 // other.
 //
-// This function has now been reworked repeatedly and regressed each time:
+// Parse and classify have between them been reworked repeatedly, and regressed
+// each time. The record lives here, on the type the reworks kept redefining,
+// because it is the argument for the shape they finally settled on:
 //
 //  1. "the first dotted triple anywhere" accepted dates, paths and addresses
 //     printed before the version.
