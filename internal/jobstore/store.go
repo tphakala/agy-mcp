@@ -117,15 +117,24 @@ func WriteResultDir(dir string, b []byte) error {
 	return writeFileAtomic(dir, ResultFile, b)
 }
 
-// ReadResultDir returns a job's terminal result payload. ok is false when no
-// terminal result was recorded, which is what marks a job's captured output as
-// partial.
-func ReadResultDir(dir string) ([]byte, bool) {
+// ReadResultDir returns a job's terminal result payload. A missing file yields
+// (nil, nil): the run never reached a terminal result, which is what marks its
+// captured output as partial.
+//
+// Any other read failure is returned as an error rather than folded into that
+// absence. The distinction is load bearing: this payload decides a job's state,
+// result, error and accounting, so reporting an unreadable file as "never
+// written" would silently downgrade a complete answer to a partial one and tell
+// the caller their result may be truncated when it is on disk and whole.
+func ReadResultDir(dir string) ([]byte, error) {
 	b, err := os.ReadFile(ResultPath(dir))
-	if err != nil {
-		return nil, false
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
 	}
-	return b, true
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // CancelPath is the manager -> supervisor cancel sentinel in a job directory.

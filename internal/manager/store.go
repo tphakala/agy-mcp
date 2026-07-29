@@ -8,7 +8,7 @@ import (
 
 // jobStore is the subset of *jobstore.Store that the Manager depends on. It is an
 // interface (not the concrete type) so tests can inject a store whose methods fail
-// on demand, matching the existing field-injection pattern (cacheFile, captureBudget).
+// on demand, matching the existing field-injection pattern (cacheFile, conversationIDWait).
 // *jobstore.Store satisfies it structurally, so production code is unchanged.
 //
 // It is the full public surface of *jobstore.Store today; the goal is an injectable

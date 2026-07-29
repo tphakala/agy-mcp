@@ -3,8 +3,8 @@
 [![CI](https://github.com/tphakala/agy-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/tphakala/agy-mcp/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/tphakala/agy-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/tphakala/agy-mcp/actions/workflows/codeql.yml)
 [![Version](https://img.shields.io/github/v/tag/tphakala/agy-mcp?label=version&sort=semver)](https://github.com/tphakala/agy-mcp/tags)
-[![Go Reference](https://pkg.go.dev/badge/github.com/tphakala/agy-mcp.svg)](https://pkg.go.dev/github.com/tphakala/agy-mcp)
-[![Go Report Card](https://goreportcard.com/badge/github.com/tphakala/agy-mcp)](https://goreportcard.com/report/github.com/tphakala/agy-mcp)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tphakala/agy-mcp/v2.svg)](https://pkg.go.dev/github.com/tphakala/agy-mcp/v2)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tphakala/agy-mcp/v2)](https://goreportcard.com/report/github.com/tphakala/agy-mcp/v2)
 [![License: MIT](https://img.shields.io/github/license/tphakala/agy-mcp)](LICENSE)
 
 An MCP (Model Context Protocol) server that wraps the [Antigravity CLI](https://antigravity.google) (`agy`), so any MCP client (Claude Code, Cursor, Cline, and others) can run `agy` prompts, peer reviews, and follow-up turns as native tools.
@@ -202,6 +202,19 @@ Two extra hardening layers are always available:
 ```bash
 agy-mcp -http 127.0.0.1:8765 -http-token "$(openssl rand -hex 32)"
 ```
+
+## Upgrading from v1
+
+v2 requires agy 1.1.8 and drives it through `--output-format stream-json`. The upgrade is safe to do in place, but two things are worth knowing.
+
+**Stop the server before replacing the binary.** The supervisor is the same `agy-mcp` binary re-executed as `agy-mcp run-job <dir>`, so replacing it under a live v1 server pairs an old manager with a new supervisor. The supervisor detects that case and asks agy for the event stream anyway, so no result is lost, but a v1 manager and a v2 process sharing one `AGY_MCP_STATE_DIR` briefly disagree about cross-process locking, and a v1 run's conversation id can be misattributed in that window.
+
+**Jobs already in the state directory keep working.** A job dir written by v1 loads cleanly (the two removed `meta.json` fields are simply ignored) and its result is still reported in full. Two degradations apply until those jobs age out of the 24h TTL:
+
+- A v1 fresh run may report no `conversation_id`. v1 recovered it by diffing agy's conversation cache, and v2 has no such path. Recover the thread with `list_sessions` if you need it.
+- Cancelled and interrupted v1 jobs behave as before; only the id is affected.
+
+**Behaviour changes to check your client against:** `agy_run` now blocks up to 2s waiting for agy to name the conversation, instead of returning instantly; fresh runs in the same directory no longer conflict, so anything that relied on that conflict error as a mutex now gets real concurrency (and agy runs with `--dangerously-skip-permissions`, so concurrent runs edit one working tree); and `list_models` is now refused on an agy older than 1.1.8, even though `agy models` itself would work there.
 
 ## Configuration
 

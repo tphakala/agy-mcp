@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -229,7 +230,15 @@ func TestStatusReportsConversationIDWhileRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Cancel(job.ID) })
+	// Cancel signals the supervisor pid only, and the fake supervisor does not
+	// forward signals, so the sleeping fake agy would outlive the test and race
+	// t.TempDir teardown. Kill the whole group, as the sibling fixture in
+	// job_posix_test.go does.
+	t.Cleanup(func() {
+		if meta, lerr := m.store.Load(job.ID); lerr == nil && meta.PID > 0 {
+			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
+		}
+	})
 
 	testutil.WaitFor(t, 3*time.Second, func() bool {
 		st, err := m.Status(job.ID)
@@ -290,5 +299,47 @@ func TestStatusFailsOnInBandError(t *testing.T) {
 	}
 	if st.Error != "timeout waiting for response" {
 		t.Fatalf("error = %q, want agy's own message", st.Error)
+	}
+}
+
+// StartJob returning a fresh run's conversation id is the headline behaviour of
+// the change, and every other test forces its budget to zero, so gutting
+// awaitConversationID to return "" left the suite green. Drive it with a real
+// budget instead.
+func TestStartJobReturnsFreshConversationIDWithinBudget(t *testing.T) {
+	fake := testutil.FakeAgy{Stdout: "OK", Sleep: 30 * time.Second, ConversationID: "77777777-6666-5555-4444-333322221111"}
+	m := waitManager(t, fake)
+	m.conversationIDWait = 5 * time.Second // the production behaviour, not the zeroed test default
+
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	t.Cleanup(func() {
+		if meta, lerr := m.store.Load(job.ID); lerr == nil && meta.PID > 0 {
+			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
+		}
+	})
+	if job.ConversationID != fake.ConvID() {
+		t.Fatalf("StartJob conversation_id = %q, want %q from agy's init event", job.ConversationID, fake.ConvID())
+	}
+}
+
+// A run that is already over when the wait starts must return at once rather
+// than sleeping out the whole budget for an id that is never coming.
+func TestStartJobConversationWaitStopsAtTerminalJob(t *testing.T) {
+	// No Agy config, so the fake supervisor writes no progress file at all, and
+	// it exits immediately.
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "x", Exit: 0})
+	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"})
+	m := newManager(t, managerOpts{agyPath: agy, supervisorExe: sup, defaultTimeout: time.Minute, maxConcurrency: 4, withCacheFile: true})
+	m.conversationIDWait = 30 * time.Second // long enough that sleeping it out would fail the test
+
+	start := time.Now()
+	if _, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()}); err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("StartJob took %s; a terminal job must end the conversation-id wait early", elapsed)
 	}
 }

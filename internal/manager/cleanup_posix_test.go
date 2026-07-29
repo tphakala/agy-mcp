@@ -98,7 +98,7 @@ func waitForEmptyStore(t *testing.T, m *Manager) {
 // isRetryableGateRefusal reports whether err is one of the known transient
 // "another job holds this key, try again" outcomes a same-key StartJob retry
 // loop should keep polling through, rather than treating as a hard failure:
-//   - "already running on this conversation": admit's acquireKeyBusy branch
+//   - "already running on conversation": admit's acquireKeyBusy branch
 //     (manager.go), the common case.
 //   - "concurrency cap": admit's acquireAtCap branch, a sibling refusal for the
 //     same class of outcome (see concurrency.go's comment on why the two are
@@ -116,6 +116,6 @@ func isRetryableGateRefusal(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "already running on this conversation") ||
+	return strings.Contains(msg, "already running on conversation") ||
 		strings.Contains(msg, "concurrency cap")
 }

@@ -151,6 +151,10 @@ type statusOutput struct {
 	// a terminal result.
 	NumTurns int          `json:"num_turns,omitempty" jsonschema:"how many turns the conversation has taken, as reported by agy"`
 	Usage    *usageOutput `json:"usage,omitempty" jsonschema:"token accounting for the run, as reported by agy"`
+	// StepType answers "what is it doing" for a running job, which is the whole
+	// point of polling one. It reaches the wire as well as the progress
+	// notification because Claude Code never surfaces notifications to the model.
+	StepType string `json:"step_type,omitempty" jsonschema:"what agy is doing right now (for example agent_response or a tool call), for a running job; a hint that lags by up to one poll"`
 }
 
 // usageOutput mirrors agy's usage object on the wire. It is declared here rather
@@ -175,6 +179,7 @@ func toStatusOutput(st manager.Status) statusOutput {
 		ConversationID: st.ConversationID,
 		Partial:        st.Partial,
 		NumTurns:       st.NumTurns,
+		StepType:       st.StepType,
 	}
 	if u := st.Usage; u != nil {
 		out.Usage = &usageOutput{
@@ -235,7 +240,7 @@ const serverInstructions = `agy delegates a prompt to a background coding agent 
 
 Choosing a tool:
 - agy_run_sync starts a run and waits inline (bounded by the wait argument). Use it when you need the answer before your next step and the task is bounded enough to finish within that wait.
-- agy_run returns a job_id immediately; block on it with agy_wait or poll it with agy_status. Use these for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), or to fan several tasks out in parallel.
+- agy_run returns a job_id in under a couple of seconds (it waits briefly for agy to name the conversation); block on it with agy_wait or poll it with agy_status. Use these for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), or to fan several tasks out in parallel.
 - Outliving the inline wait is not a failure: the job keeps running under its own supervisor and the returned job_id still resolves to its outcome. Wait on it or poll it; do not re-send the prompt.
 - list_models enumerates models; call it only if you want to override the default. list_sessions lists known conversations.
 

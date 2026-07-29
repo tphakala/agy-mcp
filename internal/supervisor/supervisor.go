@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"slices"
 	"syscall"
 	"time"
 
@@ -24,6 +25,52 @@ const killGrace = 10 * time.Second
 // that the run is always bounded; without this a zero timeout would leave the
 // deadline disabled and cmd.Wait could block forever on a hung agy.
 const fallbackTimeout = time.Hour
+
+// drainGrace bounds how long the supervisor waits, after agy has been reaped,
+// for the stdout stream to reach EOF on its own.
+//
+// EOF needs every holder of the write end to close it, and agy's descendants
+// inherit that descriptor. A descendant that outlived the process group (it
+// called setsid, or the group kill could not reach it) holds the pipe open
+// indefinitely, which without this bound would stall the exit-code sentinel and
+// strand the job in `running` forever. agy's own conversation-cache daemon is a
+// documented example of a process that outlives a print run.
+//
+// It is generous because it is only ever paid in that abnormal case: with no
+// lingering descendant the pipe is already closed by the time Wait returns.
+const drainGrace = 5 * time.Second
+
+// outputFormatFlag and streamJSONFormat are agy's print-mode output selector.
+// They are duplicated from the manager's arg builder rather than shared: the
+// supervisor's whole reason for re-checking them is that it may be reading a
+// meta.json some OTHER build of agy-mcp wrote, so it cannot assume that build
+// spelled them the same way it does.
+const (
+	outputFormatFlag = "--output-format"
+	streamJSONFormat = "stream-json"
+)
+
+// ensureStreamJSON guarantees agy is asked for the event stream this supervisor
+// knows how to decode, appending the flag when the job's persisted args lack it.
+//
+// This is the guard for an in-place binary upgrade. The supervisor is the same
+// agy-mcp binary re-executed as `agy-mcp run-job <dir>`, so replacing the binary
+// while a server is live pairs an OLD manager with a NEW supervisor: the manager
+// writes args with no --output-format, agy prints plain text, and every line
+// fails to decode, leaving an empty result the manager reports as a clean, empty
+// success. Appending the flag here makes the supervisor self-sufficient instead
+// of trusting args written by a build it cannot see.
+//
+// The args are copied rather than appended in place: they come from the caller's
+// Meta and must not be mutated.
+func ensureStreamJSON(args []string) []string {
+	if slices.Contains(args, outputFormatFlag) {
+		return args
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, args...)
+	return append(out, outputFormatFlag, streamJSONFormat)
+}
 
 // effectiveTimeout floors a non-positive job timeout to fallbackTimeout so the
 // hard timeout always fires.
@@ -121,7 +168,7 @@ func run(jobDir string, grace time.Duration) error {
 	}
 	defer func() { _ = devnull.Close() }()
 
-	cmd := exec.Command(m.AgyPath, m.Args...)
+	cmd := exec.Command(m.AgyPath, ensureStreamJSON(m.Args)...)
 	cmd.Dir = m.Cwd
 	cmd.Env = os.Environ() // agy needs HOME/PATH and its OAuth/API credentials
 	cmd.Stdin = devnull
@@ -130,18 +177,30 @@ func run(jobDir string, grace time.Duration) error {
 	// decode rather than text to copy. Reading it is what makes the conversation
 	// id observable while the run is still going (the init event carries it) and
 	// what turns an interrupted run into recoverable partial text.
-	stdout, err := cmd.StdoutPipe()
+	//
+	// An explicit pipe, not cmd.StdoutPipe: Wait closes a StdoutPipe as soon as it
+	// reaps the process, which would truncate a drain still running on its own
+	// goroutine. Owning both ends means Wait touches neither, so the drain ends
+	// only on a real EOF or when this function closes the read end deliberately.
+	pr, pw, err := os.Pipe()
 	if err != nil {
 		return err
 	}
+	defer func() { _ = pr.Close() }()
+	cmd.Stdout = pw
 	// Put agy in its own process group / job so the whole tree can be terminated
 	// together on cancel or timeout.
 	proc.ConfigureGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
+		_ = pw.Close()
 		_ = jobstore.WriteExitCodeDir(jobDir, jobstore.ExitSpawnFail)
 		return err
 	}
+	// Drop the parent's write end now that the child holds its own, so the reader
+	// sees EOF once agy and its descendants are gone. Keeping it open here would
+	// hold the pipe open forever by ourselves.
+	_ = pw.Close()
 	// Capture a handle to agy's process tree so cancel/timeout can terminate it and
 	// its descendants as a unit (kill -pgid on Linux, a Job Object on Windows).
 	// killOnClose=true: if the supervisor itself dies unexpectedly, the Job Object
@@ -194,15 +253,38 @@ func run(jobDir string, grace time.Duration) error {
 		}
 	}()
 
-	// Drain and decode the event stream before Wait. cmd.Wait closes the pipe as
-	// soon as it sees the process exit, so calling it first would truncate the
-	// stream and lose the terminal result event. A hung agy cannot park this
-	// read: the timer goroutine above terminates the process group, which closes
-	// the pipe and ends the loop.
-	outcome := consumeStream(jobDir, stdout, outF)
+	// Drain and decode the event stream on its own goroutine. cmd.Wait closes the
+	// pipe as soon as it sees the process exit, so the drain must be underway
+	// before Wait is called or the stream is truncated and the terminal result
+	// event is lost.
+	//
+	// It cannot be done inline. The read ends only when EVERY holder of the write
+	// end closes it, and agy's descendants inherit that descriptor. One that
+	// outlives the process group (anything that called setsid, or that the group
+	// kill cannot reach) holds the pipe open forever, and an inline drain would
+	// then never reach cmd.Wait, never write the exit-code sentinel, and leave the
+	// job reported as running for good. Draining concurrently keeps Wait, the hard
+	// timeout and the sentinel on a path no descendant can block.
+	drained := make(chan streamOutcome, 1)
+	go func() { drained <- consumeStream(jobDir, pr, outF) }()
 
 	waitErr := cmd.Wait()
 	close(done)
+
+	// agy is reaped. Normally every descendant is gone too, the write end is
+	// closed, and the drain has already finished or is microseconds from EOF, so
+	// the first branch is taken and nothing is truncated. Only a descendant still
+	// holding the inherited descriptor reaches the deadline, and then the read end
+	// is closed to release the drain: whatever it decoded is kept, and the
+	// exit-code sentinel gets written instead of the job hanging in `running`
+	// forever.
+	var outcome streamOutcome
+	select {
+	case outcome = <-drained:
+	case <-time.After(drainGrace):
+		_ = pr.Close()
+		outcome = <-drained
+	}
 
 	// Record what the stream reported, before the exit-code sentinel: the
 	// manager treats the sentinel as the completion signal, so anything written

@@ -40,8 +40,11 @@ func startRunningJobForWait(t *testing.T, sleep time.Duration, convLabel string,
 		CacheJSON: fmt.Sprintf(`{%q:%q}`, cwd, convLabel),
 	})
 	stateDir := t.TempDir()
+	// RunIDWait 0: this fake supervisor writes no progress file, so StartJob
+	// would sleep out the whole default budget on every start, which for a short
+	// fake agy is long enough for the job to finish before StartJob even returns.
 	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: stateDir,
-		DefaultTimeout: time.Minute, MaxConcurrency: 4,
+		DefaultTimeout: time.Minute, MaxConcurrency: 4, RunIDWait: 0,
 		ConversationCacheFile: cachePath}
 	mgr := manager.New(c)
 

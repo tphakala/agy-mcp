@@ -49,7 +49,7 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	}
 
 	// The fake supervisor writes out/exit_code; wait briefly for it.
-	testutil.WaitFor(t, 2*time.Second, func() bool {
+	testutil.WaitFor(t, 15*time.Second, func() bool {
 		_, ok := m.store.ExitCode(job.ID)
 		return ok
 	}, "supervisor did not write exit_code")
@@ -242,7 +242,7 @@ func TestStartJobSerializesSameConversation(t *testing.T) {
 	})
 
 	_, err = m.StartJob(StartRequest{Prompt: "second", Cwd: dir, ConversationID: conv})
-	if err == nil || !strings.Contains(err.Error(), "already running on this conversation") {
+	if err == nil || !strings.Contains(err.Error(), "already running on conversation") {
 		t.Fatalf("second run error = %v, want a refusal naming the shared conversation", err)
 	}
 }

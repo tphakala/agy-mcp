@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -155,15 +156,22 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 			}
 			st.State = StateDone
 			st.Result = out
-			st.Partial = true
+			// A job this build started always asks agy for the event stream, so a
+			// missing payload means the run really was cut short. A job started
+			// before that flag existed has a complete plain-text out and no payload
+			// to find, so calling it partial would tell the caller a finished answer
+			// may be truncated for the whole TTL after an upgrade.
+			st.Partial = streamJSONRun(meta)
 			return st
 		}
 		return applyResult(st, res)
 	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
 		st.State = StateCancelled
+		st = carryStreamedText(dir, st)
 	case jobstore.ExitTimeout:
 		st.State = StateFailed
 		st.Error = "job exceeded its timeout and was terminated"
+		st = carryStreamedText(dir, st)
 	case jobstore.ExitSpawnFail:
 		// 127 is written both when the supervisor could not exec agy and when agy
 		// itself exits 127, so name both causes rather than asserting one, and keep
@@ -200,10 +208,46 @@ func applyResult(st Status, res streamjson.Result) Status {
 		}
 		return st
 	}
+	if res.Status != streamjson.StatusSuccess {
+		// Neither SUCCESS nor ERROR. agyver sets a version floor and no ceiling, so
+		// a newer agy may report an outcome this build has never heard of
+		// (CANCELLED, MAX_TURNS, ...). Deriving success from "not ERROR" would hand
+		// that back as a clean, complete answer; say what was seen instead.
+		st.State = StateFailed
+		st.Error = fmt.Sprintf("agy reported an unrecognized result status %q", res.Status)
+		return st
+	}
 	st.State = StateDone
 	// Match readFile's trimming so a result reads identically whether it came
 	// from the payload or from the streamed fallback.
 	st.Result = strings.TrimRight(res.Response, "\n")
+	return st
+}
+
+// streamJSONRun reports whether a job was started asking agy for the event
+// stream. It is how a job dir written by an older agy-mcp is told apart from one
+// this build produced, which matters wherever a missing result payload could
+// mean either "the run was cut short" or "this build never wrote one".
+func streamJSONRun(meta jobstore.Meta) bool {
+	return slices.Contains(meta.Args, outputFormatFlag)
+}
+
+// carryStreamedText attaches whatever the assistant managed to say before the
+// run was cut short, marked partial.
+//
+// Cancel and timeout are the two endings the live `out` write exists for: agy
+// never reaches its terminal event, so the streamed text is the only answer
+// there will ever be. Reporting nothing would discard work the user paid for and
+// would contradict what both the wire schema and the README promise `partial`
+// means. A read failure is not surfaced as an error here because the job's state
+// is already decided; the absent text is simply not reported.
+func carryStreamedText(dir string, st Status) Status {
+	out, err := readFile(jobstore.OutPath(dir))
+	if err != nil || out == "" {
+		return st
+	}
+	st.Result = out
+	st.Partial = true
 	return st
 }
 
@@ -220,17 +264,24 @@ func carryResultMetadata(st Status, res streamjson.Result) Status {
 
 // readResultPayload reads a job's terminal result event. ok is false when the
 // run never reached one, which is what marks its captured output partial.
+//
+// A file that exists but cannot be read or decoded is also reported absent, but
+// loudly: the supervisor wrote it, so the cause is corruption or a permission
+// problem on disk, and silently calling a complete answer partial would hide
+// that. Reporting the streamed text as partial is still the right outcome; it
+// just must not be silent.
 func readResultPayload(dir string) (streamjson.Result, bool) {
-	b, ok := jobstore.ReadResultDir(dir)
-	if !ok {
+	b, err := jobstore.ReadResultDir(dir)
+	if err != nil {
+		log.Printf("job dir %s: result payload could not be read: %v", dir, err)
+		return streamjson.Result{}, false
+	}
+	if b == nil {
 		return streamjson.Result{}, false
 	}
 	var res streamjson.Result
 	if err := json.Unmarshal(b, &res); err != nil {
-		// The supervisor wrote this file itself, so a decode failure means it was
-		// truncated or corrupted on disk. Treat it as absent: the streamed text is
-		// then reported as a partial result, which is honest, rather than erroring.
-		log.Printf("job dir %s: result payload unreadable: %v", dir, err)
+		log.Printf("job dir %s: result payload could not be decoded: %v", dir, err)
 		return streamjson.Result{}, false
 	}
 	return res, true

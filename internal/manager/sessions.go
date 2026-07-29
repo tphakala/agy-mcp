@@ -23,7 +23,7 @@ type Session struct {
 func agyCachePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Printf("cannot resolve home dir for agy conversation cache; session listing and conversation-id capture disabled: %v", err)
+		log.Printf("cannot resolve home dir for agy conversation cache; continue_latest and session listing disabled: %v", err)
 		return ""
 	}
 	return filepath.Join(home, ".gemini", "antigravity-cli", "cache", "last_conversations.json")

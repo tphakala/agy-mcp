@@ -308,3 +308,34 @@ func TestAgyRunSyncReturnsConversationID(t *testing.T) {
 		t.Fatalf("usage.total_tokens = %v, want 15", usage["total_tokens"])
 	}
 }
+
+// The usage object is copied field by field into a separate wire struct, so a
+// transposed pair compiles and passes every test that only checks a total.
+// FakeAgy emits distinct values precisely so this can catch that.
+func TestAgyRunSyncReportsFullUsage(t *testing.T) {
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "agy_run_sync",
+		Arguments: map[string]any{"prompt": "review", "wait": "30s"},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
+	}
+	sc := structMap(t, res.StructuredContent)
+	usage, ok := sc["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage = %v, want the accounting object", sc["usage"])
+	}
+	for field, want := range map[string]float64{
+		"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+	} {
+		if usage[field] != want {
+			t.Errorf("usage[%q] = %v, want %v", field, usage[field], want)
+		}
+	}
+	if sc["num_turns"] != float64(1) {
+		t.Errorf("num_turns = %v, want 1", sc["num_turns"])
+	}
+}

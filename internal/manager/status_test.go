@@ -109,7 +109,12 @@ func writeResultPayload(t *testing.T, dir string, res streamjson.Result) {
 // flagged partial: agy finished, but the answer it summarized never arrived.
 func TestStatusDoneWithoutResultIsPartial(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	// Args carrying the output format mark this as a job this build started, so a
+	// missing payload really does mean the run was cut short.
+	dir, _ := m.store.Create(jobstore.Meta{
+		ID: "j", StartedAt: time.Now(), BootID: readBootID(),
+		Args: []string{outputFormatFlag, streamJSONFormat, "-p", "hi"},
+	})
 	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("half an answer"), 0o644)
 	_ = m.store.WriteExitCode("j", 0)
 
@@ -122,6 +127,52 @@ func TestStatusDoneWithoutResultIsPartial(t *testing.T) {
 	}
 	if !st.Partial {
 		t.Fatalf("a job with no terminal result must be marked partial: %+v", st)
+	}
+}
+
+// A job left behind by an older agy-mcp has a complete plain-text out and no
+// result payload, because that build never wrote one. Reporting it partial would
+// tell the caller a finished answer may be truncated, for the whole TTL after an
+// upgrade.
+func TestStatusLegacyJobIsNotPartial(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	// No output-format flag: the shape an older binary persisted.
+	dir, _ := m.store.Create(jobstore.Meta{
+		ID: "j", StartedAt: time.Now(), BootID: readBootID(),
+		Args: []string{"--dangerously-skip-permissions", "-p", "hi"},
+	})
+	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("a complete v1 answer"), 0o644)
+	_ = m.store.WriteExitCode("j", 0)
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateDone || st.Result != "a complete v1 answer" {
+		t.Fatalf("status = %+v", st)
+	}
+	if st.Partial {
+		t.Fatalf("a job from an older build must not be reported partial: %+v", st)
+	}
+}
+
+// A cancelled run never reaches a terminal result, so the text that did stream
+// is the only answer there will be. Reporting nothing would discard it.
+func TestStatusCancelledCarriesStreamedText(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("got this far"), 0o644)
+	_ = m.store.WriteExitCode("j", jobstore.ExitSIGTERM)
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateCancelled {
+		t.Fatalf("state = %q, want cancelled", st.State)
+	}
+	if st.Result != "got this far" || !st.Partial {
+		t.Fatalf("cancelled run must carry its streamed text as partial: %+v", st)
 	}
 }
 

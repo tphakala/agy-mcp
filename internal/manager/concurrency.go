@@ -5,9 +5,9 @@ import (
 	"sync"
 )
 
-// gate enforces a global concurrency cap and per-key (conversation/cwd)
-// serialization so concurrent agy sessions cannot trigger the known session-lock
-// hang. It is in-process only; crossLock (keylock.go) extends the same per-key
+// gate enforces a global concurrency cap and per-conversation serialization so
+// concurrent agy sessions on one conversation cannot trigger the known
+// session-lock hang. It is in-process only; crossLock (keylock.go) extends the same per-key
 // serialization across sibling agy-mcp processes that share one state dir. The
 // Manager pairs them in admit/releaseKey/forceAdmit (admit.go). The global cap
 // stays per-process: in stdio mode each client session runs its own process and
@@ -34,7 +34,7 @@ type acquireOutcome int
 
 const (
 	acquireOK      acquireOutcome = iota // slot reserved
-	acquireKeyBusy                       // another job already holds this conversation/cwd key
+	acquireKeyBusy                       // another job already holds this conversation key
 	acquireAtCap                         // the global concurrency cap is reached
 )
 

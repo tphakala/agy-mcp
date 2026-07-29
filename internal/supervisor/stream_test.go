@@ -140,8 +140,8 @@ func TestPersistWritesResultAndNotesMalformed(t *testing.T) {
 	}
 	oc.persist(dir, &errBuf)
 
-	b, ok := jobstore.ReadResultDir(dir)
-	if !ok {
+	b, rerr := jobstore.ReadResultDir(dir)
+	if rerr != nil || b == nil {
 		t.Fatal("result payload not written")
 	}
 	var res streamjson.Result
@@ -165,7 +165,7 @@ func TestPersistWritesNoResultFileWhenNoneReached(t *testing.T) {
 	var errBuf bytes.Buffer
 	streamOutcome{conversationID: "c-1"}.persist(dir, &errBuf)
 
-	if _, ok := jobstore.ReadResultDir(dir); ok {
+	if b, _ := jobstore.ReadResultDir(dir); b != nil {
 		t.Fatal("a run with no terminal result must not write a result file")
 	}
 	if _, err := os.Stat(filepath.Join(dir, jobstore.ResultFile)); !os.IsNotExist(err) {

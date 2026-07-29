@@ -83,7 +83,7 @@ func New(c config.Config) *Manager {
 		gate:                 newGate(c.MaxConcurrency),
 		xlock:                newCrossLock(c.StateDir),
 		cacheFile:            cacheFile,
-		conversationIDWait:   conversationIDWait,
+		conversationIDWait:   c.RunIDWait,
 		restoredPollInterval: 2 * time.Second,
 		readStartTimeTicks:   readStartTimeTicks,
 		readAgyVersion:       readAgyVersion,
@@ -111,6 +111,11 @@ type Job struct {
 // versionCheckTimeout bounds the `agy --version` probe so a wedged binary
 // cannot park the tool call that triggered it.
 const versionCheckTimeout = 10 * time.Second
+
+// versionKillGrace is how long after the deadline kill the probe waits before
+// abandoning its output pipes, so a descendant that inherited them cannot hold
+// the probe open past its timeout.
+const versionKillGrace = time.Second
 
 // agyBinaryChecked resolves the agy binary and verifies it is new enough to
 // drive, caching the verdict for the process.
@@ -163,8 +168,25 @@ func (m *Manager) agyBinaryChecked(ctx context.Context) (string, error) {
 func readAgyVersion(ctx context.Context, agy string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, versionCheckTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, agy, "--version").CombinedOutput()
+	cmd := exec.CommandContext(ctx, agy, "--version")
+	// Without this, killing the process on deadline does not unblock the output
+	// copy: CombinedOutput reads through a pipe whose write end agy's descendants
+	// inherit, so a grandchild that outlives the kill holds the read open and the
+	// probe never returns. WaitDelay closes the pipes shortly after the kill.
+	cmd.WaitDelay = versionKillGrace
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// Check the deadline BEFORE classifying the exec error. A ctx-killed
+		// process surfaces as *exec.ExitError, which is indistinguishable from a
+		// binary that merely exited non-zero, so swallowing it would let whatever
+		// a wedged agy happened to print be parsed as its version and cached as
+		// verified for the life of the process.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("agy --version did not complete within %s: %w", versionCheckTimeout, ctxErr)
+		}
+		// A non-zero exit is not itself a failure: --version is not listed in
+		// agy's --help, so its exit status is not a contract and the output is
+		// what matters. Only a failure to execute at all is an error.
 		if _, isExit := errors.AsType[*exec.ExitError](err); !isExit {
 			return "", err
 		}
@@ -172,33 +194,87 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 	return string(out), nil
 }
 
-// conversationIDWait bounds how long StartJob blocks waiting for agy's init
-// event to name the conversation, so a fresh agy_run can report a real
-// conversation id instead of an empty one. agy emits init before any model work
-// but after its own startup (which includes launching whatever MCP servers it
-// is configured with), so the window is generous relative to the ~1s observed
-// against a warm 1.1.8. On expiry StartJob returns an empty id exactly as
-// before and agy_status supplies it once the event lands.
-const conversationIDWait = 2 * time.Second
-
-// conversationIDPoll is how often that wait re-reads the progress file.
+// conversationIDPoll is how often the conversation-id wait re-reads the
+// progress file. Its budget is config.RunIDWait.
 const conversationIDPoll = 50 * time.Millisecond
 
 // awaitConversationID polls a freshly spawned job's progress file until the
-// supervisor records the conversation id agy reported, or the budget expires.
-// It returns "" on expiry, which is not an error: the id is still delivered by
-// the next Status read.
-func (m *Manager) awaitConversationID(dir string) string {
+// supervisor records the conversation id agy reported, the job turns out to be
+// over, or the budget expires. It returns "" when no id arrived, which is not an
+// error: the id is still delivered by the next Status read.
+//
+// The budget is the only place agy_run is not return-immediately, so it exits at
+// the first opportunity rather than always sleeping it out. A terminal job is
+// one such opportunity: the supervisor writes the progress file while decoding
+// the stream and the exit-code sentinel only at the very end, so a visible
+// sentinel with no recorded id means none is coming (the run died before agy's
+// init event, or never started at all).
+func (m *Manager) awaitConversationID(id, dir string) string {
 	deadline := time.Now().Add(m.conversationIDWait)
 	for {
 		if p, ok := jobstore.ReadProgressDir(dir); ok && p.ConversationID != "" {
 			return p.ConversationID
+		}
+		if _, terminal := m.store.ExitCode(id); terminal {
+			// Re-read before giving up. The supervisor writes the progress file
+			// before the sentinel, so a job that finished between the two reads
+			// above has its id on disk even though the first read missed it;
+			// returning "" here without looking again would discard it.
+			if p, ok := jobstore.ReadProgressDir(dir); ok {
+				return p.ConversationID
+			}
+			return ""
 		}
 		if !time.Now().Before(deadline) {
 			return ""
 		}
 		time.Sleep(conversationIDPoll)
 	}
+}
+
+// conversationLive reports whether some running job is already driving convID.
+//
+// The gate key alone cannot answer this. A fresh run keys on nothing (agy has
+// not named its conversation yet at admission time), but the supervisor records
+// that name in progress.json within about a second, and StartJob hands it to the
+// caller. Without this scan a caller could take a still-running fresh run's id,
+// pass it straight back as conversation_id, and be admitted under a conv key
+// nobody holds, putting two agy sessions on one conversation: exactly the
+// session-lock hang the gate exists to prevent.
+//
+// A scan is affordable here because it runs only on the continuation path, over
+// jobs bounded by JobTTL. An unreadable job is skipped rather than treated as a
+// match: refusing every continuation because one unrelated job dir is corrupt
+// would be worse than the narrow race this closes.
+func (m *Manager) conversationLive(convID string) bool {
+	ids, err := m.store.List()
+	if err != nil {
+		return false
+	}
+	for _, id := range ids {
+		meta, err := m.store.Load(id)
+		if err != nil {
+			continue
+		}
+		if _, terminal := m.store.ExitCode(id); terminal {
+			continue
+		}
+		if !m.processAlive(meta) {
+			continue
+		}
+		if meta.ConversationID == convID {
+			return true
+		}
+		// A fresh run's id lives only in progress.json; meta never learns it.
+		dir, err := m.store.Dir(id)
+		if err != nil {
+			continue
+		}
+		if p, ok := jobstore.ReadProgressDir(dir); ok && p.ConversationID == convID {
+			return true
+		}
+	}
+	return false
 }
 
 // StartJob persists meta and spawns the detached supervisor.
@@ -221,7 +297,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// Resolve agy before anything reservable is taken. config.Resolve tolerates a
 	// missing agy so the server can still serve introspection, which makes this
 	// the first point that genuinely needs the binary; doing it after admit would
-	// burn a concurrency slot and strand the cwd key on a run that cannot start.
+	// burn a concurrency slot and strand the conversation key on a run that cannot start.
 	// The version gate lives here too: the whole job pipeline decodes agy's
 	// stream-json events, so an agy that cannot emit them must be refused before
 	// a job dir exists, not diagnosed from a confusing empty result later.
@@ -273,19 +349,27 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		}
 	}
 
+	// Refuse a continuation of a conversation some running job already drives.
+	// The gate covers two runs that both name the conversation up front; this
+	// covers the case it cannot see, a still-running fresh run that agy has since
+	// named. Checked before admission so a refusal burns no concurrency slot.
+	if req.ConversationID != "" && m.conversationLive(req.ConversationID) {
+		return Job{}, fmt.Errorf("another agy job is already running on conversation %s; wait for it to finish or start a fresh run instead", req.ConversationID)
+	}
+
 	key := keyFor(req)
 	outcome, err := m.admit(key)
 	if err != nil {
 		// The cross-process lock could not be established (e.g. the locks dir is
 		// unwritable). Fail closed: starting without it could let a sibling process
 		// run a conflicting same-key job and re-expose the session-lock hang.
-		return Job{}, fmt.Errorf("acquire cross-process lock for this conversation or directory: %w", err)
+		return Job{}, fmt.Errorf("acquire cross-process lock for this conversation: %w", err)
 	}
 	switch outcome {
 	case acquireOK:
 		// Slot and cross-process lock reserved; proceed to spawn below.
 	case acquireKeyBusy:
-		return Job{}, fmt.Errorf("another agy job is already running on this conversation; wait for it to finish or start a fresh run instead")
+		return Job{}, fmt.Errorf("another agy job is already running on conversation %s; wait for it to finish or start a fresh run instead", req.ConversationID)
 	case acquireAtCap:
 		return Job{}, fmt.Errorf("agy-mcp is at its concurrency cap of %d running job(s); retry once one finishes", m.gate.cap())
 	default:
@@ -402,7 +486,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// as soon as the event lands.
 	convID := req.ConversationID
 	if convID == "" {
-		convID = m.awaitConversationID(dir)
+		convID = m.awaitConversationID(id, dir)
 	}
 	return Job{ID: id, ConversationID: convID, State: StateRunning}, nil
 }

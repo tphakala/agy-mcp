@@ -3,9 +3,11 @@
 package agyver
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Required is the oldest agy that agy-mcp can drive. 1.1.8 added
@@ -36,20 +38,38 @@ func (v Version) AtLeast(o Version) bool {
 	return v.Patch >= o.Patch
 }
 
-// versionRE matches the first dotted triple in a string. agy 1.1.8 prints a
-// bare "1.1.8" for --version, but that flag is not listed in --help, so its
-// exact framing is not a contract. Matching the first triple anywhere in the
-// output keeps a future "agy version 1.2.0" or a build-suffixed
-// "1.2.0-preview" parsing correctly instead of turning a cosmetic change into a
-// hard refusal to run.
-var versionRE = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+// leadingVersionRE matches a line that IS a version: the triple at the start,
+// after nothing more than an optional "agy" and/or "version" word and an
+// optional "v". agy 1.1.8 prints a bare "1.1.8", but that flag is not listed in
+// --help, so its exact framing is not a contract; this keeps a future "agy
+// version 1.2.0" or a build-suffixed "1.2.0-preview" parsing rather than
+// turning a cosmetic change into a hard refusal to run.
+var leadingVersionRE = regexp.MustCompile(`^\s*(?:agy\s+)?(?:version\s+)?v?(\d+)\.(\d+)\.(\d+)`)
+
+// anywhereVersionRE is the last-resort fallback: any dotted triple at all.
+//
+// It is tried only after every line has failed the anchored match, because on
+// its own it accepts far too much. Callers feed it merged stdout and stderr, so
+// an unrelated leading triple wins outright: a path like ~/.agy/1.0.0/config, a
+// date rendered 2026.07.29 (which would parse as major 2026 and clear any
+// floor), or an IP such as 127.0.0.1. Preferring an anchored match keeps the
+// tolerance without letting a stray warning line decide the version.
+var anywhereVersionRE = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
 
 // Parse extracts a version from raw `agy --version` output. It reports an error
 // only when no dotted triple appears at all.
 func Parse(raw string) (Version, error) {
-	m := versionRE.FindStringSubmatch(raw)
+	var m []string
+	for line := range strings.Lines(raw) {
+		if m = leadingVersionRE.FindStringSubmatch(line); m != nil {
+			break
+		}
+	}
 	if m == nil {
-		return Version{}, fmt.Errorf("no version number found")
+		m = anywhereVersionRE.FindStringSubmatch(raw)
+	}
+	if m == nil {
+		return Version{}, errors.New("no version number found")
 	}
 	// Each group is one or more digits, so the only Atoi failure left is an
 	// overflow from an absurdly long run of digits. Report that rather than

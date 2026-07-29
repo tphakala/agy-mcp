@@ -54,9 +54,16 @@ func consumeStream(jobDir string, r io.Reader, out io.Writer) streamOutcome {
 		switch ev.Kind {
 		case streamjson.EventStepUpdate:
 			if su := ev.StepUpdate; su != nil {
-				prog.StepIndex = su.StepIndex
-				prog.StepType = su.StepType
-				changed = true
+				// Only rewrite when something a reader can observe actually moved.
+				// The conversation branch above already guards this way; without the
+				// same guard here, a repeated update for one step (agy stamps its id
+				// on every event, and a step can report more than one state) rewrites
+				// a byte-identical file, and each rewrite is a full atomic replace.
+				if su.StepIndex != prog.StepIndex || su.StepType != prog.StepType {
+					prog.StepIndex = su.StepIndex
+					prog.StepType = su.StepType
+					changed = true
+				}
 				// Append every delta rather than tracking which steps have already
 				// contributed. The field is a delta by name and agy emits it once per
 				// completed step, so appending reproduces the response; a run with
