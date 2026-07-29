@@ -103,6 +103,29 @@ exit 0
 	}
 }
 
+// The upgrade in ensureStreamJSON is applied to a copy and never written back to
+// meta.json, so the args alone cannot tell the manager that an upgraded job
+// streamed. The supervisor must leave its own marker, and it must leave it even
+// when agy says nothing at all: that is precisely the job whose args also lack
+// the flag, and one the manager would otherwise read as written by an older
+// build and report as a complete, empty answer.
+func TestRunMarksStreamJSONBeforeAgySpeaks(t *testing.T) {
+	// Emits nothing on stdout and exits cleanly, so no event ever reaches
+	// consumeStream and nothing downstream of the decoder writes progress.json.
+	agy := writeScript(t, "exit 0\n")
+	dir := writeJob(t, agy, []string{"-p", "hi"}) // legacy args: no output format
+
+	if err := run(dir, 100*time.Millisecond, drainGrace); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if b, rerr := jobstore.ReadResultDir(dir); rerr != nil || b != nil {
+		t.Fatalf("result payload = %q (err %v), want none: this run emitted no events", b, rerr)
+	}
+	if _, ok := jobstore.ReadProgressDir(dir); !ok {
+		t.Fatal("no progress file: an upgraded run that emitted no events is indistinguishable from a job an older build wrote, and its empty output would be reported as a complete answer")
+	}
+}
+
 // A descendant that escapes the process group holds the inherited stdout
 // descriptor open, so the stream never reaches EOF. The supervisor must still
 // reap agy and write the exit-code sentinel instead of stranding the job in

@@ -4,6 +4,8 @@ package supervisor
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -83,6 +85,41 @@ func selectsOutputFormat(args []string) bool {
 	return slices.ContainsFunc(args, func(a string) bool {
 		return a == outputFormatFlag || strings.HasPrefix(a, outputFormatFlag+"=")
 	})
+}
+
+// markStreamJSON records, before agy is even started, that this run is being
+// driven through the stream-json event format.
+//
+// It is the durable half of ensureStreamJSON. That function may have just
+// appended the flag to a COPY of args an older manager persisted, and the
+// upgrade is deliberately never written back to meta.json: the manager rewrites
+// meta.json right after spawning this supervisor, to record the PID it needs for
+// liveness and cancel, so a second writer here would race that update and could
+// leave the job untrackable. progress.json has exactly one writer, this process,
+// which is why the marker goes here instead.
+//
+// Writing it now rather than on the first decoded event is what closes the gap.
+// The manager asks "was this a stream-json run?" to tell a run that was cut
+// short from a job an older build wrote, and answers it from the persisted args
+// first, falling back to whether a progress file exists. An upgraded job's args
+// say no; a run whose agy emitted no events at all had no progress file either,
+// so it read as legacy and its empty output was reported as a complete answer
+// rather than a cut-short one. A marker written at spawn time exists for every
+// run this supervisor drives, whether or not agy ever says anything.
+//
+// The empty Progress it writes is what every reader already handles: the
+// conversation id and step type are absent until the stream supplies them, which
+// is exactly the state a job is in before agy starts.
+//
+// Failure is not fatal. The marker only sharpens a heuristic that still has the
+// persisted args to fall back on, and refusing to run the job over it would
+// trade a narrow misreport for a total one; it is noted on stderr rather than
+// swallowed, because a silently missing marker is indistinguishable from a
+// legacy job dir.
+func markStreamJSON(jobDir string, errW io.Writer) {
+	if err := jobstore.WriteProgressDir(jobDir, jobstore.Progress{UpdatedAt: time.Now().UTC()}); err != nil {
+		_, _ = fmt.Fprintf(errW, "\nagy-mcp: could not record the stream-json marker: %v\n", err)
+	}
 }
 
 // effectiveTimeout floors a non-positive job timeout to fallbackTimeout so the
@@ -204,6 +241,8 @@ func run(jobDir string, grace, drainWait time.Duration) error {
 	// Put agy in its own process group / job so the whole tree can be terminated
 	// together on cancel or timeout.
 	proc.ConfigureGroup(cmd)
+
+	markStreamJSON(jobDir, errF)
 
 	if err := cmd.Start(); err != nil {
 		_ = pw.Close()
