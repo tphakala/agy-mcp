@@ -79,11 +79,13 @@ func TestRunCapturesOutputAndExit(t *testing.T) {
 	stream := `{"event":"init","conversation_id":"c-win"}` + "\n" +
 		`{"event":"step_update","step_update":{"step_index":0,"step_type":"agent_response","text_delta":"review text"}}` + "\n" +
 		`{"event":"result","result":{"conversation_id":"c-win","status":"SUCCESS","response":"review text"}}` + "\n"
-	payload := filepath.Join(dir, "stream.ndjson")
-	if err := os.WriteFile(payload, []byte(stream), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "stream.ndjson"), []byte(stream), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeMetaWin(t, dir, `type "`+payload+`"& echo warn 1>&2& exit 3`, time.Minute)
+	// A bare relative name, resolved against cmd.Dir (the job dir). An absolute
+	// path would need quoting, and `cmd.exe /c` strips and re-interprets quotes
+	// inside its command string in ways that silently produce an empty read.
+	writeMetaWin(t, dir, "type stream.ndjson& echo warn 1>&2& exit 3", time.Minute)
 	if err := Run(dir); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
