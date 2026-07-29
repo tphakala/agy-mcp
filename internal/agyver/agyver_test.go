@@ -44,8 +44,9 @@ func TestParseRejectsNonVersions(t *testing.T) {
 }
 
 // parseCase is one raw `agy --version` output and the version it must resolve
-// to. TestParseResolvesNoisyOutput runs every case; TestParseNeverPromotesPast-
-// TheFloor derives its inputs from the same slice, so the two cannot drift.
+// to. TestParseResolvesNoisyOutput runs every case, and
+// TestParseNeverPromotesPastTheFloor derives its inputs from the same slice, so
+// the two cannot drift.
 type parseCase struct {
 	name string
 	raw  string

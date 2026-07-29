@@ -114,9 +114,17 @@ func selectsOutputFormat(args []string) bool {
 // It is written only for a run actually being driven through stream-json.
 // ensureStreamJSON leaves args alone when they already choose a format, so a
 // job asking for --output-format=json is exec'd as JSON and gets no marker: a
-// marker there would be a claim about a stream that is never produced. That
-// costs nothing, because such a job carries a format in its args and so is
-// already recognized by the args signal.
+// marker there would be a claim about a stream that is never produced.
+//
+// Withholding it loses the manager nothing, because such a job names a format
+// in its persisted args and is recognized by that signal instead. Note what it
+// does NOT rescue, though: this supervisor decodes stdout as an event stream
+// unconditionally, so a job running under any other format has its output
+// dropped by the decoder and reports an empty, partial result. Nothing here can
+// fix that, and nothing in production reaches it, since the manager's arg
+// builder only ever emits stream-json; it would take a hand-written meta.json
+// or a foreign build. Forcing stream-json over an explicit choice, or refusing
+// the job outright, are the two real options if that ever stops being true.
 //
 // The write replaces the file rather than merging into it, so it has to happen
 // before the stream drain starts. After that, consumeStream owns the file and

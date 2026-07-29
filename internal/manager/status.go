@@ -285,10 +285,20 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 	return carryText(dir, st, true, res)
 }
 
-// streamJSONRun reports whether a job actually produced an agy event stream. It
-// is how a job dir written by an older agy-mcp is told apart from one this build
-// produced, which matters wherever a missing result payload could mean either
-// "the run was cut short" or "this build never wrote one".
+// streamJSONRun reports whether a job dir carries evidence that this build, or
+// any build that drives agy through --output-format, produced it. It is how
+// such a dir is told apart from one an older agy-mcp wrote, which matters
+// wherever a missing result payload could mean either "the run was cut short"
+// or "this build never wrote one".
+//
+// Read the name as "not a legacy job dir" rather than as a claim about the
+// stream-json format specifically. The args signal below matches ANY output
+// format, so a job that asked for --output-format=json also answers true here.
+// That is deliberate and conservative for this caller, which uses the answer
+// only to decide whether an absent payload means the run was cut short: such a
+// job produces no decodable stream either, so treating its output as partial is
+// correct. It would NOT be a sound basis for a caller asking the narrower
+// question, and #102 tracks tightening it.
 //
 // Three independent signals, because no one of them is sound alone. Any of them
 // is enough; only a job with none, which is what an older build wrote, reads as
