@@ -84,7 +84,7 @@ exit 0
 `)
 	dir := writeJob(t, agy, []string{"-p", "hi"})
 
-	if err := run(dir, 100*time.Millisecond); err != nil {
+	if err := run(dir, 100*time.Millisecond, drainGrace); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	b, rerr := jobstore.ReadResultDir(dir)
@@ -108,25 +108,36 @@ exit 0
 // reap agy and write the exit-code sentinel instead of stranding the job in
 // `running` forever.
 func TestRunWritesSentinelDespiteDetachedDescendant(t *testing.T) {
-	// setsid puts the sleeper in its own session, so the supervisor's group kill
-	// cannot reach it. It inherits stdout and holds the pipe open.
+	// A plain backgrounded sleep, not setsid: macOS ships no setsid, so that form
+	// silently did nothing there and the test passed in milliseconds without ever
+	// reaching the branch it is named for. agy exits 0 here, so no group kill runs
+	// and an ordinary descendant is enough to hold the inherited pipe open.
 	agy := writeScript(t, `
 printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"done"}}'
-setsid sleep 30 &
+sleep 25 &
 exit 0
 `)
 	dir := writeJob(t, agy, []string{"--output-format", "stream-json", "-p", "hi"})
 
+	// A short injected drain budget, so the test proves the release branch runs
+	// rather than waiting out the production 5s.
+	const testDrainWait = 300 * time.Millisecond
 	done := make(chan error, 1)
-	go func() { done <- run(dir, 100*time.Millisecond) }()
+	start := time.Now()
+	go func() { done <- run(dir, 100*time.Millisecond, testDrainWait) }()
 
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
-	case <-time.After(drainGrace + 20*time.Second):
-		t.Fatal("run never returned: a detached descendant held the stream open")
+	case <-time.After(30 * time.Second):
+		t.Fatal("run never returned: a lingering descendant held the stream open")
+	}
+	// Below the budget means the descendant never held the pipe and the test
+	// would have passed without exercising the release at all.
+	if elapsed := time.Since(start); elapsed < testDrainWait {
+		t.Fatalf("run returned in %s, under the %s drain budget: the descendant never held the stream, so the release branch was not exercised", elapsed, testDrainWait)
 	}
 
 	code, err := os.ReadFile(jobstore.ExitCodePath(dir))
@@ -154,7 +165,7 @@ exit 0
 `)
 	dir := writeJob(t, agy, []string{"--output-format", "stream-json", "-p", "hi"})
 
-	if err := run(dir, 100*time.Millisecond); err != nil {
+	if err := run(dir, 100*time.Millisecond, drainGrace); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	resInfo, err := os.Stat(filepath.Join(dir, jobstore.ResultFile))

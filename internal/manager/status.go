@@ -156,22 +156,22 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 			}
 			st.State = StateDone
 			st.Result = out
-			// A job this build started always asks agy for the event stream, so a
-			// missing payload means the run really was cut short. A job started
-			// before that flag existed has a complete plain-text out and no payload
-			// to find, so calling it partial would tell the caller a finished answer
-			// may be truncated for the whole TTL after an upgrade.
-			st.Partial = streamJSONRun(meta)
+			// A run that produced an event stream but no terminal payload really was
+			// cut short, so its text is partial. A job written before that flag
+			// existed has a complete plain-text out and no payload to find, so
+			// calling it partial would tell the caller a finished answer may be
+			// truncated for the whole TTL after an upgrade.
+			st.Partial = streamJSONRun(dir, meta)
 			return st
 		}
 		return applyResult(st, res)
 	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
 		st.State = StateCancelled
-		st = carryStreamedText(dir, st)
+		st = carryStreamedText(dir, st, hasResult, res)
 	case jobstore.ExitTimeout:
 		st.State = StateFailed
 		st.Error = "job exceeded its timeout and was terminated"
-		st = carryStreamedText(dir, st)
+		st = carryStreamedText(dir, st, hasResult, res)
 	case jobstore.ExitSpawnFail:
 		// 127 is written both when the supervisor could not exec agy and when agy
 		// itself exits 127, so name both causes rather than asserting one, and keep
@@ -185,6 +185,11 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		} else {
 			st.Error = errorSummary(dir, code)
 		}
+		// Any other non-zero exit is a run cut short just as much as a timeout is:
+		// a crash, an OOM kill, agy exiting 1. The streamed text is the only answer
+		// those will ever have, so treat them the same rather than giving a
+		// timed-out run its partial answer and a crashed one nothing.
+		st = carryStreamedText(dir, st, hasResult, res)
 	}
 	// A cancelled or timed-out run still has a conversation worth continuing, so
 	// carry the id (and the accounting) from any payload that did get written.
@@ -208,13 +213,23 @@ func applyResult(st Status, res streamjson.Result) Status {
 		}
 		return st
 	}
-	if res.Status != streamjson.StatusSuccess {
-		// Neither SUCCESS nor ERROR. agyver sets a version floor and no ceiling, so
-		// a newer agy may report an outcome this build has never heard of
-		// (CANCELLED, MAX_TURNS, ...). Deriving success from "not ERROR" would hand
-		// that back as a clean, complete answer; say what was seen instead.
+	// A named status this build has never heard of. agyver sets a version floor
+	// and no ceiling, so a newer agy may report an outcome such as CANCELLED or
+	// MAX_TURNS; deriving success from "not ERROR" would hand those back as clean,
+	// complete answers. Report the status, but keep any response it carried rather
+	// than discarding recoverable work, and mark it partial since this build
+	// cannot vouch for it being the final answer.
+	//
+	// An ABSENT status is not in that class: the field is omitempty, so its
+	// absence is a shape the wire format declares legal, and an older reading
+	// treated it as success. Keep doing so.
+	if res.Status != "" && res.Status != streamjson.StatusSuccess {
 		st.State = StateFailed
 		st.Error = fmt.Sprintf("agy reported an unrecognized result status %q", res.Status)
+		if res.Response != "" {
+			st.Result = strings.TrimRight(res.Response, "\n")
+			st.Partial = true
+		}
 		return st
 	}
 	st.State = StateDone
@@ -224,24 +239,50 @@ func applyResult(st Status, res streamjson.Result) Status {
 	return st
 }
 
-// streamJSONRun reports whether a job was started asking agy for the event
-// stream. It is how a job dir written by an older agy-mcp is told apart from one
-// this build produced, which matters wherever a missing result payload could
-// mean either "the run was cut short" or "this build never wrote one".
-func streamJSONRun(meta jobstore.Meta) bool {
-	return slices.Contains(meta.Args, outputFormatFlag)
+// streamJSONRun reports whether a job actually produced an agy event stream. It
+// is how a job dir written by an older agy-mcp is told apart from one this build
+// produced, which matters wherever a missing result payload could mean either
+// "the run was cut short" or "this build never wrote one".
+//
+// Two independent signals, because neither alone is sound:
+//
+//   - The persisted args are what this build asked for, but the supervisor
+//     appends the flag when a foreign build's args lack it (ensureStreamJSON)
+//     and deliberately does not write that back, since rewriting meta.json would
+//     race the manager. So args can say "no stream" for a run that streamed.
+//   - progress.json is evidence the supervisor itself left behind, written when
+//     agy's init event arrived, so only a stream-json run has one. But a run
+//     that died before init has none.
+//
+// Either signal is enough. Only a job with neither, which is exactly a job an
+// older build wrote, reads as legacy.
+func streamJSONRun(dir string, meta jobstore.Meta) bool {
+	if slices.ContainsFunc(meta.Args, func(a string) bool {
+		return a == outputFormatFlag || strings.HasPrefix(a, outputFormatFlag+"=")
+	}) {
+		return true
+	}
+	_, ok := jobstore.ReadProgressDir(dir)
+	return ok
 }
 
-// carryStreamedText attaches whatever the assistant managed to say before the
-// run was cut short, marked partial.
+// carryStreamedText attaches the assistant's answer to a run that agy-mcp cut
+// short: the terminal payload when agy managed to emit one, otherwise whatever
+// text had streamed, marked partial.
 //
-// Cancel and timeout are the two endings the live `out` write exists for: agy
-// never reaches its terminal event, so the streamed text is the only answer
-// there will ever be. Reporting nothing would discard work the user paid for and
-// would contradict what both the wire schema and the README promise `partial`
-// means. A read failure is not surfaced as an error here because the job's state
-// is already decided; the absent text is simply not reported.
-func carryStreamedText(dir string, st Status) Status {
+// A payload can exist even here. agy prints its result and then hangs, or is
+// cancelled a moment later, so the run is killed with a complete answer already
+// on disk. That answer outranks the streamed text and is not partial; preferring
+// the stream would discard the very thing the caller asked for. Only when there
+// is no payload is the streamed text the best there will ever be.
+//
+// A read failure is not surfaced as an error because the job's state is already
+// decided by its exit code; the absent text is simply not reported.
+func carryStreamedText(dir string, st Status, hasResult bool, res streamjson.Result) Status {
+	if hasResult && res.Response != "" {
+		st.Result = strings.TrimRight(res.Response, "\n")
+		return st
+	}
 	out, err := readFile(jobstore.OutPath(dir))
 	if err != nil || out == "" {
 		return st

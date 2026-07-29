@@ -44,7 +44,14 @@ func (v Version) AtLeast(o Version) bool {
 // --help, so its exact framing is not a contract; this keeps a future "agy
 // version 1.2.0" or a build-suffixed "1.2.0-preview" parsing rather than
 // turning a cosmetic change into a hard refusal to run.
-var leadingVersionRE = regexp.MustCompile(`^\s*(?:agy\s+)?(?:version\s+)?v?(\d+)\.(\d+)\.(\d+)`)
+// The line must contain NOTHING BUT the version, apart from that prefix and an
+// optional build suffix. Anchoring only the start was worse than no anchoring at
+// all: it made a true version sitting mid-line ineligible while still matching
+// any line that merely BEGINS with a numeric triple, so "warning: agy 1.0.5 is
+// deprecated" followed by a log line starting "2026.07.29" resolved to 2026.7.29
+// and cleared a floor that 1.0.5 correctly failed. Requiring the whole line
+// leaves such output to the fallback, which picks the real 1.0.5.
+var leadingVersionRE = regexp.MustCompile(`^\s*(?:agy\s+)?(?:version\s+)?v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]*)?\s*$`)
 
 // anywhereVersionRE is the last-resort fallback: any dotted triple at all.
 //

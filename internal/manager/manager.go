@@ -182,13 +182,26 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 		// a wedged agy happened to print be parsed as its version and cached as
 		// verified for the life of the process.
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.Canceled) {
+				// The caller gave up. Say so, rather than blaming a binary that was
+				// answering perfectly well.
+				return "", fmt.Errorf("agy --version was cancelled: %w", ctxErr)
+			}
 			return "", fmt.Errorf("agy --version did not complete within %s: %w", versionCheckTimeout, ctxErr)
 		}
-		// A non-zero exit is not itself a failure: --version is not listed in
-		// agy's --help, so its exit status is not a contract and the output is
-		// what matters. Only a failure to execute at all is an error.
-		if _, isExit := errors.AsType[*exec.ExitError](err); !isExit {
-			return "", err
+		// WaitDelay fired while the deadline had NOT: agy answered and exited, but
+		// a descendant kept the output pipe open, so exec abandoned the copy. The
+		// version it printed is already buffered in out, and it is the whole point
+		// of the probe. Refusing here would reject a working agy for the exact
+		// reason WaitDelay was set in the first place. Fall through and let Parse
+		// decide; if the output really was truncated, the parse failure says so.
+		if !errors.Is(err, exec.ErrWaitDelay) {
+			// A non-zero exit is not itself a failure: --version is not listed in
+			// agy's --help, so its exit status is not a contract and the output is
+			// what matters. Only a failure to execute at all is an error.
+			if _, isExit := errors.AsType[*exec.ExitError](err); !isExit {
+				return "", err
+			}
 		}
 	}
 	return string(out), nil
@@ -246,14 +259,28 @@ func (m *Manager) awaitConversationID(id, dir string) string {
 // jobs bounded by JobTTL. An unreadable job is skipped rather than treated as a
 // match: refusing every continuation because one unrelated job dir is corrupt
 // would be worse than the narrow race this closes.
-func (m *Manager) conversationLive(convID string) bool {
+func (m *Manager) conversationLive(convID string) (bool, error) {
+	if convID == "" {
+		// Every fresh job has an empty conversation id, so an empty query would
+		// match all of them and refuse every run. Only the continuation path calls
+		// this, but the guard belongs with the function rather than its caller.
+		return false, nil
+	}
 	ids, err := m.store.List()
 	if err != nil {
-		return false
+		// Fail closed, like admit and RestoreGate. Without a scan there is no way
+		// to know whether the conversation is busy, and guessing "idle" admits the
+		// second session this check exists to prevent.
+		return false, fmt.Errorf("scan jobs to check whether conversation %s is already running: %w", convID, err)
 	}
 	for _, id := range ids {
 		meta, err := m.store.Load(id)
 		if err != nil {
+			// One unreadable job dir must not refuse every continuation forever, so
+			// this skips rather than failing closed; log it, because the skip is a
+			// hole in the check and a silent one would be indistinguishable from a
+			// conversation that really is idle.
+			log.Printf("conversation check: skipping job %s with unreadable meta: %v", id, err)
 			continue
 		}
 		if _, terminal := m.store.ExitCode(id); terminal {
@@ -263,18 +290,19 @@ func (m *Manager) conversationLive(convID string) bool {
 			continue
 		}
 		if meta.ConversationID == convID {
-			return true
+			return true, nil
 		}
 		// A fresh run's id lives only in progress.json; meta never learns it.
 		dir, err := m.store.Dir(id)
 		if err != nil {
+			log.Printf("conversation check: skipping job %s with unusable dir: %v", id, err)
 			continue
 		}
 		if p, ok := jobstore.ReadProgressDir(dir); ok && p.ConversationID == convID {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // StartJob persists meta and spawns the detached supervisor.
@@ -353,8 +381,14 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// The gate covers two runs that both name the conversation up front; this
 	// covers the case it cannot see, a still-running fresh run that agy has since
 	// named. Checked before admission so a refusal burns no concurrency slot.
-	if req.ConversationID != "" && m.conversationLive(req.ConversationID) {
-		return Job{}, fmt.Errorf("another agy job is already running on conversation %s; wait for it to finish or start a fresh run instead", req.ConversationID)
+	if req.ConversationID != "" {
+		live, err := m.conversationLive(req.ConversationID)
+		if err != nil {
+			return Job{}, err
+		}
+		if live {
+			return Job{}, fmt.Errorf("another agy job is already running on conversation %s; wait for it to finish or start a fresh run instead", req.ConversationID)
+		}
 	}
 
 	key := keyFor(req)

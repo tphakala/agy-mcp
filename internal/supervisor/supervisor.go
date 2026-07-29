@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -64,12 +65,24 @@ const (
 // The args are copied rather than appended in place: they come from the caller's
 // Meta and must not be mutated.
 func ensureStreamJSON(args []string) []string {
-	if slices.Contains(args, outputFormatFlag) {
+	if selectsOutputFormat(args) {
 		return args
 	}
 	out := make([]string, 0, len(args)+2)
 	out = append(out, args...)
 	return append(out, outputFormatFlag, streamJSONFormat)
+}
+
+// selectsOutputFormat reports whether args already choose an output format, in
+// either spelling the Go flag package accepts: a separate value
+// ("--output-format stream-json") or an inline one ("--output-format=json").
+// Matching only the separate form would append a second flag to an inline one,
+// and since the flag package takes the last occurrence that would silently
+// override a format the caller chose deliberately.
+func selectsOutputFormat(args []string) bool {
+	return slices.ContainsFunc(args, func(a string) bool {
+		return a == outputFormatFlag || strings.HasPrefix(a, outputFormatFlag+"=")
+	})
 }
 
 // effectiveTimeout floors a non-positive job timeout to fallbackTimeout so the
@@ -117,14 +130,14 @@ func resolveExitCode(raw int, waitFailed, timedOut, cancelled bool) int {
 // /dev/null, and writes jobDir/exit_code on completion (including on cancel).
 // Run returns an error only for setup failures, not for a non-zero agy exit.
 func Run(jobDir string) error {
-	return run(jobDir, killGrace)
+	return run(jobDir, killGrace, drainGrace)
 }
 
 // run is Run with an injectable SIGTERM->SIGKILL grace, so a test can exercise
 // the escalation without the 10s production wait. Passing grace as a parameter
 // (rather than mutating a package global) keeps the timer goroutine's read
 // race-free.
-func run(jobDir string, grace time.Duration) error {
+func run(jobDir string, grace, drainWait time.Duration) error {
 	if !proc.Supported {
 		// Job supervision is implemented on Linux and macOS (process groups) and
 		// Windows (Job Objects). On other platforms the proc stubs cannot terminate
@@ -281,7 +294,7 @@ func run(jobDir string, grace time.Duration) error {
 	var outcome streamOutcome
 	select {
 	case outcome = <-drained:
-	case <-time.After(drainGrace):
+	case <-time.After(drainWait):
 		_ = pr.Close()
 		outcome = <-drained
 	}

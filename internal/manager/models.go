@@ -6,6 +6,16 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
+)
+
+// listModelsTimeout bounds `agy models`, and listModelsKillGrace bounds how long
+// after that deadline the call waits before abandoning its output pipes. Same
+// hazard as the version probe: agy's descendants inherit those pipes, so one
+// that outlives agy would otherwise hold the call open indefinitely.
+const (
+	listModelsTimeout   = 30 * time.Second
+	listModelsKillGrace = time.Second
 )
 
 // ListModels runs `agy models` and returns the available model names.
@@ -18,7 +28,16 @@ func (m *Manager) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := exec.CommandContext(ctx, agy, "models").Output()
+	// Bounded and WaitDelay'd for the same reason as the version probe: Output()
+	// collects through pipes that agy's descendants inherit, so one that outlives
+	// agy holds the read open and parks this call for as long as the client keeps
+	// it. The caller's ctx alone is not a bound, since it is the raw request
+	// context and a client may hold that open indefinitely.
+	ctx, cancel := context.WithTimeout(ctx, listModelsTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, agy, "models")
+	cmd.WaitDelay = listModelsKillGrace
+	out, err := cmd.Output()
 	if err != nil {
 		// Output() captures stderr into (*exec.ExitError).Stderr; include it so a
 		// real cause (an auth prompt, a usage error) is visible instead of a bare

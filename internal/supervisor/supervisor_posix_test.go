@@ -32,7 +32,7 @@ func TestSupervisorEscalatesToSIGKILL(t *testing.T) {
 	})
 
 	start := time.Now()
-	if err := run(dir, 200*time.Millisecond); err != nil {
+	if err := run(dir, 200*time.Millisecond, drainGrace); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	// With the injected 200ms grace this ends in well under a second; the 10s
