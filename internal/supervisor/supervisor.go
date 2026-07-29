@@ -142,16 +142,23 @@ func markStreamJSON(jobDir string, errW io.Writer) {
 // supervisor decodes, in either spelling the Go flag package accepts. It is the
 // narrow question markStreamJSON needs, where selectsOutputFormat asks the wide
 // one ("did the caller choose ANY format, so ensureStreamJSON must not append").
+//
+// The LAST occurrence decides, matching agy's own flag parsing, so a repeated
+// flag is read the way agy will read it rather than the way it is written.
+// ensureStreamJSON never produces a repeat, since it appends only when no
+// format is present at all, but these args can come from a meta.json some other
+// build wrote, which is the whole reason this supervisor re-checks them.
 func selectsStreamJSON(args []string) bool {
+	selected := ""
 	for i, a := range args {
-		if a == outputFormatFlag && i+1 < len(args) && args[i+1] == streamJSONFormat {
-			return true
-		}
-		if a == outputFormatFlag+"="+streamJSONFormat {
-			return true
+		switch {
+		case a == outputFormatFlag && i+1 < len(args):
+			selected = args[i+1]
+		case strings.HasPrefix(a, outputFormatFlag+"="):
+			selected = strings.TrimPrefix(a, outputFormatFlag+"=")
 		}
 	}
-	return false
+	return selected == streamJSONFormat
 }
 
 // effectiveTimeout floors a non-positive job timeout to fallbackTimeout so the
