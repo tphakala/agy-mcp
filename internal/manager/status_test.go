@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,7 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/streamjson"
 )
 
 // TestStatusInterruptedNoOutput: a job whose process is gone with no sentinel
@@ -63,7 +65,13 @@ func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
 func TestStatusDone(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("the review"), 0o644)
+	writeResultPayload(t, dir, streamjson.Result{
+		ConversationID: "cid-1",
+		Status:         streamjson.StatusSuccess,
+		Response:       "the review",
+		NumTurns:       2,
+		Usage:          &streamjson.Usage{TotalTokens: 42},
+	})
 	_ = m.store.WriteExitCode("j", 0)
 
 	st, err := m.Status("j")
@@ -74,7 +82,68 @@ func TestStatusDone(t *testing.T) {
 		t.Fatalf("status = %+v", st)
 	}
 	if st.Partial {
-		t.Fatalf("a cleanly-exited job must not be marked partial: %+v", st)
+		t.Fatalf("a job with a terminal result must not be marked partial: %+v", st)
+	}
+	if st.ConversationID != "cid-1" {
+		t.Fatalf("conversation_id = %q, want cid-1 from the result payload", st.ConversationID)
+	}
+	if st.NumTurns != 2 || st.Usage == nil || st.Usage.TotalTokens != 42 {
+		t.Fatalf("accounting not surfaced: %+v", st)
+	}
+}
+
+// writeResultPayload stages the terminal result the supervisor would have
+// written for a job.
+func writeResultPayload(t *testing.T, dir string, res streamjson.Result) {
+	t.Helper()
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jobstore.WriteResultDir(dir, b); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A clean exit with no terminal result event reports whatever text streamed,
+// flagged partial: agy finished, but the answer it summarized never arrived.
+func TestStatusDoneWithoutResultIsPartial(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	_ = os.WriteFile(filepath.Join(dir, "out"), []byte("half an answer"), 0o644)
+	_ = m.store.WriteExitCode("j", 0)
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateDone || st.Result != "half an answer" {
+		t.Fatalf("status = %+v", st)
+	}
+	if !st.Partial {
+		t.Fatalf("a job with no terminal result must be marked partial: %+v", st)
+	}
+}
+
+// A cancelled job carries no result, but it does carry the conversation, so the
+// thread it started can still be continued.
+func TestStatusCancelledKeepsConversationID(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	if err := jobstore.WriteProgressDir(dir, jobstore.Progress{ConversationID: "cid-mid-run"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.store.WriteExitCode("j", jobstore.ExitSIGTERM)
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateCancelled {
+		t.Fatalf("state = %q, want cancelled", st.State)
+	}
+	if st.ConversationID != "cid-mid-run" {
+		t.Fatalf("conversation_id = %q, want the id recorded mid-run", st.ConversationID)
 	}
 }
 

@@ -3,7 +3,7 @@ package manager
 import (
 	"os"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // requestCancel writes the cancel sentinel file the supervisor polls for. Windows

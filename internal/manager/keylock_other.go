@@ -2,7 +2,7 @@
 
 package manager
 
-import "github.com/tphakala/agy-mcp/internal/proc"
+import "github.com/tphakala/agy-mcp/v2/internal/proc"
 
 // flockExclusiveNB has no implementation on platforms without supervision (e.g.
 // FreeBSD); Linux and macOS use flock (keylock_posix.go) and Windows uses

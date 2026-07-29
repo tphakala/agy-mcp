@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 // waitJobMain implements "agy-mcp wait-job [-timeout 1h] <job_id>": block

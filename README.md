@@ -9,7 +9,7 @@
 
 An MCP (Model Context Protocol) server that wraps the [Antigravity CLI](https://antigravity.google) (`agy`), so any MCP client (Claude Code, Cursor, Cline, and others) can run `agy` prompts, peer reviews, and follow-up turns as native tools.
 
-> Status: feature complete (stdio and HTTP transports, async and sync job lifecycle, model and session discovery, cross-platform builds) and verified against a live agy (1.0.11).
+> Status: feature complete (stdio and HTTP transports, async and sync job lifecycle, model and session discovery, cross-platform builds) and verified against a live agy (1.1.8).
 
 ## Why
 
@@ -19,6 +19,8 @@ Driving `agy` from a shell for automation has two recurring problems:
 - A review can run for many minutes. A single blocking call ties up the caller and can exceed a client's tool-call timeout with nothing recoverable.
 
 `agy-mcp` solves both by running `agy` as managed, asynchronous jobs behind a small, typed tool surface, and by capturing output to disk so a run survives a client disconnect or a server restart.
+
+Every job runs `agy --output-format stream-json`, and the supervisor decodes that event stream as it arrives. That is where the conversation id, the response text, the failure message, and the token accounting all come from, so agy-mcp never has to infer any of them.
 
 ## What it provides
 
@@ -47,7 +49,9 @@ Two transports run the same core:
 
 ## Requirements
 
-- The `agy` binary on `PATH` (or configured explicitly via `AGY_MCP_AGY_PATH`). agy 1.0.9 or newer is recommended (see the continuation note below).
+- **agy 1.1.8 or newer**, on `PATH` or configured explicitly via `AGY_MCP_AGY_PATH`. This is a hard floor, not a recommendation: 1.1.8 added `--output-format` to print mode, and agy-mcp drives every job through the `stream-json` format it introduced. Older builds are refused rather than degraded.
+
+  The version is checked once per process, the first time a tool actually needs agy, and the verdict is cached. A binary that is too old is reported as `agy 1.1.8 or newer is required ...; found 1.1.7 at /usr/local/bin/agy`. A failed check is deliberately not cached, so upgrading agy is picked up without restarting the server.
 
   A missing `agy` does not stop the server from starting. `initialize`, `tools/list`, and `list_sessions` never exec it, so the lookup is deferred: the server starts, logs a warning to stderr, serves discovery normally, and the tools that do need the binary (`agy_run`, `agy_run_sync`, `list_models`) fail per call with `agy not found on PATH; set AGY_MCP_AGY_PATH`. An `agy` installed later is picked up without restarting the server. An explicit `AGY_MCP_AGY_PATH` is treated differently: it is a claim about one specific binary, so a typo or a non-executable target still fails fast at startup.
 - Go 1.26+ to build.
@@ -59,15 +63,17 @@ Two transports run the same core:
 
 > Note: every job spawns a fresh `agy` process, which on startup launches whatever MCP servers are configured in agy's own `mcp_config.json`. Peer-review and automation runs usually do not need those servers, and a slow or hanging one adds latency to every job. agy 1.0.7+ bounds this with a per-server launch `timeout` (set `-1` to disable it). If startup is slow, give the unneeded servers a `timeout` in agy's `mcp_config.json`, or point agy at a trimmed config.
 
-> Note (continuation): a follow-up turn runs `agy --conversation <id> -p <prompt>`, and the supervisor captures agy's stdout verbatim as the job result with no post-processing. agy 1.0.9 fixed a print-mode resumption bug where a resumed `-p` dumped the entire conversation transcript instead of only the new turn; on earlier builds (through 1.0.7) every continued `conversation_id` / `continue_latest` result was polluted with the full prior transcript. On 1.0.9+ the result is just the new response. Verified clean end-to-end against agy 1.0.11.
+> Note (continuation): a follow-up turn runs `agy --conversation <id> -p <prompt>`, and the job result is the `response` field of agy's terminal `result` event. Verified against 1.1.8: a resumed run returns only the new turn and echoes the same conversation id, with `num_turns` incremented.
 
 > Note (auth): agy-mcp passes its own process environment through to every spawned `agy`, so agy's normal OAuth credentials are used by default. For headless or daemon deployments (HTTP mode, cron) where no browser is available, set `USE_ADC=1` in the server's environment to have agy authenticate via Google Application Default Credentials instead of the interactive sign-in flow (agy 1.0.11+). No agy-mcp flag or code change is needed; unset it to fall back to the other sign-in methods.
 
 ## Install
 
 ```bash
-go install github.com/tphakala/agy-mcp@latest
+go install github.com/tphakala/agy-mcp/v2@latest
 ```
+
+The module path carries a `/v2` suffix from v2.0.0 on, as Go requires for a major version. `go install github.com/tphakala/agy-mcp@latest` still resolves, but to the last v1 release.
 
 ## Use with Claude Code (stdio)
 
@@ -88,12 +94,14 @@ Or add to your MCP client config:
 ## Tools
 
 - `agy_run(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?)` -> `{ job_id, conversation_id?, state }`
-- `agy_run_sync(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, note? }`
-- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id?, partial? }`
-- `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, note? }`
+- `agy_run_sync(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
+- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage? }`
+- `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`
 - `list_models()` -> `{ models }`
 - `list_sessions(dir?)` -> `{ sessions }`
+
+`usage` is agy's own token accounting (`input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens`), and together with `num_turns` it appears once a run reports a terminal result. `partial` marks a result reconstructed from the streamed text because agy never reported a final one, which happens when a run is cancelled, times out, or its supervisor dies mid-stream.
 
 Parameter and result fields carry their own descriptions in the tool schemas, so a client sees
 them without consulting this file. The constraints worth knowing up front: `conversation_id`
@@ -105,32 +113,42 @@ silently clamped to 10m, and it bounds only the inline wait, never the job itsel
 is asynchronous, so it usually returns `running` and the job settles to `cancelled` a moment
 later.
 
-A fresh `agy_run` (no `conversation_id`, no `continue_latest`) starts with an empty
-`conversation_id`; agy assigns one as the run proceeds, and `agy_status` reports it once the
-run completes, so the thread can be continued later. To keep that capture unambiguous, fresh
-runs sharing a `cwd` are serialized: while one fresh run is active, a second fresh run in the
-same directory is refused (`agy_run` returns a conflict error rather than queuing it), so run
-them in separate directories or retry once the first finishes. Runs in different directories,
-and runs continuing distinct conversations, still run concurrently up to the configured cap.
-The gate that enforces this is rebuilt at startup from jobs whose supervisor outlived a server
-restart, so serialization holds across restarts.
+A fresh `agy_run` (no `conversation_id`, no `continue_latest`) reports the conversation agy
+created for it. agy names the conversation in the `init` event of its stream, which arrives
+about a second after the process starts, so `agy_run` waits briefly (up to 2s) for it and
+returns a real `conversation_id`. If the wait expires the field comes back empty and
+`agy_status` supplies it moments later; either way the thread can be continued.
 
-This serialization holds across separate `agy-mcp` processes too, which matters in stdio mode,
-where each MCP client session spawns its own process sharing one `AGY_MCP_STATE_DIR`. A per-key
-advisory lock (`flock` on a file under `<state-dir>/locks/`) serializes same-`cwd`/same-conversation
-runs across processes, so two sibling sessions cannot start a conflicting run concurrently. The
-global concurrency cap, by contrast, is enforced per process: with N client sessions each capped
-at the configured limit, up to N times that many distinct, non-conflicting runs can be in flight.
-The lock files are tiny and left in place by design (unlinking a `flock` file races), so the
-`locks/` directory keeps one empty file per distinct directory or conversation ever locked.
+**Fresh runs are not serialized.** Any number of them can run in one directory at the same
+time, bounded only by the global concurrency cap. Earlier versions refused a second fresh run
+in a directory that already had one, because the conversation id had to be inferred by diffing
+agy's shared conversation cache and that inference was only sound while nothing else could
+touch the same entry. Reading the id from agy's own stream removes the ambiguity and the
+restriction with it.
 
-Two caveats. `AGY_MCP_STATE_DIR` must live on a local filesystem that supports `flock` (not NFS,
-where `flock` may be a no-op or fail); a run is refused rather than started if the lock cannot be
-taken, so cross-process exclusion can never silently lapse. And across a server restart there is a
-brief window, while the manager process is down, before it re-takes the locks for jobs whose
-supervisor outlived it; a sibling process that starts the same-`cwd` run during that window is not
-blocked. The in-process gate is always restored at startup, so this gap is limited to the restart
-window itself.
+What is still serialized is a **conversation**: two runs continuing the same `conversation_id`
+cannot overlap, because concurrent agy sessions on one conversation trigger a known session-lock
+hang in agy itself. The second is refused with a conflict error rather than queued. That gate is
+rebuilt at startup from jobs whose supervisor outlived a server restart, so it holds across
+restarts.
+
+Conversation serialization also holds across separate `agy-mcp` processes, which matters in
+stdio mode, where each MCP client session spawns its own process sharing one
+`AGY_MCP_STATE_DIR`. A per-conversation advisory lock (`flock` on a file under
+`<state-dir>/locks/`) stops two sibling sessions from continuing the same conversation at once.
+The global concurrency cap, by contrast, is enforced per process: with N client sessions each
+capped at the configured limit, up to N times that many runs can be in flight. Lock files are
+left in place by design (unlinking a `flock` file races), so `locks/` keeps one empty file per
+conversation ever locked.
+
+Two caveats, both now scoped to continuations only. `AGY_MCP_STATE_DIR` must live on a local
+filesystem that supports `flock` (not NFS, where `flock` may be a no-op or fail); a continuation
+is refused rather than started if the lock cannot be taken, so cross-process exclusion can never
+silently lapse. And across a server restart there is a brief window, while the manager process is
+down, before it re-takes the locks for jobs whose supervisor outlived it; a sibling process that
+continues the same conversation during that window is not blocked. The in-process gate is always
+restored at startup, so this gap is limited to the restart window itself. Fresh runs take no lock
+at all and are unaffected by either caveat.
 
 ## Completion wake for Claude Code
 

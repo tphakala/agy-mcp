@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 func TestWaitForCancelFiresOnSentinel(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // FakeSupervisor configures a stand-in supervisor script for tests.
@@ -22,9 +22,22 @@ import (
 // spawned process — needs no comm trick there.
 type FakeSupervisor struct {
 	// AgyPath, when set, makes the script run that (fake) agy binary with
-	// `-p x`, streaming stdout to <dir>/out and stderr to <dir>/err and
-	// recording agy's real exit code. Mutually exclusive with Out/Exit.
+	// `-p x`, capturing stderr to <dir>/err and recording agy's real exit code.
+	// Mutually exclusive with Out/Exit.
+	//
+	// agy's stdout is discarded rather than copied to <dir>/out, because it is a
+	// stream-json event stream and the real supervisor decodes it instead of
+	// copying it. Set Agy to the same config to have the decoded job-dir files
+	// (out, progress.json, result.json) rendered in Go and written the way the
+	// real supervisor would write them.
 	AgyPath string
+	// Agy, when set, supplies the stream-derived job-dir files for an AgyPath
+	// run: the response text in out and the progress file before agy starts (the
+	// real supervisor writes both live, so a run killed mid-flight still has
+	// them), and the terminal result after agy exits. Leave it nil for tests that
+	// only care about process lifecycle (cancel, timeout, liveness) and not about
+	// what the job produced.
+	Agy *FakeAgy
 	// Out is the fixed content written to <dir>/out when AgyPath is empty.
 	Out string
 	// Exit is the fixed exit code recorded when AgyPath is empty.
@@ -61,6 +74,9 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 	if cfg.CacheDelay > 0 && cfg.CachePath == "" {
 		t.Fatal("FakeSupervisor: CacheDelay requires CachePath")
 	}
+	if cfg.Agy != nil && cfg.AgyPath == "" {
+		t.Fatal("FakeSupervisor: Agy requires AgyPath")
+	}
 	dir := t.TempDir()
 	// On Linux the basename doubles as the comm value; it must stay under the
 	// kernel's 15-char comm limit for the liveness comm fallback to match.
@@ -75,14 +91,35 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 		sb.WriteString("printf '%s' \"${0##*/}\" > /proc/$$/comm\n")
 	}
 	sb.WriteString("dir=\"$2\"\n")
-	if cfg.AgyPath != "" {
-		fmt.Fprintf(&sb, "%q -p x > \"$dir/%s\" 2> \"$dir/%s\"\ncode=$?\n", cfg.AgyPath, jobstore.OutFile, jobstore.ErrFile)
-	} else {
-		outPayload := filepath.Join(dir, "out-payload")
-		if err := os.WriteFile(outPayload, []byte(cfg.Out), 0o644); err != nil {
-			t.Fatalf("write fake supervisor out payload: %v", err)
+	// copyPayload stages content in a sibling file and emits the cat that puts it
+	// into the job dir, so arbitrary bytes survive shell quoting.
+	copyPayload := func(name, content, dest string) {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write fake supervisor %s payload: %v", name, err)
 		}
-		fmt.Fprintf(&sb, "cat %q > \"$dir/%s\"\ncode=%d\n", outPayload, jobstore.OutFile, cfg.Exit)
+		fmt.Fprintf(&sb, "cat %q > \"$dir/%s\"\n", p, dest)
+	}
+
+	switch {
+	case cfg.AgyPath != "":
+		if cfg.Agy != nil {
+			// Written before agy runs, mirroring the real supervisor's live writes:
+			// a run killed mid-flight must still leave its streamed text and the
+			// conversation id behind.
+			copyPayload("stream-out", cfg.Agy.Stdout, jobstore.OutFile)
+			copyPayload("stream-progress.json", cfg.Agy.ProgressJSON(t), jobstore.ProgressFile)
+		}
+		fmt.Fprintf(&sb, "%q -p x > /dev/null 2> \"$dir/%s\"\ncode=$?\n", cfg.AgyPath, jobstore.ErrFile)
+		if cfg.Agy != nil && !cfg.Agy.OmitResult {
+			// After agy exits and before the sentinel, exactly like the real
+			// supervisor, so a sentinel visible to the manager implies a complete
+			// result file.
+			copyPayload("stream-result.json", cfg.Agy.ResultJSON(t), jobstore.ResultFile)
+		}
+	default:
+		copyPayload("out-payload", cfg.Out, jobstore.OutFile)
+		fmt.Fprintf(&sb, "code=%d\n", cfg.Exit)
 	}
 	fmt.Fprintf(&sb, "printf '%%s' \"$code\" > \"$dir/%s\"\n", jobstore.ExitCodeFile)
 	if cfg.CachePath != "" {

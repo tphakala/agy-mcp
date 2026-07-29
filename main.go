@@ -13,10 +13,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/manager"
-	"github.com/tphakala/agy-mcp/internal/mcptools"
-	"github.com/tphakala/agy-mcp/internal/supervisor"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/mcptools"
+	"github.com/tphakala/agy-mcp/v2/internal/supervisor"
 )
 
 func main() {

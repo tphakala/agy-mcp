@@ -3,7 +3,7 @@ package manager
 import (
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // jobStore is the subset of *jobstore.Store that the Manager depends on. It is an

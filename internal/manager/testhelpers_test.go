@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/agyver"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // managerOpts configures newManager's config.Config beyond its sensible
@@ -18,7 +20,8 @@ type managerOpts struct {
 	defaultTimeout time.Duration
 	defaultModel   string
 	jobTTL         time.Duration
-	withCacheFile  bool // true -> m.cacheFile = a fresh t.TempDir()/last_conversations.json
+	withCacheFile  bool   // true -> m.cacheFile = a fresh t.TempDir()/last_conversations.json
+	agyVersion     string // "" -> a version that satisfies the gate; see newManager
 }
 
 // newManager builds a *Manager for tests, consolidating the suite's several
@@ -46,5 +49,18 @@ func newManager(t *testing.T, opts managerOpts) *Manager {
 	if opts.withCacheFile {
 		m.cacheFile = filepath.Join(t.TempDir(), "last_conversations.json")
 	}
+	// Stub the version probe. The agyPath in these tests is usually a stand-in
+	// that cannot be executed at all, so without this every StartJob would fail
+	// in the gate rather than exercising what the test is about. A test that
+	// wants to exercise the gate itself sets agyVersion.
+	version := opts.agyVersion
+	if version == "" {
+		version = agyver.Required.String()
+	}
+	m.readAgyVersion = testutil.FakeVersion(version)
+	// Keep the fresh-run conversation-id wait short: these tests use fake
+	// supervisors that never write a progress file, so the real 2s budget would
+	// be spent in full on every StartJob.
+	m.conversationIDWait = 0
 	return m
 }

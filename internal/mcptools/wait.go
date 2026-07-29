@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 // waitInput is the input for agy_wait.

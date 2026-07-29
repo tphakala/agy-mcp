@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // TestGarbageCollectKeepsExpiredButAliveJob pins GC's core safety invariant: a

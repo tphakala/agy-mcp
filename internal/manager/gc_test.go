@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // reReadExitStore reports "no sentinel" on the first ExitCode(id) call and
@@ -115,33 +115,6 @@ func TestGarbageCollectKeepsExpiredJobWithUnreadableMeta(t *testing.T) {
 	}
 }
 
-func TestGarbageCollectKeepsTerminalJobWithCapturePending(t *testing.T) {
-	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
-	// A fresh run that exited 0 and is past the TTL, but whose conversation-id
-	// capture is still in flight: the manager's post-cmd.Wait goroutine is inside
-	// captureFreshConversationID, still writing this dir (the sentinel is already on
-	// disk because the supervisor writes it before exiting, so the first ExitCode
-	// read sees it). Removing the dir now would make SetConversationID fail and lose
-	// the captured id, so GC must keep the job until the capture settles.
-	if _, err := m.store.Create(jobstore.Meta{ID: "capturing", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.store.WriteExitCode("capturing", 0); err != nil {
-		t.Fatal(err)
-	}
-	m.pendingCaptures.Store("capturing", struct{}{})
-	removed, err := m.GarbageCollect()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(removed) != 0 {
-		t.Fatalf("a terminal job with capture still pending must not be removed, removed %v", removed)
-	}
-	if ids, _ := m.store.List(); len(ids) != 1 || ids[0] != "capturing" {
-		t.Fatalf("capturing job should survive the sweep, List = %v", ids)
-	}
-}
-
 func TestGarbageCollectRereadsSentinelBeforeRemoval(t *testing.T) {
 	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
 	// Old enough to collect, PID 0 so processAlive is false (the process has
@@ -185,27 +158,24 @@ func TestGarbageCollectRemovesExpired(t *testing.T) {
 	}
 }
 
-func TestGarbageCollectUntracksSettledCapture(t *testing.T) {
+func TestGarbageCollectRemovesTerminalJobImmediately(t *testing.T) {
 	m := newManager(t, managerOpts{maxConcurrency: 4, jobTTL: time.Hour})
-	if _, err := m.store.Create(jobstore.Meta{ID: "old", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
+	// A terminal job past the TTL is removed on the first sweep. GC used to hold
+	// such a job back while a conversation-id capture wrote into its dir; the
+	// supervisor now writes result.json before the exit-code sentinel, so a
+	// visible sentinel means nothing is still writing and the dir is safe to take.
+	if _, err := m.store.Create(jobstore.Meta{ID: "settled", StartedAt: time.Now().Add(-2 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	// The job's lazy capture settled before it aged out; its memo must not outlive
-	// the job, or settledCapture would grow without bound in a long-running server.
-	m.settleCapture("old")
-	if !m.captureSettled("old") {
-		t.Fatal("precondition: the job should be settled")
+	if err := m.store.WriteExitCode("settled", 0); err != nil {
+		t.Fatal(err)
 	}
-
 	removed, err := m.GarbageCollect()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(removed) != 1 || removed[0] != "old" {
-		t.Fatalf("removed = %v, want [old]", removed)
-	}
-	if m.captureSettled("old") {
-		t.Fatal("GarbageCollect must untrack a collected job's settled-capture memo")
+	if len(removed) != 1 || removed[0] != "settled" {
+		t.Fatalf("removed = %v, want [settled]", removed)
 	}
 }
 

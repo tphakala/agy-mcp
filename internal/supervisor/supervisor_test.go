@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 func writeMeta(t *testing.T, dir string, m jobstore.Meta) {

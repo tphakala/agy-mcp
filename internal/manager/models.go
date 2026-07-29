@@ -10,7 +10,11 @@ import (
 
 // ListModels runs `agy models` and returns the available model names.
 func (m *Manager) ListModels(ctx context.Context) ([]string, error) {
-	agy, err := m.cfg.AgyBinary()
+	// Version-gated like the job path even though `agy models` itself does not
+	// need stream-json: an agy too old to drive is a configuration problem, and
+	// one clear message about it beats a model list from a binary that cannot
+	// actually run a job.
+	agy, err := m.agyBinaryChecked(ctx)
 	if err != nil {
 		return nil, err
 	}

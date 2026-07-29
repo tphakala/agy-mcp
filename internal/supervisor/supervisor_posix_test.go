@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // These tests drive Run, which only supervises on Linux (process groups, signal

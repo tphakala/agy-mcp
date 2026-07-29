@@ -4,7 +4,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // cancelPollInterval is how often the supervisor checks for the cancel sentinel.

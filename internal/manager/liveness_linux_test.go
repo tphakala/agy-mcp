@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 func TestExpectedComm(t *testing.T) {

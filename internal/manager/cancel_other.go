@@ -2,7 +2,7 @@
 
 package manager
 
-import "github.com/tphakala/agy-mcp/internal/jobstore"
+import "github.com/tphakala/agy-mcp/v2/internal/jobstore"
 
 // requestCancel is never reached on unsupported platforms: proc.Supported is
 // false there, so no job is ever started and processAlive always reports false,

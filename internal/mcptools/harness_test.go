@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 // connect wires a NewServer(mgr) to a fresh client over in-memory transports

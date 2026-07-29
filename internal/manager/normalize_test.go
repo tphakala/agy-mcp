@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // TestNormalizeCwdCollapsesEquivalentSpellings is the core regression guard for
@@ -57,10 +57,10 @@ func TestNormalizeCwdCollapsesEquivalentSpellings(t *testing.T) {
 }
 
 // TestReqFromMetaNormalizesLegacyCwd guards the upgrade window: a job persisted
-// by an older binary may have a raw, un-normalized meta.Cwd. RestoreGate must
-// fold it onto the same normalized gate key a new same-dir run computes, or the
-// two would not serialize and could issue concurrent O_TRUNC writes to the same
-// agy cache entry. Regression test for issue #24.
+// by an older binary may have a raw, un-normalized meta.Cwd, and reqFromMeta
+// must canonicalize it. The cwd no longer feeds the gate key (only a
+// conversation does), but it still has to be normalized so a restored job's cwd
+// matches the spelling StartJob persists.
 func TestReqFromMetaNormalizesLegacyCwd(t *testing.T) {
 	dir := t.TempDir()
 	canonical, err := filepath.EvalSymlinks(dir)
@@ -68,9 +68,21 @@ func TestReqFromMetaNormalizesLegacyCwd(t *testing.T) {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
 	req := reqFromMeta(jobstore.Meta{Cwd: dir + "/"})
-	want := "cwd:" + canonical
-	if got := keyFor(req); got != want {
-		t.Errorf("restored gate key = %q, want %q (legacy cwd not normalized)", got, want)
+	if req.Cwd != canonical {
+		t.Errorf("restored cwd = %q, want %q (legacy cwd not normalized)", req.Cwd, canonical)
+	}
+	// A restored fresh run keys on nothing, so it blocks no new run.
+	if got := keyFor(req); got != "" {
+		t.Errorf("restored gate key = %q, want empty for a fresh run", got)
+	}
+}
+
+// A restored job that was continuing a conversation still keys on it, which is
+// the serialization that remains.
+func TestReqFromMetaKeysOnConversation(t *testing.T) {
+	req := reqFromMeta(jobstore.Meta{Cwd: t.TempDir(), ConversationID: "cid-9"})
+	if got, want := keyFor(req), "conv:cid-9"; got != want {
+		t.Errorf("restored gate key = %q, want %q", got, want)
 	}
 }
 

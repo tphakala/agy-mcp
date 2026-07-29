@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
 )
 
 // TestBuildAgyArgs pins the agy command line: the fixed flags, then --model,
@@ -23,6 +23,7 @@ func TestBuildAgyArgs(t *testing.T) {
 	want := []string{
 		"--dangerously-skip-permissions",
 		"--print-timeout", "20m0s",
+		"--output-format", "stream-json",
 		"--model", "Gemini 3.1 Pro (High)",
 		"--add-dir", "/a", "--add-dir", "/b",
 		"--conversation", "cid-123",
@@ -32,9 +33,16 @@ func TestBuildAgyArgs(t *testing.T) {
 		t.Fatalf("buildAgyArgs full =\n  %q\nwant\n  %q", got, want)
 	}
 
-	// Minimal request: no model, dirs, or conversation -> only timeout and prompt.
+	// Minimal request: no model, dirs, or conversation -> only the fixed flags and
+	// the prompt. --output-format is fixed, not optional: the whole job pipeline
+	// decodes the stream-json events, so it is never omitted.
 	got = buildAgyArgs(StartRequest{Prompt: "hi", Timeout: time.Minute})
-	want = []string{"--dangerously-skip-permissions", "--print-timeout", "1m0s", "-p", "hi"}
+	want = []string{
+		"--dangerously-skip-permissions",
+		"--print-timeout", "1m0s",
+		"--output-format", "stream-json",
+		"-p", "hi",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("buildAgyArgs minimal =\n  %q\nwant\n  %q", got, want)
 	}

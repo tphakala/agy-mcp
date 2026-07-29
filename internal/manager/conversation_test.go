@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tphakala/agy-mcp/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
 )
 
 func writeCache(t *testing.T, dir string, kv map[string]string) string {
@@ -31,35 +31,6 @@ func TestResolveLatestForCwd(t *testing.T) {
 	}
 	if _, ok := resolveLatest(cache, "/missing"); ok {
 		t.Fatal("missing cwd should not resolve")
-	}
-}
-
-func TestCaptureNewUUIDByDiff(t *testing.T) {
-	dir := t.TempDir()
-	cache := writeCache(t, dir, map[string]string{"/w": "old"})
-	before, ok := snapshotCwd(cache, "/w") // "old"
-	if !ok {
-		t.Fatal("snapshot should be readable")
-	}
-	// Simulate agy creating a new conversation for /w.
-	_ = writeCache(t, dir, map[string]string{"/w": "new"})
-	got, changed := captureNewUUID(cache, "/w", before)
-	if !changed || got != "new" {
-		t.Fatalf("capture = %q,%v", got, changed)
-	}
-}
-
-func TestCaptureNoChangeOnFailedRun(t *testing.T) {
-	dir := t.TempDir()
-	cache := writeCache(t, dir, map[string]string{"/w": "old"})
-	before, ok := snapshotCwd(cache, "/w")
-	if !ok {
-		t.Fatal("snapshot should be readable")
-	}
-	// agy failed -> cache unchanged.
-	got, changed := captureNewUUID(cache, "/w", before)
-	if changed || got != "" {
-		t.Fatalf("should not capture stale id: %q,%v", got, changed)
 	}
 }
 
@@ -92,24 +63,6 @@ func TestResolveLatestNotFoundOnTornCache(t *testing.T) {
 	}
 	if _, ok := resolveLatest(p, "/w"); ok {
 		t.Fatal("a torn cache must resolve to not-found, not to a bogus id")
-	}
-}
-
-func TestSnapshotCwdUnknownOnTornCache(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "last_conversations.json")
-	if err := os.WriteFile(p, []byte(`{"torn`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := snapshotCwd(p, "/w"); ok {
-		t.Fatal("a torn cache must report the snapshot as unknown")
-	}
-}
-
-func TestSnapshotCwdOkOnMissingCache(t *testing.T) {
-	before, ok := snapshotCwd(filepath.Join(t.TempDir(), "absent.json"), "/w")
-	if !ok || before != "" {
-		t.Fatalf("missing cache = valid empty snapshot, got %q,%v", before, ok)
 	}
 }
 

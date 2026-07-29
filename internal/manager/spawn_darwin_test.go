@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // TestStartJobAbortsSpawnOnDarwinStartTimeFailure exercises the darwin-only

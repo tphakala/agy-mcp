@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 func testManager(t *testing.T) *manager.Manager {
@@ -195,8 +195,8 @@ func TestHTTPServeAdvertisesInstructions(t *testing.T) {
 		t.Fatal("no InitializeResult")
 	}
 	// Spot-check anchors, not the full text: a use-case cue, the sync entry-point
-	// tool name, and the parallelism caveat that mirrors the cwd conflict error.
-	for _, want := range []string{"Peer review", "agy_run_sync", "conflict error"} {
+	// tool name, and the parallelism guidance that mirrors the gate's real scope.
+	for _, want := range []string{"Peer review", "agy_run_sync", "SAME conversation_id"} {
 		if !strings.Contains(init.Instructions, want) {
 			t.Errorf("server instructions missing %q; got:\n%s", want, init.Instructions)
 		}

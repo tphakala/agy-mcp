@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // TestSignalExitCode checks that a signal-terminated agy is classified by which

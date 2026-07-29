@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // startSleeper spawns a long-running process a liveness test can inspect and then

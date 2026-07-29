@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tphakala/agy-mcp/internal/proc"
+	"github.com/tphakala/agy-mcp/v2/internal/proc"
 )
 
 // noAgyOnPath empties PATH so exec.LookPath("agy") cannot succeed. It models the

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/manager"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // startRunningJobForWait starts a real job under a fake agy that sleeps for the

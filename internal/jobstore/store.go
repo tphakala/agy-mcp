@@ -18,23 +18,18 @@ import (
 // StartTimeTicks, and ConversationID are filled in afterward by atomic rewrites
 // (UpdateMeta / SetConversationID).
 type Meta struct {
-	ID             string    `json:"id"`
-	AgyPath        string    `json:"agy_path"`
-	Args           []string  `json:"args"`
-	Cwd            string    `json:"cwd"`
-	Model          string    `json:"model,omitempty"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	Prompt         string    `json:"prompt"`
-	StartedAt      time.Time `json:"started_at"`
-	PID            int       `json:"pid"`
-	StartTimeTicks uint64    `json:"start_time_ticks,omitempty"` // supervisor start time (Linux /proc ticks, Windows FILETIME); 0 = unknown
-	BootID         string    `json:"boot_id"`
-	CwdUUIDBefore  string    `json:"cwd_uuid_before,omitempty"`
-	// CaptureDisabled marks a fresh run whose pre-run cache snapshot could not
-	// be read: without a trustworthy snapshot a post-run cache diff cannot be
-	// attributed safely, so conversation-id capture is skipped for this job.
-	CaptureDisabled bool          `json:"capture_disabled,omitempty"`
-	Timeout         time.Duration `json:"timeout,omitempty"`
+	ID             string        `json:"id"`
+	AgyPath        string        `json:"agy_path"`
+	Args           []string      `json:"args"`
+	Cwd            string        `json:"cwd"`
+	Model          string        `json:"model,omitempty"`
+	ConversationID string        `json:"conversation_id,omitempty"`
+	Prompt         string        `json:"prompt"`
+	StartedAt      time.Time     `json:"started_at"`
+	PID            int           `json:"pid"`
+	StartTimeTicks uint64        `json:"start_time_ticks,omitempty"` // supervisor start time (Linux /proc ticks, Windows FILETIME); 0 = unknown
+	BootID         string        `json:"boot_id"`
+	Timeout        time.Duration `json:"timeout,omitempty"`
 }
 
 // Exit-code sentinels the supervisor writes to the exit_code file and the
@@ -53,21 +48,85 @@ const (
 // than spelling the literals, so renaming a file is a single edit that the
 // compiler propagates instead of a silent skew caught only at integration time.
 const (
-	MetaFile     = "meta.json" // job metadata (atomic rewrite)
-	OutFile      = "out"       // captured agy stdout
-	ErrFile      = "err"       // captured agy stderr
-	ExitCodeFile = "exit_code" // completion sentinel
-	CancelFile   = "cancel"    // manager -> supervisor cancel request sentinel
+	MetaFile     = "meta.json"     // job metadata (atomic rewrite)
+	OutFile      = "out"           // response text, appended as agy streams it
+	ErrFile      = "err"           // captured agy stderr
+	ExitCodeFile = "exit_code"     // completion sentinel
+	CancelFile   = "cancel"        // manager -> supervisor cancel request sentinel
+	ProgressFile = "progress.json" // latest stream position (atomic rewrite)
+	ResultFile   = "result.json"   // terminal stream-json result payload (written once)
 )
 
-// MetaPath, OutPath, ErrPath, and ExitCodePath join a job directory with the
-// corresponding file name. They are the shared spelling for callers that hold
-// only the directory (the supervisor, the manager's status reader) rather than
-// a store id.
+// MetaPath, OutPath, ErrPath, ExitCodePath, ProgressPath and ResultPath join a
+// job directory with the corresponding file name. They are the shared spelling
+// for callers that hold only the directory (the supervisor, the manager's
+// status reader) rather than a store id.
 func MetaPath(dir string) string     { return filepath.Join(dir, MetaFile) }
 func OutPath(dir string) string      { return filepath.Join(dir, OutFile) }
 func ErrPath(dir string) string      { return filepath.Join(dir, ErrFile) }
 func ExitCodePath(dir string) string { return filepath.Join(dir, ExitCodeFile) }
+func ProgressPath(dir string) string { return filepath.Join(dir, ProgressFile) }
+func ResultPath(dir string) string   { return filepath.Join(dir, ResultFile) }
+
+// Progress is the supervisor's running summary of a job's stream position. It
+// exists so the conversation id agy reports in its init event is readable by
+// the manager while the job is still running, and so a progress notification
+// can name the step the run is on.
+//
+// It is deliberately a separate file rather than a field on Meta. The manager
+// rewrites meta.json after spawning the supervisor (to record the supervisor
+// PID), so a supervisor writing the same file would race that update; the
+// Store mutex serializes writers within one process and cannot span the
+// manager/supervisor process boundary. Splitting the file gives each one a
+// single writer instead.
+type Progress struct {
+	ConversationID string    `json:"conversation_id,omitempty"`
+	StepIndex      int       `json:"step_index"`
+	StepType       string    `json:"step_type,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// WriteProgressDir atomically rewrites a job's progress file.
+func WriteProgressDir(dir string, p Progress) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(dir, ProgressFile, b)
+}
+
+// ReadProgressDir reads a job's progress file. ok is false when the file is
+// absent or undecodable: progress is a hint, never a correctness gate, so a
+// caller treats a failed read as "nothing known yet" rather than an error.
+func ReadProgressDir(dir string) (Progress, bool) {
+	b, err := os.ReadFile(ProgressPath(dir))
+	if err != nil {
+		return Progress{}, false
+	}
+	var p Progress
+	if err := json.Unmarshal(b, &p); err != nil {
+		return Progress{}, false
+	}
+	return p, true
+}
+
+// WriteResultDir atomically writes a job's terminal result payload. The bytes
+// are the marshalled stream-json result event; jobstore owns the file, not its
+// schema, so the payload passes through opaque.
+func WriteResultDir(dir string, b []byte) error {
+	return writeFileAtomic(dir, ResultFile, b)
+}
+
+// ReadResultDir returns a job's terminal result payload. ok is false when no
+// terminal result was recorded, which is what marks a job's captured output as
+// partial.
+func ReadResultDir(dir string) ([]byte, bool) {
+	b, err := os.ReadFile(ResultPath(dir))
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
 
 // CancelPath is the manager -> supervisor cancel sentinel in a job directory.
 // On Windows the manager creates this file to request cancellation and the
@@ -102,17 +161,34 @@ func LoadDir(dir string) (Meta, error) {
 // contract: the sentinel is not sensitive, but a uniform owner-only mode is
 // simpler to reason about.
 func WriteExitCodeDir(dir string, code int) error {
-	tmp, err := os.CreateTemp(dir, "exit_code-*.tmp")
+	return writeFileAtomic(dir, ExitCodeFile, []byte(strconv.Itoa(code)))
+}
+
+// writeFileAtomic writes b to dir/name via a uniquely-named temp file and a
+// rename, so a reader never observes a partially written file and a crash
+// mid-write leaves either the previous contents or none, never a torn mix. It
+// is the single implementation behind every job-directory write (meta, exit
+// code, progress, result), so none of them can drift into a non-atomic
+// shortcut.
+//
+// 0600 throughout: these files record prompts, agy output and job metadata,
+// which often embed source code, so they must not be readable by other users on
+// a multi-user host. os.CreateTemp already creates 0600, so the explicit Chmod
+// only guards a future change to its default.
+func writeFileAtomic(dir, name string, b []byte) error {
+	tmp, err := os.CreateTemp(dir, name+"-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.WriteString(strconv.Itoa(code)); err != nil {
+	if _, err := tmp.Write(b); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return err
 	}
-	// Flush before the rename so a crash cannot leave a renamed but empty sentinel.
+	// Flush the data before the rename so a crash cannot leave a renamed but
+	// empty or short file, which a reader would parse as corrupt rather than
+	// absent.
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
@@ -122,13 +198,11 @@ func WriteExitCodeDir(dir string, code int) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	// os.CreateTemp already makes the temp 0600, so this only guards a future
-	// change to its default mode.
 	if err := os.Chmod(tmpName, 0o600); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, ExitCodePath(dir)); err != nil {
+	if err := os.Rename(tmpName, filepath.Join(dir, name)); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
@@ -241,38 +315,7 @@ func writeMetaAtomic(dir string, m Meta) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, "meta-*.json.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	// Flush the data to disk before the rename so a crash cannot leave a renamed
-	// but zero-length meta.json, which would orphan the job (Load fails, GC skips).
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	// 0600: meta.json records the prompt and cwd; keep it owner-only. os.CreateTemp
-	// already makes the temp 0600, so this only guards against a future mode change.
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, MetaPath(dir)); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return writeFileAtomic(dir, MetaFile, b)
 }
 
 // SetConversationID persists convID as the job's conversation id, but only when

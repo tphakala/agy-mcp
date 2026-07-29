@@ -1,17 +1,20 @@
 package manager
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/streamjson"
 )
 
 // maxReadBytes caps how much of a job's out/err file is read into memory, so a
@@ -36,14 +39,21 @@ const (
 type Status struct {
 	State          string // running | done | failed | cancelled
 	Elapsed        time.Duration
-	Result         string // present when done: captured stdout
-	Error          string // present when failed: stderr tail + exit code
+	Result         string // present when done: the assistant's response
+	Error          string // present when failed: agy's own message, or a stderr tail + exit code
 	ConversationID string
-	// Partial marks a done job whose result was recovered from the out file
-	// without a completion sentinel (the supervisor died before writing one,
-	// e.g. across a reboot). The captured output may be truncated, so a caller
-	// should not treat it as a guaranteed-complete result.
+	// Partial marks a done job whose result was reconstructed from the streamed
+	// text because agy never emitted a terminal result event (it was killed, or
+	// the supervisor died mid-stream). The text may be truncated or may include
+	// intermediate turns, so a caller should not treat it as the final answer.
 	Partial bool
+	// NumTurns and Usage are agy's own accounting, present only once a terminal
+	// result event has been recorded.
+	NumTurns int
+	Usage    *streamjson.Usage
+	// StepType names the stream step the job is on, for progress reporting. It
+	// is a hint: empty until the first step arrives, and stale by up to one poll.
+	StepType string
 }
 
 // Status derives a job's status from the on-disk store.
@@ -59,6 +69,16 @@ func (m *Manager) Status(id string) (Status, error) {
 	st := Status{
 		Elapsed:        time.Since(meta.StartedAt),
 		ConversationID: meta.ConversationID,
+	}
+	// The progress file is what makes a running job's conversation id readable:
+	// the supervisor writes it as soon as agy's init event names the
+	// conversation, which is well before the run produces an answer. meta wins
+	// when set, since an explicit continuation already knows its conversation.
+	if prog, ok := jobstore.ReadProgressDir(dir); ok {
+		if st.ConversationID == "" {
+			st.ConversationID = prog.ConversationID
+		}
+		st.StepType = prog.StepType
 	}
 
 	if code, ok := m.store.ExitCode(id); ok {
@@ -80,7 +100,20 @@ func (m *Manager) Status(id string) (Status, error) {
 	// left to write one), so freeze elapsed at the best available end time before
 	// classifying the outcome, so a recovered job's elapsed does not keep growing.
 	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
-	// If output was captured, recover it.
+	return recoverInterrupted(dir, st), nil
+}
+
+// recoverInterrupted classifies a job whose supervisor vanished without writing
+// the exit-code sentinel (killed by a reboot, say).
+//
+// A terminal result payload can still be present: the supervisor writes it
+// before the sentinel, so a supervisor that died between those two writes left a
+// complete and trustworthy result. Only when there is no payload does the
+// streamed text become the best available answer, and then it is partial.
+func recoverInterrupted(dir string, st Status) Status {
+	if res, ok := readResultPayload(dir); ok {
+		return applyResult(st, res)
+	}
 	out, rerr := readFile(jobstore.OutPath(dir))
 	switch {
 	case rerr != nil:
@@ -89,36 +122,43 @@ func (m *Manager) Status(id string) (Status, error) {
 	case out != "":
 		st.State = StateDone
 		st.Result = out
-		st.Partial = true // recovered without a sentinel; the output may be truncated
-		st.ConversationID = m.lazyCaptureConversationID(meta)
+		st.Partial = true
 	default:
 		st.State = StateFailed
 		st.Error = "job process exited without writing a result (interrupted)"
 	}
-	return st, nil
+	return st
 }
 
 // statusFromExitCode fills st from a recorded exit-code sentinel.
+//
+// agy's own result payload, when present, outranks the exit code for describing
+// the outcome: agy reports failures it survives (an unresolvable model, its own
+// print-timeout) in band with a specific message, where the exit code is only
+// ever 1. The code still owns every case where no payload could be written,
+// which is exactly the terminations agy-mcp itself performs.
 func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, code int) Status {
 	// The job is terminal, so freeze Elapsed at the completion time rather than
 	// letting it grow forever as time.Since(StartedAt).
 	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
+	res, hasResult := readResultPayload(dir)
 	switch code {
 	case 0:
-		// Capture the conversation id first: a clean exit means the backend
-		// conversation advanced, so even if the local out file cannot be read the
-		// caller still needs the id to continue the conversation.
-		st.ConversationID = m.lazyCaptureConversationID(meta)
-		out, err := readFile(jobstore.OutPath(dir))
-		if err != nil {
-			// The job exited cleanly but we cannot read what it produced. Report
-			// that as a failure rather than a successful empty result.
-			st.State = StateFailed
-			st.Error = fmt.Sprintf("job completed but its output could not be read: %v", err)
+		if !hasResult {
+			// A clean exit whose terminal event never arrived. Report the streamed
+			// text as a partial result rather than asserting a complete empty answer.
+			out, err := readFile(jobstore.OutPath(dir))
+			if err != nil {
+				st.State = StateFailed
+				st.Error = fmt.Sprintf("job completed but its output could not be read: %v", err)
+				return st
+			}
+			st.State = StateDone
+			st.Result = out
+			st.Partial = true
 			return st
 		}
-		st.State = StateDone
-		st.Result = out
+		return applyResult(st, res)
 	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
 		st.State = StateCancelled
 	case jobstore.ExitTimeout:
@@ -132,9 +172,68 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		st.Error = spawnFailMessage(dir)
 	default:
 		st.State = StateFailed
-		st.Error = errorSummary(dir, code)
+		if hasResult && res.Error != "" {
+			st.Error = res.Error
+		} else {
+			st.Error = errorSummary(dir, code)
+		}
+	}
+	// A cancelled or timed-out run still has a conversation worth continuing, so
+	// carry the id (and the accounting) from any payload that did get written.
+	if hasResult {
+		st = carryResultMetadata(st, res)
 	}
 	return st
+}
+
+// applyResult fills st from a terminal result payload, which is the complete and
+// authoritative description of how the run ended.
+func applyResult(st Status, res streamjson.Result) Status {
+	st = carryResultMetadata(st, res)
+	if res.Status == streamjson.StatusError {
+		st.State = StateFailed
+		st.Error = res.Error
+		if st.Error == "" {
+			// agy said it failed but gave no reason. Say that, rather than
+			// reporting a failure with a blank cause.
+			st.Error = "agy reported an error without a message"
+		}
+		return st
+	}
+	st.State = StateDone
+	// Match readFile's trimming so a result reads identically whether it came
+	// from the payload or from the streamed fallback.
+	st.Result = strings.TrimRight(res.Response, "\n")
+	return st
+}
+
+// carryResultMetadata copies the fields that are worth reporting regardless of
+// how the run ended: the conversation to continue, and agy's own accounting.
+func carryResultMetadata(st Status, res streamjson.Result) Status {
+	if st.ConversationID == "" {
+		st.ConversationID = res.ConversationID
+	}
+	st.NumTurns = res.NumTurns
+	st.Usage = res.Usage
+	return st
+}
+
+// readResultPayload reads a job's terminal result event. ok is false when the
+// run never reached one, which is what marks its captured output partial.
+func readResultPayload(dir string) (streamjson.Result, bool) {
+	b, ok := jobstore.ReadResultDir(dir)
+	if !ok {
+		return streamjson.Result{}, false
+	}
+	var res streamjson.Result
+	if err := json.Unmarshal(b, &res); err != nil {
+		// The supervisor wrote this file itself, so a decode failure means it was
+		// truncated or corrupted on disk. Treat it as absent: the streamed text is
+		// then reported as a partial result, which is honest, rather than erroring.
+		log.Printf("job dir %s: result payload unreadable: %v", dir, err)
+		return streamjson.Result{}, false
+	}
+	return res, true
 }
 
 // State returns just the job's state, without paying to read its (potentially

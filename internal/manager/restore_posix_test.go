@@ -3,15 +3,14 @@
 package manager
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // startFakeLiveSupervisor starts a real, long-lived process to stand in for a
@@ -36,20 +35,27 @@ func startFakeLiveSupervisor(t *testing.T) (pid int, exePath string) {
 	return cmd.Process.Pid, exePath
 }
 
+// liveConvID is the conversation a createLiveJob job is running, derived from
+// its id. Restored jobs are given one because a conversation is the only thing
+// that still keys the gate: a fresh run keys on nothing, so a restored fresh run
+// would block nothing and could not exercise key restoration at all.
+func liveConvID(id string) string { return "conv-" + id }
+
 // createLiveJob is shared by both "live" and "dead" restore tests: it records
 // pid's real start time when readable (a genuinely live pid) and otherwise
 // leaves StartTimeTicks at its zero value (a killed-and-reaped pid, whose
-// start time can no longer be read) — darwin's processAlive fails closed on a
+// start time can no longer be read). darwin's processAlive fails closed on a
 // live pid with no recorded start time, but a dead pid still reads as dead on
 // both platforms via kill(pid,0) regardless of StartTimeTicks.
 func createLiveJob(t *testing.T, m *Manager, id, cwd string, pid int) {
 	t.Helper()
 	meta := jobstore.Meta{
-		ID:        id,
-		Cwd:       cwd,
-		PID:       pid,
-		BootID:    readBootID(),
-		StartedAt: time.Now(),
+		ID:             id,
+		Cwd:            cwd,
+		ConversationID: liveConvID(id),
+		PID:            pid,
+		BootID:         readBootID(),
+		StartedAt:      time.Now(),
 	}
 	if ticks, ok := readStartTimeTicks(pid); ok {
 		meta.StartTimeTicks = ticks
@@ -71,8 +77,13 @@ func TestRestoreGateBlocksConflictingRun(t *testing.T) {
 		t.Fatalf("RestoreGate: %v", err)
 	}
 
-	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err == nil {
-		t.Fatal("a same-cwd run should be blocked by the restored live job's key")
+	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd, ConversationID: liveConvID("live-1")}); err == nil {
+		t.Fatal("a run continuing the same conversation should be blocked by the restored live job's key")
+	}
+	// A fresh run in that same directory is not blocked: fresh runs no longer key
+	// on the cwd.
+	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err != nil {
+		t.Fatalf("a fresh same-cwd run must not be blocked by a restored job: %v", err)
 	}
 }
 
@@ -120,9 +131,10 @@ func TestRestoreGateReleasesKeyWhenSupervisorExits(t *testing.T) {
 		t.Fatalf("RestoreGate: %v", err)
 	}
 
-	// While the supervisor is alive the key is held: a same-cwd run is blocked.
-	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err == nil {
-		t.Fatal("expected the restored live job to block a same-cwd run")
+	// While the supervisor is alive the key is held: a run continuing the same
+	// conversation is blocked.
+	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd, ConversationID: liveConvID("live-1")}); err == nil {
+		t.Fatal("expected the restored live job to block a run on the same conversation")
 	}
 
 	// The supervisor exits; reap it so processAlive turns false.
@@ -236,6 +248,7 @@ func TestRestoreAndCollectCollectsExpiredAndRestoresLive(t *testing.T) {
 	if _, err := m.store.Create(jobstore.Meta{
 		ID:             "live-1",
 		Cwd:            liveCwd,
+		ConversationID: "live-conv",
 		PID:            pid,
 		BootID:         readBootID(),
 		StartTimeTicks: startTicks,
@@ -257,53 +270,49 @@ func TestRestoreAndCollectCollectsExpiredAndRestoresLive(t *testing.T) {
 	if _, err := m.store.Load("live-1"); err != nil {
 		t.Fatalf("the expired-but-alive job must be kept: %v", err)
 	}
-	// The live job's gate key is held, so a same-cwd run is blocked.
-	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: liveCwd}); err == nil {
-		t.Fatal("the restored live job must block a same-cwd run")
+	// The live job's gate key is held, so a run continuing its conversation is
+	// blocked.
+	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: liveCwd, ConversationID: "live-conv"}); err == nil {
+		t.Fatal("the restored live job must block a run on its conversation")
 	}
 }
 
-// A restored fresh run must have its conversation id captured by the watcher
-// when its supervisor finishes, exactly like the StartJob completion path, and
-// the id must land on disk without any Status call (the watcher, not a poller,
-// owns the capture while the gate key is held).
-func TestRestoreGateCapturesConversationIDOnExit(t *testing.T) {
+// A restored job reports the conversation id the supervisor recorded in its
+// progress file, with no capture step and no Status-driven polling: the id is
+// already on disk by the time the manager restarts.
+func TestRestoreGateReportsSupervisorRecordedConversationID(t *testing.T) {
 	pid, exePath := startFakeLiveSupervisor(t)
 	m := newManager(t, managerOpts{agyPath: "/usr/bin/agy", supervisorExe: exePath, defaultTimeout: time.Minute, maxConcurrency: 4})
 	m.restoredPollInterval = 20 * time.Millisecond
 
 	cwd := t.TempDir()
-	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
-	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
-		t.Fatal(err)
+	// A fresh run: meta carries no conversation id, so the only source is the
+	// progress file the supervisor wrote when agy's init event arrived.
+	meta := jobstore.Meta{ID: "restored-fresh", Cwd: cwd, PID: pid, BootID: readBootID(), StartedAt: time.Now()}
+	if ticks, ok := readStartTimeTicks(pid); ok {
+		meta.StartTimeTicks = ticks
 	}
-	m.cacheFile = cachePath
+	dir, err := m.store.Create(meta)
+	if err != nil {
+		t.Fatalf("create live job: %v", err)
+	}
 
-	createLiveJob(t, m, "restored-fresh", cwd, pid)
+	const uuid = "deadbeef-1111-2222-3333-444455556666"
+	if err := jobstore.WriteProgressDir(dir, jobstore.Progress{ConversationID: uuid, StepType: "agent_response"}); err != nil {
+		t.Fatalf("write progress: %v", err)
+	}
 
 	if err := m.RestoreGate(); err != nil {
 		t.Fatalf("RestoreGate: %v", err)
 	}
-	if !m.CapturePending("restored-fresh") {
-		t.Fatal("a restored fresh run must have its capture armed")
+	st, err := m.Status("restored-fresh")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
 	}
-
-	// The job "finishes": agy's cache gains the new conversation, then the
-	// supervisor records exit 0 (the watcher treats the sentinel as terminal
-	// even while the fake supervisor process lingers).
-	const uuid = "deadbeef-1111-2222-3333-444455556666"
-	if err := os.WriteFile(cachePath, fmt.Appendf(nil, `{%q:%q}`, cwd, uuid), 0o644); err != nil {
-		t.Fatal(err)
+	if st.ConversationID != uuid {
+		t.Fatalf("ConversationID = %q, want %q from the progress file", st.ConversationID, uuid)
 	}
-	if err := m.store.WriteExitCode("restored-fresh", 0); err != nil {
-		t.Fatal(err)
+	if st.State != StateRunning {
+		t.Fatalf("State = %q, want running", st.State)
 	}
-
-	testutil.WaitFor(t, 3*time.Second, func() bool {
-		meta, err := m.store.Load("restored-fresh")
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		return meta.ConversationID == uuid
-	}, "watcher never captured the conversation id")
 }

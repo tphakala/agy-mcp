@@ -3,18 +3,23 @@ package manager
 import "testing"
 
 func TestKeyForRequest(t *testing.T) {
+	// A resolved conversation is the only thing that still serializes: concurrent
+	// agy runs on one conversation trigger its session-lock hang.
 	if k := keyFor(StartRequest{ConversationID: "abc"}); k != "conv:abc" {
 		t.Errorf("conversation key = %q", k)
 	}
-	if k := keyFor(StartRequest{ContinueLatest: true, Cwd: "/w"}); k != "cwd:/w" {
-		t.Errorf("continue-latest key = %q", k)
+	// StartJob resolves continue_latest to a concrete id before computing the key,
+	// so by this point the flag alone carries no conversation and keys on nothing.
+	if k := keyFor(StartRequest{ContinueLatest: true, Cwd: "/w"}); k != "" {
+		t.Errorf("unresolved continue-latest key = %q, want empty", k)
 	}
-	// A fresh run now serializes on its cwd, so two new conversations created in the
-	// same directory cannot interleave and misattribute their captured UUIDs.
-	if k := keyFor(StartRequest{Cwd: "/w"}); k != "cwd:/w" {
-		t.Errorf("fresh run should serialize on cwd, got %q", k)
+	// A fresh run keys on nothing: the cwd key existed only so the old
+	// snapshot-diff capture could read agy's shared cache unambiguously, and agy
+	// now reports the id in its own stream. Fresh same-cwd runs proceed in
+	// parallel.
+	if k := keyFor(StartRequest{Cwd: "/w"}); k != "" {
+		t.Errorf("fresh run key = %q, want empty", k)
 	}
-	// With no cwd at all there is nothing to serialize on.
 	if k := keyFor(StartRequest{}); k != "" {
 		t.Errorf("keyless request = %q", k)
 	}

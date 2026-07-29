@@ -5,7 +5,7 @@ package supervisor
 import (
 	"os/exec"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // signalExitCode stub so the package builds on platforms without a supervision

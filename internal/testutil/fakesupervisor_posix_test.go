@@ -3,10 +3,14 @@
 package testutil
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/streamjson"
 )
 
 // runSupervisor executes the fake supervisor the way the manager does
@@ -41,15 +45,47 @@ func TestFakeSupervisorFixedOutAndExit(t *testing.T) {
 	}
 }
 
-func TestFakeSupervisorRunsAgy(t *testing.T) {
-	agy := WriteFakeAgy(t, FakeAgy{Stdout: "hello", Stderr: "warn", Exit: 2})
-	sup := WriteFakeSupervisor(t, FakeSupervisor{AgyPath: agy})
+// With Agy set, the fake writes the same job-dir files the real supervisor
+// derives from the stream: the decoded response in out, the conversation in
+// progress.json, and the terminal payload in result.json.
+func TestFakeSupervisorRunsAgyAndWritesStreamFiles(t *testing.T) {
+	cfg := FakeAgy{Stdout: "hello", Stderr: "warn", Exit: 2}
+	agy := WriteFakeAgy(t, cfg)
+	sup := WriteFakeSupervisor(t, FakeSupervisor{AgyPath: agy, Agy: &cfg})
 	dir := runSupervisor(t, sup)
 	if got := readFile(t, filepath.Join(dir, "out")); got != "hello" {
-		t.Errorf("out = %q, want %q", got, "hello")
+		t.Errorf("out = %q, want the decoded response %q", got, "hello")
 	}
 	if got := readFile(t, filepath.Join(dir, "err")); got != "warn" {
 		t.Errorf("err = %q, want %q", got, "warn")
+	}
+	if got := readFile(t, filepath.Join(dir, "exit_code")); got != "2" {
+		t.Errorf("exit_code = %q, want %q", got, "2")
+	}
+	var res streamjson.Result
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(dir, "result.json"))), &res); err != nil {
+		t.Fatalf("result.json: %v", err)
+	}
+	if res.Response != "hello" || res.ConversationID != cfg.ConvID() {
+		t.Errorf("result.json = %+v, want the response and conversation of the run", res)
+	}
+	var prog jobstore.Progress
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(dir, "progress.json"))), &prog); err != nil {
+		t.Fatalf("progress.json: %v", err)
+	}
+	if prog.ConversationID != cfg.ConvID() {
+		t.Errorf("progress conversation = %q, want %q", prog.ConversationID, cfg.ConvID())
+	}
+}
+
+// Without Agy the fake only runs the binary; agy's stdout is discarded because
+// it is an event stream the real supervisor decodes rather than copies.
+func TestFakeSupervisorRunsAgyWithoutStreamFiles(t *testing.T) {
+	agy := WriteFakeAgy(t, FakeAgy{Stdout: "hello", Stderr: "warn", Exit: 2})
+	sup := WriteFakeSupervisor(t, FakeSupervisor{AgyPath: agy})
+	dir := runSupervisor(t, sup)
+	if _, err := os.Stat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
+		t.Errorf("out should not exist without an Agy config, stat err = %v", err)
 	}
 	if got := readFile(t, filepath.Join(dir, "exit_code")); got != "2" {
 		t.Errorf("exit_code = %q, want %q", got, "2")

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // failUpdateStore wraps a real store but fails UpdateMeta whenever failUpdateMeta is
@@ -98,7 +98,8 @@ func waitForEmptyStore(t *testing.T, m *Manager) {
 // isRetryableGateRefusal reports whether err is one of the known transient
 // "another job holds this key, try again" outcomes a same-key StartJob retry
 // loop should keep polling through, rather than treating as a hard failure:
-//   - "conflicting": admit's acquireKeyBusy branch (manager.go), the common case.
+//   - "already running on this conversation": admit's acquireKeyBusy branch
+//     (manager.go), the common case.
 //   - "concurrency cap": admit's acquireAtCap branch, a sibling refusal for the
 //     same class of outcome (see concurrency.go's comment on why the two are
 //     reported with different text).
@@ -115,6 +116,6 @@ func isRetryableGateRefusal(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "conflicting") ||
+	return strings.Contains(msg, "already running on this conversation") ||
 		strings.Contains(msg, "concurrency cap")
 }

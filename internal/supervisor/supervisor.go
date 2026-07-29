@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/proc"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/proc"
 )
 
 // killGrace is how long the supervisor waits after SIGTERM before escalating to
@@ -125,8 +125,15 @@ func run(jobDir string, grace time.Duration) error {
 	cmd.Dir = m.Cwd
 	cmd.Env = os.Environ() // agy needs HOME/PATH and its OAuth/API credentials
 	cmd.Stdin = devnull
-	cmd.Stdout = outF
 	cmd.Stderr = errF
+	// agy runs with --output-format stream-json, so stdout is an event stream to
+	// decode rather than text to copy. Reading it is what makes the conversation
+	// id observable while the run is still going (the init event carries it) and
+	// what turns an interrupted run into recoverable partial text.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
 	// Put agy in its own process group / job so the whole tree can be terminated
 	// together on cancel or timeout.
 	proc.ConfigureGroup(cmd)
@@ -187,8 +194,20 @@ func run(jobDir string, grace time.Duration) error {
 		}
 	}()
 
+	// Drain and decode the event stream before Wait. cmd.Wait closes the pipe as
+	// soon as it sees the process exit, so calling it first would truncate the
+	// stream and lose the terminal result event. A hung agy cannot park this
+	// read: the timer goroutine above terminates the process group, which closes
+	// the pipe and ends the loop.
+	outcome := consumeStream(jobDir, stdout, outF)
+
 	waitErr := cmd.Wait()
 	close(done)
+
+	// Record what the stream reported, before the exit-code sentinel: the
+	// manager treats the sentinel as the completion signal, so anything written
+	// after it could be missed by a poller that observes the sentinel first.
+	outcome.persist(jobDir, errF)
 
 	code := 0
 	if waitErr != nil {

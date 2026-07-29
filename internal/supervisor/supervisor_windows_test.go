@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // comspec is the cmd.exe interpreter used to drive the fake agy commands. The
