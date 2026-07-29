@@ -317,9 +317,7 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 // answer. Both remaining signals fail open in the same direction, which is the
 // direction that misreports.
 func streamJSONRun(dir string, meta jobstore.Meta) bool {
-	if slices.ContainsFunc(meta.Args, func(a string) bool {
-		return a == outputFormatFlag || strings.HasPrefix(a, outputFormatFlag+"=")
-	}) {
+	if argsSelectOutputFormat(meta.Args) {
 		return true
 	}
 	if _, ok := jobstore.ReadProgressDir(dir); ok {
@@ -327,6 +325,19 @@ func streamJSONRun(dir string, meta jobstore.Meta) bool {
 	}
 	_, err := os.Stat(jobstore.ResultPath(dir))
 	return err == nil
+}
+
+// argsSelectOutputFormat reports whether persisted args name an output format,
+// in either spelling the Go flag package accepts. It exists as a named function
+// rather than inline so the test that validates the terminal-contract table can
+// ask exactly the question streamJSONRun asks: a second copy of the predicate
+// would let a row spelled with the inline form be classified as a legacy job
+// dir by the validator and as a stream-json run by the code, which is the one
+// disagreement a self-checking table cannot catch.
+func argsSelectOutputFormat(args []string) bool {
+	return slices.ContainsFunc(args, func(a string) bool {
+		return a == outputFormatFlag || strings.HasPrefix(a, outputFormatFlag+"=")
+	})
 }
 
 // carryText attaches the answer a run produced and records whether this build

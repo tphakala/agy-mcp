@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -319,9 +318,10 @@ func terminalCases() []terminalCase {
 func TestStatusTerminalContractTableIsWellFormed(t *testing.T) {
 	for _, tc := range terminalCases() {
 		vouched := tc.res != nil && tc.res.Status == streamjson.StatusSuccess && tc.res.Response != ""
-		legacy := tc.res == nil && tc.code == 0 && !slices.ContainsFunc(tc.args, func(a string) bool {
-			return a == outputFormatFlag
-		})
+		// Ask the production predicate, not a copy of it: a validator that
+		// classified a row differently from the code would pass exactly the rows
+		// it exists to catch.
+		legacy := tc.res == nil && tc.code == 0 && !argsSelectOutputFormat(tc.args)
 		if tc.wantResult != "" && !tc.wantPartial && !vouched && !legacy {
 			t.Errorf("row %q declares a result that is neither partial, nor vouched for by a SUCCESS payload response, nor a legacy job dir", tc.name)
 		}
