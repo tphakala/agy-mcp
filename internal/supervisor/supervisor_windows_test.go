@@ -3,6 +3,7 @@ package supervisor
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,12 +24,21 @@ func comspec() string {
 
 // writeMetaWin writes meta.json into a job dir for a fake-agy command. agyCmd is
 // the cmd.exe command line the supervisor runs (e.g. "echo hi & exit 0").
+//
+// The command is terminated with "& rem" because the supervisor appends
+// "--output-format stream-json" to any args that do not already select a format
+// (ensureStreamJSON). With cmd.exe those two tokens land on the END of the
+// command line, so without a trailing comment to absorb them they corrupt the
+// last command: "ping -n 60 127.0.0.1 --output-format stream-json" is a usage
+// error that exits 1 immediately, and the timeout and cancel this fixture exists
+// to test then never fire. A real agy takes the flags as flags; cmd.exe cannot,
+// so the fixture absorbs them instead.
 func writeMetaWin(t *testing.T, dir, agyCmd string, timeout time.Duration) {
 	t.Helper()
 	m := jobstore.Meta{
 		ID:        "j",
 		AgyPath:   comspec(),
-		Args:      []string{"/c", agyCmd},
+		Args:      []string{"/c", agyCmd + " & rem"},
 		Cwd:       dir,
 		StartedAt: time.Now(),
 		Timeout:   timeout,
@@ -55,11 +65,25 @@ func readExit(t *testing.T, dir string) int {
 	return code
 }
 
-// TestRunCapturesOutputAndExit: a fake agy that prints to stdout and stderr and
-// exits non-zero must have its output captured and its exit code recorded.
+// TestRunCapturesOutputAndExit: a fake agy that emits a stream-json event stream
+// on stdout and a warning on stderr, then exits non-zero, must have its decoded
+// response captured in out, its stderr captured, and its exit code recorded.
+//
+// The stream is staged in a file and replayed with `type` rather than echoed:
+// the events are JSON, and quoting braces and double quotes through a cmd.exe
+// command line is a source of failures unrelated to what this test covers.
 func TestRunCapturesOutputAndExit(t *testing.T) {
 	dir := t.TempDir()
-	writeMetaWin(t, dir, "echo review text& echo warn 1>&2& exit 3", time.Minute)
+	// An agent_response step is what fills out; the result event is what fills
+	// result.json. A real run emits both.
+	stream := `{"event":"init","conversation_id":"c-win"}` + "\n" +
+		`{"event":"step_update","step_update":{"step_index":0,"step_type":"agent_response","text_delta":"review text"}}` + "\n" +
+		`{"event":"result","result":{"conversation_id":"c-win","status":"SUCCESS","response":"review text"}}` + "\n"
+	payload := filepath.Join(dir, "stream.ndjson")
+	if err := os.WriteFile(payload, []byte(stream), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeMetaWin(t, dir, `type "`+payload+`"& echo warn 1>&2& exit 3`, time.Minute)
 	if err := Run(dir); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
