@@ -178,6 +178,35 @@ var parseCases = []parseCase{
 		name: "a spliced version still beats later noise",
 		raw:  "agy1.0.5\nplugin 3.0.0\n",
 		want: Version{1, 0, 5},
+	},
+
+	// --- the mirror of v5's bug: a sub-component version printed BEFORE the
+	// real one. Taking the first candidate fixed the trailing case and left
+	// this one, which is the same false refusal. A line holding nothing but a
+	// version outranks a bare triple anywhere else, which is what settles it.
+	{
+		name: "a lower protocol version printed above a bare version line",
+		raw:  "agy: warning: mcp protocol 0.1.0 unsupported\nagy 1.1.8\n",
+		want: Version{1, 1, 8},
+	}, {
+		name: "a deprecated schema version printed above the version",
+		raw:  "warning: config schema 0.2.0 is deprecated\n1.1.8\n",
+		want: Version{1, 1, 8},
+	}, {
+		name: "a lower plugin version printed above the version",
+		raw:  "plugin api 0.9.0 loaded\nagy version 1.1.8\n",
+		want: Version{1, 1, 8},
+	}, {
+		// The prog/x.y.z framing curl, wget and git all print. Requiring a
+		// separator on only one side read it as a path component and demoted
+		// the real version below unrelated noise further down.
+		name: "prog/version framing is not a path component",
+		raw:  "agy/1.1.8\nplugin api 0.9.0\n",
+		want: Version{1, 1, 8},
+	}, {
+		name: "a trailing platform suffix is not a path component",
+		raw:  "1.1.8/linux-amd64\nplugin api 0.9.0\n",
+		want: Version{1, 1, 8},
 	}, {
 		name: "a quoted version",
 		raw:  "agy version \"1.2.0\" (linux/amd64)\n",

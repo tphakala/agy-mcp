@@ -126,6 +126,21 @@ func TestRunMarksStreamJSONBeforeAgySpeaks(t *testing.T) {
 	}
 }
 
+// The marker says "this run was driven through stream-json", so a job whose
+// args ask for a different format must not get one: ensureStreamJSON leaves
+// such args alone, agy is exec'd as JSON, and no event stream is ever produced.
+func TestRunSkipsTheMarkerForAnotherOutputFormat(t *testing.T) {
+	agy := writeScript(t, "exit 0\n")
+	dir := writeJob(t, agy, []string{"--output-format=json", "-p", "hi"})
+
+	if err := run(dir, 100*time.Millisecond, drainGrace); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, ok := jobstore.ReadProgressDir(dir); ok {
+		t.Fatal("a job exec'd as JSON left a stream-json marker, which claims a stream it never produced")
+	}
+}
+
 // A descendant that escapes the process group holds the inherited stdout
 // descriptor open, so the stream never reaches EOF. The supervisor must still
 // reap agy and write the exit-code sentinel instead of stranding the job in

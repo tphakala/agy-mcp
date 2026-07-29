@@ -70,9 +70,10 @@ func (v Version) AtLeast(o Version) bool {
 type tier int
 
 const (
-	tierNone     tier = iota // no candidate at all; Parse reports an error
-	tierEmbedded             // part of a path or a longer dotted chain: not a version
-	tierCredible             // could be a version
+	tierNone      tier = iota // no candidate at all; Parse reports an error
+	tierEmbedded              // part of a path or a longer dotted chain: not a version
+	tierCredible              // could be a version
+	tierWholeLine             // the line holds nothing else: this is what agy itself prints
 )
 
 // wholeLineRE matches a line that IS a version: the triple alone, after nothing
@@ -149,25 +150,32 @@ func (c candidate) version() (Version, bool) {
 // Every dotted triple is collected, those that cannot be a version are dropped,
 // and of the rest the first at the best tier present wins.
 //
-// FIRST, not lowest or highest, and that choice is the one place a maintainer
-// should not "improve" without reading this. The two ways of being wrong are
-// not symmetric, but not in the direction that looks obvious. Reading too HIGH
-// bypasses the floor, and a bypass degrades LOUDLY: agy is a Go flag CLI, so a
-// pre-1.1.8 binary handed an unknown --output-format exits 2 with usage text
-// and the job reports failed with that text attached. Reading too LOW refuses a
-// working binary, and the caller then declines to start any job at all. So the
-// expensive failure is the false refusal, and a rule that resolves ambiguity by
-// taking the smallest number manufactures exactly that: "agy 1.1.8 (built with
-// 0.9.1 toolchain)" is an ordinary thing for a CLI to print, and reading it as
-// 0.9.1 takes the whole server down.
+// The tiers do the real work, and the top one is why: agy prints its version
+// alone on a line, so a line holding nothing else is the strongest evidence the
+// output can offer and it outranks any bare triple elsewhere. That is what
+// keeps a diagnostic printed ABOVE the version from displacing it.
 //
-// Taking the first also happens to disarm the upgrade notice that broke the
-// previous rework, since such a line follows the version it is about.
+// Within a tier, FIRST, not lowest or highest, and that choice is the one place
+// a maintainer should not "improve" without reading this. The two ways of being
+// wrong are not symmetric, but not in the direction that looks obvious. Reading
+// too HIGH bypasses the floor, and a bypass degrades LOUDLY: agy is a Go flag
+// CLI, so a pre-1.1.8 binary handed an unknown --output-format exits 2 with
+// usage text and the job reports failed with that text attached. Reading too
+// LOW refuses a working binary, and the caller then declines to start any job
+// at all. So the expensive failure is the false refusal, and a rule that
+// resolves ambiguity by taking the smallest number manufactures exactly that:
+// "agy 1.1.8 (built with 0.9.1 toolchain)" is an ordinary thing for a CLI to
+// print, and reading it as 0.9.1 takes the whole server down. Sub-component
+// versions are usually 0.x, so "prefer the smaller" and "prefer the later" both
+// point the wrong way for them.
 //
-// What remains genuinely unresolvable is free-standing noise printed BEFORE the
-// version ("see 9.9.9 for details" above an "agy 1.0.5" line). No rule tried
-// here has distinguished that from the version itself without breaking a case
-// that matters more, and it lands on the loud side of the asymmetry above.
+// Taking the first also happens to disarm the upgrade notice that broke an
+// earlier rework, since such a line follows the version it is about.
+//
+// What remains unresolvable is a bare triple sharing the top tier with the real
+// version and printed before it, on output where agy does NOT put its version
+// on a line of its own. No rule tried here has separated those without breaking
+// a case that matters more.
 //
 // It reports an error only when no usable triple appears at all, which includes
 // output whose only triples are date-shaped.
@@ -197,7 +205,7 @@ func Parse(raw string) (Version, error) {
 // triples that are fragments of the same version rather than versions.
 func candidates(line string) []candidate {
 	if m := wholeLineRE.FindStringSubmatch(line); m != nil {
-		return []candidate{{tier: tierCredible, m: m}}
+		return []candidate{{tier: tierWholeLine, m: m}}
 	}
 	var out []candidate
 	for _, loc := range tripleRE.FindAllStringSubmatchIndex(line, -1) {
@@ -240,8 +248,14 @@ func classify(line string, start, end int) tier {
 		return tierEmbedded
 	}
 	// A path component: /opt/agy/2.0.0/bin, or C:\agy\2.0.0\bin. This is the
-	// demotion that issue #98 turned on, so it is the one worth keeping.
-	if endsWithPathSep(trimVPrefix(before)) || startsWithPathSep(after) {
+	// demotion issue #98 turned on, so it is the one worth keeping.
+	//
+	// A separator is required on BOTH sides, because a component of a path has
+	// one. Accepting either side alone swept up the "prog/x.y.z" framing that
+	// curl, wget and git all print: "agy/1.1.8" is a version, not a directory,
+	// and demoting it let an unrelated triple further down the output win. The
+	// same goes for a trailing platform suffix like "1.1.8/linux-amd64".
+	if endsWithPathSep(trimVPrefix(before)) && startsWithPathSep(after) {
 		return tierEmbedded
 	}
 	return tierCredible

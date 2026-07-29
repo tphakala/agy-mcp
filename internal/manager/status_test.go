@@ -732,6 +732,45 @@ func TestStatusUpgradedJobWithNoEventsIsPartial(t *testing.T) {
 	}
 }
 
+// A result payload that exists but cannot be decoded reports as absent, so the
+// job lands in the no-payload branch with only the args and progress signals
+// left. Both of those fail open, so an upgraded job dir (legacy args, no
+// progress file) read as one an older build wrote and had its streamed text
+// reported as a complete, verified answer. The file's existence is proof a
+// stream was decoded, whatever state its contents are in.
+func TestStatusCorruptResultPayloadIsStillAStreamJSONRun(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir, err := m.store.Create(jobstore.Meta{
+		ID: "j", StartedAt: time.Now(), BootID: readBootID(),
+		Args: []string{"--dangerously-skip-permissions", "-p", "hi"}, // legacy: no output format
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Present but undecodable, and no progress file: the two other signals are
+	// both silent.
+	if werr := jobstore.WriteResultDir(dir, []byte("{not json")); werr != nil {
+		t.Fatal(werr)
+	}
+	if werr := os.WriteFile(jobstore.OutPath(dir), []byte("half an answer"), 0o600); werr != nil {
+		t.Fatal(werr)
+	}
+	if werr := m.store.WriteExitCode("j", 0); werr != nil {
+		t.Fatal(werr)
+	}
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateDone || st.Result != "half an answer" {
+		t.Fatalf("status = %+v, want done with the streamed text", st)
+	}
+	if !st.Partial {
+		t.Fatal("a run whose result payload is unreadable must not report its streamed text as a verified answer")
+	}
+}
+
 // A job recovered without an exit-code sentinel takes its outcome from the
 // terminal payload when the supervisor managed to write one before dying. The
 // same Result/Partial contract applies: TestStatusTerminalContract covers the
