@@ -85,9 +85,15 @@ func (m *Manager) Status(id string) (Status, error) {
 		ConversationID: meta.ConversationID,
 	}
 	// The progress file is what makes a running job's conversation id readable:
-	// the supervisor writes it as soon as agy's init event names the
+	// the supervisor records it as soon as agy's init event names the
 	// conversation, which is well before the run produces an answer. meta wins
 	// when set, since an explicit continuation already knows its conversation.
+	//
+	// The file's presence proves only that a supervisor started the job, not
+	// that agy has spoken: it is created empty before agy is even exec'd (see
+	// markStreamJSON, which is why streamJSONRun can read it as a marker). So
+	// both fields below are still absent until the stream supplies them, and
+	// neither may be read as "the run has begun reporting".
 	if prog, ok := jobstore.ReadProgressDir(dir); ok {
 		if st.ConversationID == "" {
 			st.ConversationID = prog.ConversationID
@@ -121,9 +127,16 @@ func (m *Manager) Status(id string) (Status, error) {
 // the exit-code sentinel (killed by a reboot, say).
 //
 // A terminal result payload can still be present: the supervisor writes it
-// before the sentinel, so a supervisor that died between those two writes left a
-// complete and trustworthy result. Only when there is no payload does the
-// streamed text become the best available answer, and then it is partial.
+// before the sentinel, so a supervisor that died between those two writes left
+// agy's own account of the run, which outranks anything reconstructed here. It
+// is applied exactly as it would be on the sentinel path, so whether it can be
+// vouched for still depends on the status agy gave it, and its text still falls
+// back to the stream when the payload carried none.
+//
+// Only when there is no payload at all does this function decide for itself,
+// and then the streamed text is partial. It reads out here rather than through
+// carryText because it needs the read ERROR: an out file that exists and cannot
+// be read is a failure to report, not an absent answer to pass over.
 func recoverInterrupted(dir string, st Status) Status {
 	if res, ok := readResultPayload(dir); ok {
 		return applyResult(dir, st, res)
@@ -226,9 +239,10 @@ func cleanExitWithoutPayload(dir string, meta jobstore.Meta, st Status) Status {
 // applyResult fills st from a terminal result payload, which is agy's own
 // description of how the run ended.
 //
-// It decides only the state and the explanation. The answer itself, and whether
-// this build can vouch for it, are left to carryText so that a payload is read
-// the same way here as on every other terminal path.
+// It decides the state, the explanation, and the accounting worth reporting
+// whatever the outcome (via carryResultMetadata). The answer itself, and
+// whether this build can vouch for it, are left to carryText so that a payload
+// is read the same way here as on every other terminal path.
 func applyResult(dir string, st Status, res streamjson.Result) Status {
 	st = carryResultMetadata(st, res)
 	switch {
@@ -276,7 +290,9 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 // produced, which matters wherever a missing result payload could mean either
 // "the run was cut short" or "this build never wrote one".
 //
-// Two independent signals, because neither alone is sound:
+// Three independent signals, because no one of them is sound alone. Any of them
+// is enough; only a job with none, which is what an older build wrote, reads as
+// legacy.
 //
 //   - The persisted args are what this build asked for, but the supervisor
 //     appends the flag when a foreign build's args lack it (ensureStreamJSON)
@@ -288,24 +304,47 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 //     half the args cannot cover: an upgraded job whose agy said nothing has no
 //     flag in its args either, and once read as legacy its empty output would be
 //     reported as a complete answer rather than a cut-short one.
+//   - result.json existing at all. Only the supervisor writes it, and only from
+//     a decoded terminal event, so its presence proves a stream was decoded even
+//     when its contents can no longer be read.
 //
-// Either signal is enough. Only a job with neither, which is exactly a job an
-// older build wrote, reads as legacy.
+// That last signal is why this asks the filesystem rather than reusing the
+// caller's decoded payload. The two callers reach here precisely when
+// readResultPayload said "no payload", and that answer covers a file that is
+// present but corrupt or unreadable as well as one that was never written.
+// Without this check such a job has only the other two signals, so an upgraded
+// one reads as legacy and its streamed text is reported as a complete, verified
+// answer. Both remaining signals fail open in the same direction, which is the
+// direction that misreports.
 func streamJSONRun(dir string, meta jobstore.Meta) bool {
 	if slices.ContainsFunc(meta.Args, func(a string) bool {
 		return a == outputFormatFlag || strings.HasPrefix(a, outputFormatFlag+"=")
 	}) {
 		return true
 	}
-	_, ok := jobstore.ReadProgressDir(dir)
-	return ok
+	if _, ok := jobstore.ReadProgressDir(dir); ok {
+		return true
+	}
+	_, err := os.Stat(jobstore.ResultPath(dir))
+	return err == nil
 }
 
 // carryText attaches the answer a run produced and records whether this build
-// can vouch for it as the final one. It is the single place either decision is
-// made, so every terminal path reports an answer the same way.
+// can vouch for it as the final one.
 //
-// There are exactly two sources, and which one supplied the text is the whole
+// It is where every path that HAS a payload to consider makes both decisions,
+// which is all of statusFromExitCode and applyResult. Two terminal paths decide
+// for themselves and are the exceptions to look for before assuming a change
+// here reaches everything:
+//
+//   - cleanExitWithoutPayload, whose text is always streamed and which carries
+//     the one deliberate exception to "streamed text is partial" (a job an older
+//     build wrote, whose plain-text out really is complete).
+//   - recoverInterrupted's no-payload branch, which reads out itself because it
+//     must tell an unreadable file (a failure) from an empty one, a distinction
+//     this function deliberately discards.
+//
+// There are exactly two sources of text, and which one supplied it is the whole
 // of the Partial decision:
 //
 //   - agy's terminal payload. It is authoritative, so a response agy itself
@@ -316,9 +355,15 @@ func streamJSONRun(dir string, meta jobstore.Meta) bool {
 //     status (ERROR, an outcome this build has never heard of, or none at all)
 //     is agy declining to vouch for the text, so it is handed back and flagged
 //     rather than discarded.
-//   - the streamed out file, reached only when there is no payload or the
-//     payload carried no text. It is reconstructed from a stream that stopped,
-//     so it may be truncated or hold intermediate turns, and is always partial.
+//   - the streamed out file, reached when there is no payload or the payload
+//     carried no text. It is reconstructed from a stream that stopped, so it may
+//     be truncated or hold intermediate turns, and is partial.
+//
+// Note that the second case can follow a SUCCESS payload: agy vouched for the
+// run but its response was empty, so the text handed back is the stream's, not
+// agy's, and it is flagged accordingly. "A response agy marked SUCCESS is never
+// partial" is a statement about agy's RESPONSE, not about every result reported
+// for a run agy marked successful.
 //
 // Provenance, not state, is what decides Partial. State cannot tell the two
 // apart: a cancelled run holds a complete answer in the first case and a
@@ -333,7 +378,13 @@ func carryText(dir string, st Status, hasResult bool, res streamjson.Result) Sta
 		// Match readFile's trimming so a result reads identically whether it came
 		// from the payload or from the streamed fallback.
 		st.Result = strings.TrimRight(res.Response, "\n")
-		st.Partial = res.Status != streamjson.StatusSuccess
+		// Raised, never lowered. Partial is a pessimistic flag: the only safe
+		// operation on it is to set it. No caller sets it before calling here
+		// today, so this is currently the same as an assignment, but a caller
+		// that learns the text is untrustworthy for its own reason (skipped
+		// lines in the stream, say) must not have that silently cleared by a
+		// payload agy happened to mark SUCCESS.
+		st.Partial = st.Partial || res.Status != streamjson.StatusSuccess
 		return st
 	}
 	out, err := readFile(jobstore.OutPath(dir))

@@ -68,8 +68,9 @@ func consumeStream(jobDir string, r io.Reader, out io.Writer) streamOutcome {
 				// contributed. The field is a delta by name and agy emits it once per
 				// completed step, so appending reproduces the response; a run with
 				// several agent_response steps accumulates all of them, which is more
-				// context than the terminal result carries and is only ever read when
-				// that result is missing.
+				// context than the terminal result carries. The manager reads it when
+				// no terminal result reached disk, and also when one did but carried
+				// no response of its own, since then this is the only text there is.
 				if su.StepType == streamjson.StepTypeAgentResponse && su.TextDelta != "" {
 					// A failed append costs partial-result fidelity, nothing more: the
 					// terminal result event is the authoritative response and is written

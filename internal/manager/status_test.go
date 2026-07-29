@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -105,13 +106,32 @@ func writeResultPayload(t *testing.T, dir string, res streamjson.Result) {
 	}
 }
 
-// TestStatusTerminalContract is the whole Result/Partial contract in one table.
+// terminalCase is one staged job directory and the status it must produce.
+type terminalCase struct {
+	name string
+	code int
+	// res is the terminal payload; nil means the run never reached one.
+	res         *streamjson.Result
+	out         string // streamed text on disk, "" writes no out file
+	errFile     string // captured stderr, "" writes no err file
+	args        []string
+	wantState   string
+	wantResult  string
+	wantPartial bool
+	wantErrSub  string
+	wantConvID  string // conversation carried off the payload, "" not asserted
+	wantTurns   int    // agy's own accounting, 0 not asserted
+}
+
+// terminalCases is the whole Result/Partial contract in one table, consumed by
+// TestStatusTerminalContract (does the code agree?) and by
+// TestStatusTerminalContractTableIsWellFormed (does the table itself?).
 //
 // It exists because this file regressed under three successive incremental fix
-// waves, each of which closed one branch's case and left the identical case open
-// in a sibling branch: no single test held all the cases together, so a change
-// could satisfy the test it was written for while breaking an untested peer.
-// Every terminal path appears here, so it cannot happen again silently.
+// waves, each of which closed one branch's case and left the identical case
+// open in a sibling branch: no single test held all the cases together, so a
+// change could satisfy the test it was written for while breaking an untested
+// peer. Every terminal path appears here, so that cannot happen silently.
 //
 // The contract the rows encode:
 //
@@ -121,25 +141,14 @@ func writeResultPayload(t *testing.T, dir string, res streamjson.Result) {
 //   - Partial is decided by where that text came from, not by the state. A
 //     response agy itself marked SUCCESS is complete even if the job was then
 //     killed; any other payload status is agy declining to vouch for it; text
-//     rebuilt from the stream is always partial. The one exception is a job an
-//     older build wrote, whose plain-text out really is complete.
-func TestStatusTerminalContract(t *testing.T) {
-	t.Parallel()
+//     rebuilt from the stream is partial. The one exception is a job an older
+//     build wrote, whose plain-text out really is complete.
+//   - Whichever way a run ended, a payload that reached disk still supplies the
+//     conversation to continue and agy's own accounting.
+func terminalCases() []terminalCase {
 	streamArgs := []string{outputFormatFlag, streamJSONFormat, "-p", "hi"}
 	legacyArgs := []string{"--dangerously-skip-permissions", "-p", "hi"}
-	for _, tc := range []struct {
-		name string
-		code int
-		// res is the terminal payload; nil means the run never reached one.
-		res         *streamjson.Result
-		out         string // streamed text on disk, "" writes no out file
-		errFile     string // captured stderr, "" writes no err file
-		args        []string
-		wantState   string
-		wantResult  string
-		wantPartial bool
-		wantErrSub  string
-	}{
+	return []terminalCase{
 		// --- clean exit, terminal payload present -------------------------------
 		{
 			name: "success payload is the complete answer",
@@ -190,6 +199,18 @@ func TestStatusTerminalContract(t *testing.T) {
 			code: 0, res: &streamjson.Result{Status: "MAX_TURNS", Response: "as far as I got"},
 			wantState: StateFailed, wantResult: "as far as I got", wantPartial: true,
 			wantErrSub: "unrecognized result status",
+		}, {
+			// The no-text sibling of the row above. Every other payload status has
+			// one, and the asymmetry is what let this case lose its coverage when
+			// four older tests were folded into this table.
+			name: "an unrecognized status with no response",
+			code: 0, res: &streamjson.Result{Status: "MAX_TURNS"},
+			wantState: StateFailed, wantErrSub: "unrecognized result status",
+		}, {
+			name: "an unrecognized status with no response falls back to the stream",
+			code: 0, res: &streamjson.Result{Status: "MAX_TURNS"},
+			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
+			wantErrSub: "unrecognized result status",
 		},
 		// --- clean exit, no terminal payload ------------------------------------
 		{
@@ -216,8 +237,17 @@ func TestStatusTerminalContract(t *testing.T) {
 			// payload because the state is not done, would both discard a complete
 			// answer the caller asked for.
 			name: "a cancel after a success payload is not partial",
-			code: jobstore.ExitSIGTERM, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "finished"},
+			code: jobstore.ExitSIGTERM,
+			res: &streamjson.Result{
+				Status: streamjson.StatusSuccess, Response: "finished",
+				ConversationID: "cid-cancelled", NumTurns: 4,
+			},
 			out: "streamed", wantState: StateCancelled, wantResult: "finished",
+			// A run cut short still has a conversation worth continuing and
+			// accounting worth reporting, and both come off the payload rather
+			// than the exit code. Nothing pinned that on a non-zero exit, so
+			// deleting the epilogue that carries them passed the whole suite.
+			wantConvID: "cid-cancelled", wantTurns: 4,
 		}, {
 			// The bug: the payload branch never set Partial, so truncated text
 			// arriving with an ERROR status was reported as a complete answer.
@@ -228,6 +258,20 @@ func TestStatusTerminalContract(t *testing.T) {
 			name: "a SIGINT is a cancel like a SIGTERM",
 			code: jobstore.ExitSIGINT, out: "got this far",
 			wantState: StateCancelled, wantResult: "got this far", wantPartial: true,
+		}, {
+			// The failed half of "a response agy marked SUCCESS is complete even
+			// when the job then ended badly". Only the cancelled half was pinned,
+			// so a rule that flagged every non-done state as partial passed the
+			// whole suite.
+			name: "a timeout after a success payload is not partial",
+			code: jobstore.ExitTimeout, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "finished"},
+			out: "streamed", wantState: StateFailed, wantResult: "finished",
+			wantErrSub: "timeout",
+		}, {
+			name: "a crash after a success payload is not partial",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "finished"},
+			out: "streamed", wantState: StateFailed, wantResult: "finished",
+			wantErrSub: "exit 1",
 		},
 		// --- timed out, crashed, spawn-failed -----------------------------------
 		{
@@ -245,8 +289,8 @@ func TestStatusTerminalContract(t *testing.T) {
 			wantState: StateFailed, wantResult: "agy said this much", wantPartial: true,
 			wantErrSub: "could not exec the agy binary",
 		}, {
-			name: "a true spawn failure has nothing to carry",
-			code: jobstore.ExitSpawnFail,
+			name:      "a true spawn failure has nothing to carry",
+			code:      jobstore.ExitSpawnFail,
 			wantState: StateFailed, wantErrSub: "could not exec the agy binary",
 		}, {
 			name: "a crash carries the stream and the stderr tail",
@@ -262,56 +306,101 @@ func TestStatusTerminalContract(t *testing.T) {
 			wantState: StateFailed, wantResult: "partial text", wantPartial: true,
 			wantErrSub: "model unavailable",
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			m := newManager(t, managerOpts{})
-			dir, err := m.store.Create(jobstore.Meta{
-				ID: "j", StartedAt: time.Now(), BootID: readBootID(), Args: tc.args,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.res != nil {
-				writeResultPayload(t, dir, *tc.res)
-			}
-			if tc.out != "" {
-				if werr := os.WriteFile(jobstore.OutPath(dir), []byte(tc.out), 0o600); werr != nil {
-					t.Fatal(werr)
-				}
-			}
-			if tc.errFile != "" {
-				if werr := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.errFile), 0o600); werr != nil {
-					t.Fatal(werr)
-				}
-			}
-			if werr := m.store.WriteExitCode("j", tc.code); werr != nil {
-				t.Fatal(werr)
-			}
+	}
+}
 
-			st, err := m.Status("j")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if st.State != tc.wantState {
-				t.Errorf("state = %q, want %q", st.State, tc.wantState)
-			}
-			if st.Result != tc.wantResult {
-				t.Errorf("result = %q, want %q", st.Result, tc.wantResult)
-			}
-			if st.Partial != tc.wantPartial {
-				t.Errorf("partial = %v, want %v", st.Partial, tc.wantPartial)
-			}
-			if tc.wantErrSub == "" {
-				if st.Error != "" {
-					t.Errorf("error = %q, want none", st.Error)
-				}
-			} else if !strings.Contains(st.Error, tc.wantErrSub) {
-				t.Errorf("error = %q, want it to mention %q", st.Error, tc.wantErrSub)
-			}
-			if st.State != StateDone && st.Result != "" && !st.Partial && (tc.res == nil || tc.res.Status != streamjson.StatusSuccess) {
-				t.Errorf("result reported on state %q without Partial, and no payload vouched for it: %+v", st.State, st)
-			}
+// TestStatusTerminalContractTableIsWellFormed checks the TABLE, not the code.
+//
+// The per-row assertions in TestStatusTerminalContract can only compare a row
+// against itself, so a future row declaring an outcome the contract forbids
+// would pass by being wrong twice: once in the want, once in the code it was
+// written to match. This reads only the declared wants, so it is the one place
+// that can catch that.
+func TestStatusTerminalContractTableIsWellFormed(t *testing.T) {
+	for _, tc := range terminalCases() {
+		vouched := tc.res != nil && tc.res.Status == streamjson.StatusSuccess && tc.res.Response != ""
+		legacy := tc.res == nil && tc.code == 0 && !slices.ContainsFunc(tc.args, func(a string) bool {
+			return a == outputFormatFlag
+		})
+		if tc.wantResult != "" && !tc.wantPartial && !vouched && !legacy {
+			t.Errorf("row %q declares a result that is neither partial, nor vouched for by a SUCCESS payload response, nor a legacy job dir", tc.name)
+		}
+		if tc.wantResult == "" && tc.wantPartial {
+			t.Errorf("row %q declares partial with no result, which says nothing to a caller", tc.name)
+		}
+	}
+}
+
+// stageTerminalJob writes the job directory a case describes and returns the
+// status the manager derives from it.
+func stageTerminalJob(t *testing.T, tc terminalCase) Status {
+	t.Helper()
+	m := newManager(t, managerOpts{})
+	dir, err := m.store.Create(jobstore.Meta{
+		ID: "j", StartedAt: time.Now(), BootID: readBootID(), Args: tc.args,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tc.res != nil {
+		writeResultPayload(t, dir, *tc.res)
+	}
+	writeIfSet(t, jobstore.OutPath(dir), tc.out)
+	writeIfSet(t, jobstore.ErrPath(dir), tc.errFile)
+	if err := m.store.WriteExitCode("j", tc.code); err != nil {
+		t.Fatal(err)
+	}
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// writeIfSet stages one job-dir file, leaving it absent when the case supplies
+// no content. Absent and empty are different inputs here: an empty out file
+// reads back as no text, while a missing one is what a run that never started
+// leaves behind.
+func writeIfSet(t *testing.T, path, content string) {
+	t.Helper()
+	if content == "" {
+		return
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertTerminalStatus(t *testing.T, st Status, tc terminalCase) {
+	t.Helper()
+	if st.State != tc.wantState {
+		t.Errorf("state = %q, want %q", st.State, tc.wantState)
+	}
+	if st.Result != tc.wantResult {
+		t.Errorf("result = %q, want %q", st.Result, tc.wantResult)
+	}
+	if st.Partial != tc.wantPartial {
+		t.Errorf("partial = %v, want %v", st.Partial, tc.wantPartial)
+	}
+	if tc.wantErrSub == "" {
+		if st.Error != "" {
+			t.Errorf("error = %q, want none", st.Error)
+		}
+	} else if !strings.Contains(st.Error, tc.wantErrSub) {
+		t.Errorf("error = %q, want it to mention %q", st.Error, tc.wantErrSub)
+	}
+	if tc.wantConvID != "" && st.ConversationID != tc.wantConvID {
+		t.Errorf("conversation_id = %q, want %q carried off the payload", st.ConversationID, tc.wantConvID)
+	}
+	if tc.wantTurns != 0 && st.NumTurns != tc.wantTurns {
+		t.Errorf("num_turns = %d, want %d carried off the payload", st.NumTurns, tc.wantTurns)
+	}
+}
+
+func TestStatusTerminalContract(t *testing.T) {
+	for _, tc := range terminalCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			assertTerminalStatus(t, stageTerminalJob(t, tc), tc)
 		})
 	}
 }
@@ -662,6 +751,10 @@ func TestStatusRecoveredFromPayload(t *testing.T) {
 		{"error payload keeps its text", streamjson.Result{Status: streamjson.StatusError, Response: "got this far"}, "", StateFailed, "got this far", true},
 		{"a response with no status is unverified", streamjson.Result{Response: "an answer"}, "", StateDone, "an answer", true},
 		{"an empty payload falls back to the stream", streamjson.Result{}, "streamed", StateFailed, "streamed", true},
+		// The no-stream sibling, so the recovery path pins the indeterminate
+		// verdict itself and not only the fallback that usually hides it.
+		{"an empty payload with no stream is indeterminate", streamjson.Result{}, "", StateFailed, "", false},
+		{"an unrecognized status", streamjson.Result{Status: "MAX_TURNS"}, "", StateFailed, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
@@ -684,6 +777,12 @@ func TestStatusRecoveredFromPayload(t *testing.T) {
 			if st.State != tc.wantState || st.Result != tc.wantResult || st.Partial != tc.wantPartial {
 				t.Fatalf("status = %+v, want state %q result %q partial %v",
 					st, tc.wantState, tc.wantResult, tc.wantPartial)
+			}
+			// A failure must say why. The table this replaced asserted it and the
+			// fold dropped it, leaving applyResult's two default messages
+			// unpinned on the recovery path.
+			if tc.wantState == StateFailed && st.Error == "" {
+				t.Fatal("a failed recovery must carry an explanation")
 			}
 		})
 	}

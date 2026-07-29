@@ -38,26 +38,41 @@ func (v Version) AtLeast(o Version) bool {
 	return v.Patch >= o.Patch
 }
 
-// tier ranks how strongly a dotted triple's surroundings say it is really a
-// version rather than a date, a path component or an address. Parse keeps the
-// highest-tier candidate in the whole output, which is what lets a decorated
-// version line beat unrelated numeric noise appearing before it.
+// tier says whether a dotted triple's surroundings rule it out as a version. It
+// is deliberately coarse: two levels, because every finer distinction tried
+// here has turned out to be an accept-too-much bug in one direction or the
+// other.
 //
-// Ranking beats matching here because this function has now been reworked
-// twice and regressed both times, in opposite directions: first "the first
-// triple anywhere", which accepted dates, paths and IPs; then "a triple
-// anchored to the line", which made a real mid-line version ineligible and let
-// a date win. Both failures come from a single yes/no test having to serve as
-// both the recognizer and the tie-breaker. Splitting the two is what stops the
-// next input from trading one bug for another.
+// This function has now been reworked repeatedly and regressed each time:
+//
+//  1. "the first dotted triple anywhere" accepted dates, paths and addresses
+//     printed before the version.
+//  2. "a triple anchored to the START of a line" made a real mid-line version
+//     ineligible while still matching a log line that merely begins with a
+//     triple, so a date won outright.
+//  3. "a triple that is the WHOLE line" fixed 2 and introduced the mirror: a
+//     DECORATED version line is not a whole-line match either, so an unrelated
+//     triple appearing earlier won.
+//  4. Ranking a triple higher when an "agy" or "version" word preceded it fixed
+//     3, and broke on the most ordinary thing a CLI prints: an upgrade notice.
+//     "upgrade to agy 9.9.9" is marked by that rule and names a version HIGHER
+//     than the binary printing it, so it outranked the real one.
+//  5. Preferring the LOWEST reading among equals fixed 4 and broke the opposite
+//     way: "agy 1.1.8 (built with 0.9.1 toolchain)" resolved to 0.9.1 and
+//     REFUSED a working binary, which is worse than any bypass (see Parse).
+//
+// Every one of those came from trying to identify THE version by how it is
+// written or by which number it is. Neither works: "agy 1.0.5" and "agy 9.9.9"
+// are the same shape whether the line reports the version or advertises a newer
+// one, and a sub-component version can be either higher or lower than agy's own.
+// So a tier now answers only the question the text really can answer, which is
+// whether a triple is part of something that is not a version at all.
 type tier int
 
 const (
-	tierNone      tier = iota
-	tierEmbedded       // inside a path, spliced onto a word, or part of a longer dotted chain
-	tierFree           // free-standing: neither of the above, but nothing vouches for it either
-	tierMarked         // an "agy" or "version" word immediately precedes it
-	tierWholeLine      // the line is nothing but this version
+	tierNone     tier = iota // no candidate at all; Parse reports an error
+	tierEmbedded             // part of a path or a longer dotted chain: not a version
+	tierCredible             // could be a version
 )
 
 // wholeLineRE matches a line that IS a version: the triple alone, after nothing
@@ -66,97 +81,137 @@ const (
 // not listed in --help, so its exact framing is not a contract; tolerating a
 // future "agy version 1.2.0" or "1.2.0-preview.3" keeps a cosmetic change from
 // becoming a hard refusal to run.
+//
+// It no longer earns a tier of its own, only the same tierCredible a
+// free-standing triple gets. What it still does is stop the build suffix being
+// rescanned: "1.2.0-preview.2.3.4" is one version, not two.
 var wholeLineRE = regexp.MustCompile(`^\s*(?:agy\s+)?(?:version\s+)?v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]*)?\s*$`)
 
 // tripleRE matches a dotted triple wherever it appears. On its own it accepts
 // far too much (a path like ~/.agy/1.0.0/config, a date rendered 2026.07.29, an
-// address such as 127.0.0.1), which is why every match is scored by its context
-// rather than taken at face value.
+// address such as 127.0.0.1), which is why every match is classified by its
+// context rather than taken at face value.
 var tripleRE = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
 
-// markerRE matches the "agy" or "version" word ending the text immediately
-// before a triple. It is what separates "agy 1.0.5 (linux/amd64)" from a triple
-// that merely shares a line with the word, so a path such as "~/.agy/2.0.0/cfg"
-// is not promoted by the "agy" inside it.
-var markerRE = regexp.MustCompile(`(?i)\b(?:agy|version)\s+$`)
-
-// dateLikeMajor is the digit count above which a first component is read as a
-// year rather than an agy major. 2026.07.29 parses as major 2026 and clears
-// every conceivable floor, so accepting it is always the unsafe direction;
-// rejecting it is loud, since the caller reports the parse failure and refuses
-// to run rather than silently proceeding against an unknown binary.
-const dateLikeMajor = 4
+// implausibleMajor is the value at or above which a first component is read as
+// a year rather than an agy major, and the candidate is discarded.
+//
+// 2026.07.29 parses as major 2026 and clears every conceivable floor, so
+// accepting it is always the unsafe direction. Refusing is loud rather than
+// silent: with no candidate left the caller reports a parse failure and
+// declines to run, instead of proceeding against a binary it could not
+// identify. A future agy on calendar versioning would be refused this way, and
+// that is the intended trade: a number this code cannot tell apart from a
+// timestamp must not be the thing that clears the floor.
+//
+// It is compared by VALUE, not by digit count. Counting digits refused a
+// zero-padded "0001.1.8", which is an ordinary version written oddly.
+//
+// A triple inside a longer dotted chain (127.0.0.1, or a four-component version
+// string) is NOT discarded this way, and the asymmetry is deliberate. A
+// four-digit first component cannot be an agy major, but a chain fragment can
+// genuinely be the leading three components of a longer version string, so
+// discarding it would turn a cosmetic version-format change into a refusal to
+// run. It is demoted to tierEmbedded instead, where anything better beats it
+// and it is only ever the answer of last resort.
+const implausibleMajor = 1000
 
 // candidate is one dotted triple found in the output, with the tier its
 // surroundings earned it.
 type candidate struct {
 	tier tier
-	m    []string // the triple's submatches: full, major, minor, patch
+	m    []string // the triple's submatches, indexed as regexp returns them: full, major, minor, patch
+}
+
+// version converts a candidate, reporting ok=false for one that cannot be an
+// agy version: an implausibly large major (see implausibleMajor), or a run of
+// digits so long it overflows. Skipping such a candidate rather than failing
+// the whole parse matters, because one unusable triple must not refuse a
+// perfectly readable version printed on the next line.
+func (c candidate) version() (Version, bool) {
+	major, err := strconv.Atoi(c.m[1])
+	if err != nil || major >= implausibleMajor {
+		return Version{}, false
+	}
+	minor, err := strconv.Atoi(c.m[2])
+	if err != nil {
+		return Version{}, false
+	}
+	patch, err := strconv.Atoi(c.m[3])
+	if err != nil {
+		return Version{}, false
+	}
+	return Version{Major: major, Minor: minor, Patch: patch}, true
 }
 
 // Parse extracts a version from raw `agy --version` output.
 //
-// Every dotted triple in the output is collected and scored by its context; the
-// highest-scoring one wins, and the earliest wins a tie. It reports an error
-// when no plausible triple appears at all, which includes output whose only
-// triples look like dates: an unreadable version must refuse the binary rather
-// than guess a number that would clear the floor.
+// Every dotted triple is collected, those that cannot be a version are dropped,
+// and of the rest the first at the best tier present wins.
+//
+// FIRST, not lowest or highest, and that choice is the one place a maintainer
+// should not "improve" without reading this. The two ways of being wrong are
+// not symmetric, but not in the direction that looks obvious. Reading too HIGH
+// bypasses the floor, and a bypass degrades LOUDLY: agy is a Go flag CLI, so a
+// pre-1.1.8 binary handed an unknown --output-format exits 2 with usage text
+// and the job reports failed with that text attached. Reading too LOW refuses a
+// working binary, and the caller then declines to start any job at all. So the
+// expensive failure is the false refusal, and a rule that resolves ambiguity by
+// taking the smallest number manufactures exactly that: "agy 1.1.8 (built with
+// 0.9.1 toolchain)" is an ordinary thing for a CLI to print, and reading it as
+// 0.9.1 takes the whole server down.
+//
+// Taking the first also happens to disarm the upgrade notice that broke the
+// previous rework, since such a line follows the version it is about.
+//
+// What remains genuinely unresolvable is free-standing noise printed BEFORE the
+// version ("see 9.9.9 for details" above an "agy 1.0.5" line). No rule tried
+// here has distinguished that from the version itself without breaking a case
+// that matters more, and it lands on the loud side of the asymmetry above.
+//
+// It reports an error only when no usable triple appears at all, which includes
+// output whose only triples are date-shaped.
 func Parse(raw string) (Version, error) {
-	var best candidate
+	var best Version
+	bestTier := tierNone
 	for line := range strings.Lines(raw) {
 		for _, c := range candidates(line) {
-			// Strictly greater, so the earliest of equally-ranked candidates wins.
-			if c.tier > best.tier {
-				best = c
+			v, ok := c.version()
+			// Strictly greater, so the first candidate at a given tier keeps it.
+			if !ok || c.tier <= bestTier {
+				continue
 			}
+			best, bestTier = v, c.tier
 		}
 	}
-	if best.tier == tierNone {
+	if bestTier == tierNone {
 		return Version{}, errors.New("no version number found")
 	}
-	// Each group is one or more digits, so the only Atoi failure left is an
-	// overflow from an absurdly long run of digits. Report that rather than
-	// silently reading a wrapped value as a plausible version.
-	major, err := strconv.Atoi(best.m[1])
-	if err != nil {
-		return Version{}, fmt.Errorf("major version %q: %w", best.m[1], err)
-	}
-	minor, err := strconv.Atoi(best.m[2])
-	if err != nil {
-		return Version{}, fmt.Errorf("minor version %q: %w", best.m[2], err)
-	}
-	patch, err := strconv.Atoi(best.m[3])
-	if err != nil {
-		return Version{}, fmt.Errorf("patch version %q: %w", best.m[3], err)
-	}
-	return Version{Major: major, Minor: minor, Patch: patch}, nil
+	return best, nil
 }
 
-// candidates returns every usable version candidate on one line, scored.
+// candidates returns every triple on one line, classified.
 //
-// A line that is nothing but a version yields exactly that one candidate: the
-// whole-line reading already dominates anything else the line could offer, and
-// a build suffix like "-preview.3" would otherwise be rescanned for triples.
+// A line that is nothing but a version yields exactly that one candidate: its
+// build suffix ("-preview.2.3.4") would otherwise be rescanned and offer
+// triples that are fragments of the same version rather than versions.
 func candidates(line string) []candidate {
 	if m := wholeLineRE.FindStringSubmatch(line); m != nil {
-		return []candidate{{tier: tierWholeLine, m: m}}
+		return []candidate{{tier: tierCredible, m: m}}
 	}
 	var out []candidate
 	for _, loc := range tripleRE.FindAllStringSubmatchIndex(line, -1) {
-		m := submatches(line, loc)
-		if len(m[1]) >= dateLikeMajor {
-			// A year, not a major. Only a whole-line match (handled above) is taken
-			// as a deliberate claim, and this line is not one.
-			continue
-		}
-		out = append(out, candidate{tier: classify(line, loc[0], loc[1]), m: m})
+		out = append(out, candidate{
+			tier: classify(line, loc[0], loc[1]),
+			m:    submatches(line, loc),
+		})
 	}
 	return out
 }
 
 // submatches materializes the full match and its three groups from the index
-// pairs FindAllStringSubmatchIndex returns, so the rest of the scoring works on
-// strings exactly as FindStringSubmatch would hand them over.
+// pairs FindAllStringSubmatchIndex returns, so a candidate from this path is
+// indexed exactly as one from FindStringSubmatch.
 func submatches(line string, loc []int) []string {
 	m := make([]string, 4)
 	for i := range m {
@@ -165,60 +220,61 @@ func submatches(line string, loc []int) []string {
 	return m
 }
 
-// classify scores one triple by what surrounds it on its line.
+// classify reports whether a triple's surroundings make it part of something
+// that is not a version.
+//
+// There are exactly two such things, and the list is short on purpose. A triple
+// spliced onto a word ("agy1.0.5") is deliberately NOT one of them: demoting it
+// meant a real version lost to unrelated noise elsewhere in the output, and the
+// splice is something this code causes itself, since CombinedOutput merges
+// stdout and stderr onto one fd and a concurrent stderr write lands mid-line.
 func classify(line string, start, end int) tier {
 	before, after := line[:start], line[end:]
-	// Part of a longer dotted chain: 127.0.0.1 (an address) or 1.2.3.4. The
-	// triple is a fragment of something that is not a version, whatever else the
-	// line says, so no marker can promote it.
-	if strings.HasSuffix(before, ".") || strings.HasPrefix(after, ".") {
+	// Part of a longer dotted chain: 127.0.0.1 (an address) or 1.2.3.4, where
+	// the triple is a fragment of something larger.
+	//
+	// The neighbouring character has to be a DIGIT, not merely a dot. Testing
+	// for a bare dot read the full stop in "You are running agy 1.0.5." as a
+	// chain and demoted the one real version on the line.
+	if endsWithDigitDot(before) || startsWithDotDigit(after) {
 		return tierEmbedded
 	}
-	before = trimVPrefix(before)
-	if markerRE.MatchString(before) {
-		return tierMarked
-	}
-	// A path component (/opt/agy/2.0.0/bin) or a triple spliced onto a word.
-	// CombinedOutput merges stdout and stderr onto one fd, so a concurrent
-	// stderr write really can splice a warning onto the version line; such a
-	// triple is still readable, just not vouched for.
-	if endsWithPathSep(before) || strings.HasPrefix(after, "/") || strings.HasPrefix(after, `\`) {
+	// A path component: /opt/agy/2.0.0/bin, or C:\agy\2.0.0\bin. This is the
+	// demotion that issue #98 turned on, so it is the one worth keeping.
+	if endsWithPathSep(trimVPrefix(before)) || startsWithPathSep(after) {
 		return tierEmbedded
 	}
-	if before != "" && isWordByte(before[len(before)-1]) {
-		return tierEmbedded
-	}
-	return tierFree
+	return tierCredible
 }
 
-// trimVPrefix drops a "v" immediately preceding the triple when the v itself
-// starts a word ("v1.2.0"), so the v reads as part of the version rather than
-// as a word the triple was spliced onto.
+// endsWithDigitDot and startsWithDotDigit report whether the triple continues a
+// dotted number on either side.
+func endsWithDigitDot(s string) bool {
+	return len(s) >= 2 && s[len(s)-1] == '.' && isDigit(s[len(s)-2])
+}
+
+func startsWithDotDigit(s string) bool {
+	return len(s) >= 2 && s[0] == '.' && isDigit(s[1])
+}
+
+// trimVPrefix drops a "v" immediately preceding the triple, so that the v in a
+// path component such as "/opt/agy/v1.0.5/bin" does not hide the separator.
 func trimVPrefix(before string) string {
 	if before == "" {
 		return before
 	}
-	if last := before[len(before)-1]; last != 'v' && last != 'V' {
-		return before
+	if last := before[len(before)-1]; last == 'v' || last == 'V' {
+		return before[:len(before)-1]
 	}
-	rest := before[:len(before)-1]
-	if rest != "" && isWordByte(rest[len(rest)-1]) {
-		return before // "rev1.2.0": the v belongs to the preceding word
-	}
-	return rest
+	return before
 }
 
 func endsWithPathSep(s string) bool {
 	return strings.HasSuffix(s, "/") || strings.HasSuffix(s, `\`)
 }
 
-// isWordByte reports whether c is an ASCII identifier byte. Only ASCII matters:
-// it is used to decide whether a triple abuts a word, and a multi-byte rune's
-// continuation bytes are all >= 0x80, so they fall through as non-word, which
-// is the conservative answer.
-func isWordByte(c byte) bool {
-	return c == '_' ||
-		(c >= '0' && c <= '9') ||
-		(c >= 'a' && c <= 'z') ||
-		(c >= 'A' && c <= 'Z')
+func startsWithPathSep(s string) bool {
+	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, `\`)
 }
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }

@@ -101,6 +101,16 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 		fmt.Fprintf(&sb, "cat %q > \"$dir/%s\"\n", p, dest)
 	}
 
+	// The marker the real supervisor writes before it execs agy (see
+	// supervisor.markStreamJSON), so a staged job dir has the shape production
+	// produces. Without it the manager's stream-json check would fall back to the
+	// persisted args on every fake job, and the marker branch it exists to
+	// exercise would never be reached through a spawned supervisor.
+	//
+	// A fake agy's own progress payload is written after this and replaces it,
+	// exactly as consumeStream replaces the marker in production.
+	fmt.Fprintf(&sb, "printf '%%s' %q > \"$dir/%s\"\n", `{"updated_at":"2026-01-01T00:00:00Z"}`, jobstore.ProgressFile)
+
 	switch {
 	case cfg.AgyPath != "":
 		if cfg.Agy != nil {

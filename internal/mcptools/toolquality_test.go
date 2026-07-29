@@ -110,8 +110,12 @@ var wantSiblings = map[string][]string{
 	// requiring it to name agy_cancel too bought nothing an agent needs at a
 	// status check, and the first attempt to satisfy that invented a claim about
 	// polling cost that the code did not support.
-	toolAgyStatus:    {toolAgyWait},
-	toolAgyCancel:    {toolAgyRun},
+	toolAgyStatus: {toolAgyWait},
+	// agy_cancel routes to agy_status as well as agy_run: a cancelled job can
+	// still carry a complete answer (agy prints its result and can hang on the
+	// way out), so an agent that re-sends the prompt without collecting it first
+	// pays for the same work twice.
+	toolAgyCancel:    {toolAgyRun, toolAgyStatus},
 	toolListModels:   {toolAgyRun, toolAgyRunSync},
 	toolListSessions: {toolAgyRun, toolAgyRunSync},
 }

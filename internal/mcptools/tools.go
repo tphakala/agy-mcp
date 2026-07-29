@@ -145,7 +145,7 @@ type statusOutput struct {
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread"`
 	// Partial marks a result that is not a verified final answer; see
 	// manager.Status.Partial.
-	Partial bool `json:"partial,omitempty" jsonschema:"true when result is not the verified final answer: either agy never reported a terminal result and the text was reconstructed from the stream, or it reported one that was not a success, so the text is only what the run had produced when it stopped; treat the result as incomplete. A result agy itself marked successful is never partial, even on a job that was then cancelled"`
+	Partial bool `json:"partial,omitempty" jsonschema:"true when result is not the verified final answer, so treat it as incomplete. It follows from where the text came from: true when the text was reconstructed from the streamed events, because agy never reported a terminal result or the one it reported carried no text, and true when agy reported a terminal result that was not a success, so its text is only what the run had produced when it stopped. A response agy itself marked successful is never partial, even on a job that was then cancelled or killed"`
 	// NumTurns and Usage are agy's own accounting, present once the run reported
 	// a terminal result.
 	NumTurns int          `json:"num_turns,omitempty" jsonschema:"how many turns the conversation has taken, as reported by agy"`
@@ -289,7 +289,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolAgyCancel,
 		Title:       "Cancel an agy job",
 		Annotations: annCancel,
-		Description: "Stop a running agy job: asks its supervisor to terminate the agy process tree. Use it to abandon a job whose result is no longer needed, or one that is stuck; there is no resume, so a cancelled run has to be re-sent as a new agy_run. Termination is asynchronous, so the returned state is usually still running and settles to cancelled a moment later; that is a delivered cancel, not a failed one. Calling it on an already-finished job is a harmless no-op. Files the delegated agent already wrote are not rolled back.",
+		Description: "Stop a running agy job: asks its supervisor to terminate the agy process tree. Use it to abandon a job whose result is no longer needed, or one that is stuck; there is no resume, so continuing the work means a new agy_run. Before re-sending the prompt, read the cancelled job with agy_status: a cancelled run still carries whatever text it produced, and a run agy had already finished carries a complete, non-partial answer, so re-running it would pay for the same work twice. Termination is asynchronous, so the returned state is usually still running and settles to cancelled a moment later; that is a delivered cancel, not a failed one. Calling it on an already-finished job is a harmless no-op. Files the delegated agent already wrote are not rolled back.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cancelInput) (*mcp.CallToolResult, cancelOutput, error) {
 		if err := mgr.Cancel(in.JobID); err != nil {
 			return nil, cancelOutput{}, err

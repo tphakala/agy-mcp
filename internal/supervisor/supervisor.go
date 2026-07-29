@@ -111,15 +111,47 @@ func selectsOutputFormat(args []string) bool {
 // conversation id and step type are absent until the stream supplies them, which
 // is exactly the state a job is in before agy starts.
 //
+// It is written only for a run actually being driven through stream-json.
+// ensureStreamJSON leaves args alone when they already choose a format, so a
+// job asking for --output-format=json is exec'd as JSON and gets no marker: a
+// marker there would be a claim about a stream that is never produced. That
+// costs nothing, because such a job carries a format in its args and so is
+// already recognized by the args signal.
+//
+// The write replaces the file rather than merging into it, so it has to happen
+// before the stream drain starts. After that, consumeStream owns the file and
+// an overwrite here would erase the conversation id it recorded.
+//
 // Failure is not fatal. The marker only sharpens a heuristic that still has the
-// persisted args to fall back on, and refusing to run the job over it would
-// trade a narrow misreport for a total one; it is noted on stderr rather than
-// swallowed, because a silently missing marker is indistinguishable from a
-// legacy job dir.
+// persisted args and the result payload to fall back on, and refusing to run
+// the job over it would trade a narrow misreport for a total one. It is noted
+// on the captured stderr rather than swallowed; note that the note lands at the
+// HEAD of that file, before agy writes a byte, so a run whose agy is loud on
+// stderr pushes it outside the tail the manager reports. In practice the branch
+// is close to unreachable: this write and the exit-code sentinel go through the
+// same helper into the same directory, so a failure here means the sentinel
+// fails too and the job is classified by the recovery path, which never
+// consults the marker at all.
 func markStreamJSON(jobDir string, errW io.Writer) {
 	if err := jobstore.WriteProgressDir(jobDir, jobstore.Progress{UpdatedAt: time.Now().UTC()}); err != nil {
 		_, _ = fmt.Fprintf(errW, "\nagy-mcp: could not record the stream-json marker: %v\n", err)
 	}
+}
+
+// selectsStreamJSON reports whether args ask agy for the event stream this
+// supervisor decodes, in either spelling the Go flag package accepts. It is the
+// narrow question markStreamJSON needs, where selectsOutputFormat asks the wide
+// one ("did the caller choose ANY format, so ensureStreamJSON must not append").
+func selectsStreamJSON(args []string) bool {
+	for i, a := range args {
+		if a == outputFormatFlag && i+1 < len(args) && args[i+1] == streamJSONFormat {
+			return true
+		}
+		if a == outputFormatFlag+"="+streamJSONFormat {
+			return true
+		}
+	}
+	return false
 }
 
 // effectiveTimeout floors a non-positive job timeout to fallbackTimeout so the
@@ -218,7 +250,10 @@ func run(jobDir string, grace, drainWait time.Duration) error {
 	}
 	defer func() { _ = devnull.Close() }()
 
-	cmd := exec.Command(m.AgyPath, ensureStreamJSON(m.Args)...)
+	// Resolve the args once and reuse them, so the marker below is decided from
+	// exactly what agy is being run with rather than from a second guess at it.
+	args := ensureStreamJSON(m.Args)
+	cmd := exec.Command(m.AgyPath, args...)
 	cmd.Dir = m.Cwd
 	cmd.Env = os.Environ() // agy needs HOME/PATH and its OAuth/API credentials
 	cmd.Stdin = devnull
@@ -242,7 +277,9 @@ func run(jobDir string, grace, drainWait time.Duration) error {
 	// together on cancel or timeout.
 	proc.ConfigureGroup(cmd)
 
-	markStreamJSON(jobDir, errF)
+	if selectsStreamJSON(args) {
+		markStreamJSON(jobDir, errF)
+	}
 
 	if err := cmd.Start(); err != nil {
 		_ = pw.Close()

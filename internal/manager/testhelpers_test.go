@@ -59,8 +59,9 @@ func newManager(t *testing.T, opts managerOpts) *Manager {
 	}
 	m.readAgyVersion = testutil.FakeVersion(version)
 	// Keep the fresh-run conversation-id wait short: these tests use fake
-	// supervisors that never write a progress file, so the real 2s budget would
-	// be spent in full on every StartJob.
+	// supervisors, whose progress file records no conversation id unless a fake
+	// agy supplies one, so the real 2s budget would be spent in full on every
+	// StartJob.
 	m.conversationIDWait = 0
 	return m
 }
