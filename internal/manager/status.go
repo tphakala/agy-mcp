@@ -220,12 +220,21 @@ func applyResult(st Status, res streamjson.Result) Status {
 	// than discarding recoverable work, and mark it partial since this build
 	// cannot vouch for it being the final answer.
 	//
-	// An ABSENT status is not in that class: the field is omitempty, so its
-	// absence is a shape the wire format declares legal, and an older reading
-	// treated it as success. Keep doing so.
-	if res.Status != "" && res.Status != streamjson.StatusSuccess {
+	// An ABSENT status is only treated as success when the payload actually
+	// carries an answer. `omitempty` is agy-mcp's own struct tag, so it is
+	// evidence about this decoder, not a statement about agy's wire format;
+	// reading absence alone as success turns a payload whose recognized fields
+	// are all missing (a future agy that renames or restructures them) into a
+	// completed, empty, non-partial answer. A response with no status is
+	// recoverable; neither is indeterminate, and indeterminate is a failure.
+	recoverable := res.Status == "" && res.Response != ""
+	if res.Status != streamjson.StatusSuccess && !recoverable {
 		st.State = StateFailed
-		st.Error = fmt.Sprintf("agy reported an unrecognized result status %q", res.Status)
+		if res.Status == "" {
+			st.Error = "agy's result payload carried no status and no response"
+		} else {
+			st.Error = fmt.Sprintf("agy reported an unrecognized result status %q", res.Status)
+		}
 		if res.Response != "" {
 			st.Result = strings.TrimRight(res.Response, "\n")
 			st.Partial = true

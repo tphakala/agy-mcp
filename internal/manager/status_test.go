@@ -461,3 +461,38 @@ func TestStateMatchesStatusOnUnreadableCleanExit(t *testing.T) {
 		t.Fatalf("State %q disagrees with Status.State %q", gotState, st.State)
 	}
 }
+
+// A result payload whose recognized fields are all absent is indeterminate, not
+// a completed empty answer. Reading absence alone as success would hand the
+// caller "done" with nothing in it the moment agy renames or restructures those
+// fields, which is precisely what the version floor cannot prevent.
+func TestStatusEmptyResultPayloadIsNotSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		res     streamjson.Result
+		want    string
+		wantRes string
+	}{
+		{"no status and no response", streamjson.Result{}, StateFailed, ""},
+		{"no status but a response is recoverable", streamjson.Result{Response: "an answer"}, StateDone, "an answer"},
+		{"explicit success", streamjson.Result{Status: streamjson.StatusSuccess, Response: "ok"}, StateDone, "ok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newManager(t, managerOpts{})
+			dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+			writeResultPayload(t, dir, tc.res)
+			_ = m.store.WriteExitCode("j", 0)
+
+			st, err := m.Status("j")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.State != tc.want || st.Result != tc.wantRes {
+				t.Fatalf("state = %q result = %q, want %q / %q", st.State, st.Result, tc.want, tc.wantRes)
+			}
+			if tc.want == StateFailed && st.Error == "" {
+				t.Fatal("an indeterminate payload must carry an explanation")
+			}
+		})
+	}
+}
