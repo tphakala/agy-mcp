@@ -13,10 +13,16 @@ import (
 	"time"
 )
 
-// Meta describes a job. The identity fields are set at creation, as is
-// ConversationID, which agy names in the init event of its stream before the job
-// is recorded. PID and StartTimeTicks are filled in afterward by an atomic
-// rewrite (UpdateMeta) once the supervisor has been spawned.
+// Meta describes a job. The identity fields are set at creation. PID and
+// StartTimeTicks are filled in afterward by an atomic rewrite (UpdateMeta) once
+// the supervisor has been spawned.
+//
+// ConversationID is set at creation for a continuation only, from the id the
+// caller supplied or the one continue_latest resolved. A fresh run's id is never
+// recorded here at all: agy names it in the init event of its stream, which
+// necessarily arrives after Create, and the supervisor records it in
+// progress.json. Anything that needs a fresh run's conversation id must read
+// progress.json, which is why Status and conversationLive both scan it.
 type Meta struct {
 	ID             string        `json:"id"`
 	AgyPath        string        `json:"agy_path"`
@@ -75,10 +81,10 @@ func ResultPath(dir string) string   { return filepath.Join(dir, ResultFile) }
 //
 // It is deliberately a separate file rather than a field on Meta. The manager
 // rewrites meta.json after spawning the supervisor (to record the supervisor
-// PID), so a supervisor writing the same file would race that update; the
-// Store mutex serializes writers within one process and cannot span the
-// manager/supervisor process boundary. Splitting the file gives each one a
-// single writer instead.
+// PID), so a supervisor writing the same file would race that update, and no
+// lock could arbitrate it: the two are separate processes. Splitting the file
+// gives each of them a file with exactly one writer, which is what makes the
+// atomic rewrite sufficient on its own.
 type Progress struct {
 	ConversationID string    `json:"conversation_id,omitempty"`
 	StepIndex      int       `json:"step_index"`

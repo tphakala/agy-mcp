@@ -11,8 +11,9 @@ import (
 // TestNormalizeCwdCollapsesEquivalentSpellings is the core regression guard for
 // issue #24: a trailing slash, a relative path, and a symlinked alias of one
 // directory must all canonicalize to the same absolute, symlink-resolved path,
-// so they produce one gate key (same-dir fresh runs serialize) and hit the same
-// agy conversation-cache entry.
+// so they hit the same agy conversation-cache entry and hand the supervisor the
+// same cmd.Dir. They no longer have to agree on a gate key; fresh runs stopped
+// serializing by directory when keyFor narrowed to the conversation id.
 func TestNormalizeCwdCollapsesEquivalentSpellings(t *testing.T) {
 	realDir := t.TempDir()
 	canonical, err := filepath.EvalSymlinks(realDir)

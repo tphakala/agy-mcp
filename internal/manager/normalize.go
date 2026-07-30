@@ -18,9 +18,12 @@ import "path/filepath"
 func normalizeCwd(cwd string) (string, error) {
 	if cwd == "" {
 		// filepath.Abs("") resolves to the process working directory, which would
-		// turn an empty cwd (a legacy job persisted with no cwd, or any caller that
-		// means "no directory") into a bogus, unrelated gate key. An empty cwd has
-		// no canonical form; keep it empty so keyFor yields the no-key behavior.
+		// turn "no directory" into a confident claim about an unrelated one: a cache
+		// lookup against the manager's own cwd, or a cmd.Dir the caller never asked
+		// for. An empty cwd has no canonical form, so keep it empty and let each
+		// consumer decide what to do with it. Both live callers already guarantee a
+		// non-empty value (StartJob fails closed, readSessions guards), so this is
+		// defence in depth.
 		return "", nil
 	}
 	abs, err := filepath.Abs(cwd)
