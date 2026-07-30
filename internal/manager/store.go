@@ -19,7 +19,6 @@ type jobStore interface {
 	Create(m jobstore.Meta) (string, error)
 	Load(id string) (jobstore.Meta, error)
 	UpdateMeta(m jobstore.Meta) error
-	SetConversationID(id, convID string) (string, error)
 	Remove(id string) error
 	Dir(id string) (string, error)
 	WriteExitCode(id string, code int) error

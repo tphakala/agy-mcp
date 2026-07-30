@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-// Meta describes a job. The identity fields are set at creation; PID,
-// StartTimeTicks, and ConversationID are filled in afterward by atomic rewrites
-// (UpdateMeta / SetConversationID).
+// Meta describes a job. The identity fields are set at creation, as is
+// ConversationID, which agy names in the init event of its stream before the job
+// is recorded. PID and StartTimeTicks are filled in afterward by an atomic
+// rewrite (UpdateMeta) once the supervisor has been spawned.
 type Meta struct {
 	ID             string        `json:"id"`
 	AgyPath        string        `json:"agy_path"`
@@ -222,13 +222,15 @@ func writeFileAtomic(dir, name string, b []byte) error {
 var ErrInvalidID = errors.New("invalid job id")
 
 // Store is a directory-backed collection of jobs.
+// Store holds no mutex on purpose. It once needed one to make
+// SetConversationID's load-modify-rewrite atomic against a concurrent
+// UpdateMeta; with the conversation-cache capture gone there is no
+// read-modify-write left, and every remaining writer hands in a complete Meta.
+// What protects a reader is writeMetaAtomic's temp-file-and-rename, not a lock,
+// and that holds across the manager/supervisor process boundary where a mutex
+// could not reach anyway.
 type Store struct {
 	root string
-	// mu serializes every meta rewrite (UpdateMeta and SetConversationID). It is
-	// what lets SetConversationID's read-modify-write be atomic: it holds mu across
-	// the Load and the rewrite, and because UpdateMeta also takes mu a concurrent
-	// UpdateMeta cannot land between the two and be clobbered.
-	mu sync.Mutex
 }
 
 // New returns a Store rooted at dir/jobs.
@@ -294,24 +296,14 @@ func (s *Store) Load(id string) (Meta, error) {
 	return LoadDir(s.jobDir(id))
 }
 
-// UpdateMeta atomically rewrites a job's meta.json. It takes s.mu so every meta
-// rewrite is serialized: a concurrent reader (such as the freshly spawned
-// supervisor) never observes a partially written file, and SetConversationID's
-// read-modify-write cannot be clobbered by a concurrent UpdateMeta landing
-// between its Load and its rewrite.
+// UpdateMeta atomically rewrites a job's meta.json. The caller supplies a
+// complete Meta, so there is nothing to serialize: writeMetaAtomic's rename is
+// what stops a concurrent reader (such as the freshly spawned supervisor) from
+// observing a partially written file.
 func (s *Store) UpdateMeta(m Meta) error {
 	if !validJobID(m.ID) {
 		return ErrInvalidID
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.updateMetaLocked(m)
-}
-
-// updateMetaLocked performs the atomic rewrite. The caller must hold s.mu. It is
-// the shared body of UpdateMeta (which acquires the lock) and SetConversationID
-// (which already holds it), so the two never deadlock by re-locking.
-func (s *Store) updateMetaLocked(m Meta) error {
 	return writeMetaAtomic(s.jobDir(m.ID), m)
 }
 
@@ -325,32 +317,6 @@ func writeMetaAtomic(dir string, m Meta) error {
 		return err
 	}
 	return writeFileAtomic(dir, MetaFile, b)
-}
-
-// SetConversationID persists convID as the job's conversation id, but only when
-// it is currently unset: it reloads the latest meta and rewrites just that field,
-// so it cannot clobber a concurrent meta update, and a second caller that races to
-// capture the same job is a no-op. It returns the effective conversation id (the
-// existing one if already set, otherwise convID).
-func (s *Store) SetConversationID(id, convID string) (string, error) {
-	// Serialize the read-modify-write so two callers racing to capture the same
-	// job cannot both observe an empty id and have the later write win (TOCTOU).
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := s.Load(id)
-	if err != nil {
-		return "", err
-	}
-	if m.ConversationID != "" {
-		return m.ConversationID, nil
-	}
-	m.ConversationID = convID
-	// Already holding s.mu, so rewrite via the locked variant; calling UpdateMeta
-	// here would re-acquire s.mu and deadlock.
-	if err := s.updateMetaLocked(m); err != nil {
-		return "", err
-	}
-	return convID, nil
 }
 
 // Remove deletes a job's directory and everything in it.

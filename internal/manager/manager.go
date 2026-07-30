@@ -745,29 +745,18 @@ func (m *Manager) runPeriodicGC(ctx context.Context, interval time.Duration) {
 
 // reqFromMeta reconstructs the parts of a StartRequest that determine a job's
 // gate key from its persisted meta. continue_latest is resolved into
-// ConversationID at start time, so ConversationID + Cwd reproduce the same key
+// ConversationID at start time, so the conversation id alone reproduces the key
 // the original run held.
 //
-// The cwd is re-normalized (best effort) so a job persisted by an older binary,
-// before StartJob canonicalized cwd, restores under the same key a new
-// same-directory run now computes. Without this, across the upgrade a restored
-// legacy job (raw cwd) and a new run (normalized cwd) would hold different keys,
-// fail to serialize, and risk concurrent O_TRUNC writes to the same agy cache
-// entry. For jobs started by the current binary meta.Cwd is already normalized,
-// so this is idempotent.
+// It used to re-normalize meta.Cwd as well, because the key was once derived
+// from the directory and a legacy job's raw cwd would otherwise restore under a
+// different key than a new same-directory run computed. Fresh runs stopped being
+// keyed by directory when the conversation id started coming from agy's own
+// stream, so keyFor reads nothing but ConversationID and the Abs plus
+// EvalSymlinks (plus an os.Getwd for a relative cwd) ran once per job in the
+// startup scan for a value nothing consumed.
 func reqFromMeta(meta jobstore.Meta) StartRequest {
-	cwd := meta.Cwd
-	if norm, err := normalizeCwd(cwd); err == nil {
-		cwd = norm
-	} else {
-		// Restore stays resilient (unlike StartJob, which fails closed), so a job
-		// whose cwd cannot be normalized keeps its raw cwd for the gate key. Log it:
-		// under this rare path (a legacy relative cwd plus an os.Getwd failure) the
-		// restored key may not match a new same-directory run's normalized key, the
-		// one inconsistency that can still split serialization for that job.
-		log.Printf("normalize cwd %q for restored job %s: %v; using raw cwd for gate key", cwd, meta.ID, err)
-	}
-	return StartRequest{ConversationID: meta.ConversationID, Cwd: cwd}
+	return StartRequest{ConversationID: meta.ConversationID}
 }
 
 // RestoreGate re-acquires gate slots and keys for jobs whose detached supervisor

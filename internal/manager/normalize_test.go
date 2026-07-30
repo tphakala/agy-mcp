@@ -56,27 +56,6 @@ func TestNormalizeCwdCollapsesEquivalentSpellings(t *testing.T) {
 	})
 }
 
-// TestReqFromMetaNormalizesLegacyCwd guards the upgrade window: a job persisted
-// by an older binary may have a raw, un-normalized meta.Cwd, and reqFromMeta
-// must canonicalize it. The cwd no longer feeds the gate key (only a
-// conversation does), but it still has to be normalized so a restored job's cwd
-// matches the spelling StartJob persists.
-func TestReqFromMetaNormalizesLegacyCwd(t *testing.T) {
-	dir := t.TempDir()
-	canonical, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	req := reqFromMeta(jobstore.Meta{Cwd: dir + "/"})
-	if req.Cwd != canonical {
-		t.Errorf("restored cwd = %q, want %q (legacy cwd not normalized)", req.Cwd, canonical)
-	}
-	// A restored fresh run keys on nothing, so it blocks no new run.
-	if got := keyFor(req); got != "" {
-		t.Errorf("restored gate key = %q, want empty for a fresh run", got)
-	}
-}
-
 // A restored job that was continuing a conversation still keys on it, which is
 // the serialization that remains.
 func TestReqFromMetaKeysOnConversation(t *testing.T) {
@@ -96,14 +75,6 @@ func TestNormalizeCwdPreservesEmpty(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("normalizeCwd(empty) = %q, want empty", got)
-	}
-}
-
-// TestReqFromMetaPreservesEmptyCwd verifies a legacy job persisted with no cwd
-// restores under the no-key behavior, not under the manager's working directory.
-func TestReqFromMetaPreservesEmptyCwd(t *testing.T) {
-	if k := keyFor(reqFromMeta(jobstore.Meta{Cwd: ""})); k != "" {
-		t.Errorf("restored gate key for empty cwd = %q, want empty", k)
 	}
 }
 
