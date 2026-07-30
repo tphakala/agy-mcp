@@ -131,11 +131,19 @@ func NewReader(r io.Reader) *Reader {
 // is readable at any point and is final once Next has returned an error.
 func (r *Reader) Malformed() int { return r.malformed }
 
-// Next returns the next decodable event. It returns io.EOF at a clean end of
-// stream and any other read error unchanged, so a stream torn off mid-run is
-// reported as the failure it is rather than passed off as a finished one. Along
-// the way it skips blank lines silently, and skips undecodable and over-long
-// lines after counting them in Malformed.
+// Next returns the next decodable event, io.EOF at a clean end of stream, or a read
+// error, so a stream torn off mid-run is reported as the failure it is rather than
+// passed off as a finished one. Along the way it skips blank lines silently, and
+// skips undecodable and over-long lines after counting them in Malformed.
+//
+// A read error arriving on the same call as a decodable event is DEFERRED rather
+// than returned with it: the event comes back first, which is what io.Reader asks
+// of a caller (process the bytes, then consider the error), and the next call
+// reports the failure. Nothing is swallowed. Measured both ways: a reader that
+// repeats its error (a torn pipe) yields it again, and one that falls silent yields
+// io.ErrNoProgress. The case is narrow anyway, since bufio hands back a buffered
+// whole line with a nil error and keeps the error for the following read, so the
+// two only coincide when the tear lands on a line with no terminator.
 func (r *Reader) Next() (Event, error) {
 	for {
 		line, truncated, err := r.readLine()
@@ -170,8 +178,8 @@ func (r *Reader) Next() (Event, error) {
 }
 
 // readLine reads one newline-terminated line, growing past bufio's internal
-// buffer. It returns the line with its terminator still attached whenever the
-// stream supplied one, whether the line exceeded maxLineBytes (in which case the
+// buffer. It returns the line with its terminator still attached whenever the line
+// came back whole, whether the line exceeded maxLineBytes (in which case the
 // overflow is discarded and the retained prefix must not be decoded), and the
 // terminating error if any. Two reachable paths carry no terminator: a stream that
 // ends mid-line, and a truncated line, whose newline sits in the discarded
