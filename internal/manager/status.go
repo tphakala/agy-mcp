@@ -41,10 +41,15 @@ const (
 type Status struct {
 	State   string // running | done | failed | cancelled
 	Elapsed time.Duration
-	// Result is the assistant's response. Every TERMINAL state that produced any
-	// text carries one, not done alone: a cancelled, timed-out or crashed run
-	// carries whatever it managed to say, so that work is offered back rather
-	// than discarded. Consult Partial before treating it as final.
+	// Result is the assistant's response. Every TERMINAL state whose text can be
+	// RECOVERED carries one, not done alone: a cancelled, timed-out or crashed
+	// run carries whatever it managed to say, so that work is offered back rather
+	// than discarded. Recoverable is the operative word, since text can exist on
+	// disk and still not be readable: that leaves this empty, reported as an Error
+	// where the read was the only possible source of an answer
+	// (cleanExitWithoutPayload, recoverInterrupted) and passed over silently where
+	// the state was already decided without it (carryText). Consult Partial before
+	// treating it as final.
 	//
 	// A running job deliberately reports none, even once it has streamed text.
 	// Status returns above without reading the out file while the job is live,
@@ -529,10 +534,13 @@ func (m *Manager) frozenElapsed(meta jobstore.Meta, running time.Duration) time.
 // unreadable file (report a failure) from an empty one (a clean empty result).
 //
 // The read is pre-sized from the file's own size, so a large out file is not
-// rebuilt by the grow-and-copy an unsized io.ReadAll performs. That is worth the
-// Stat because every agy_status on a terminal job reads its full output, and
-// polling is the primary way a result is collected. The size is only a hint: the
-// LimitReader still owns the cap, and the buffer still grows on its own if the
+// rebuilt by the grow-and-copy an unsized io.ReadAll performs. What pays for
+// this is the fallback paths rather than every terminal status: a run whose
+// terminal payload carried a response is answered from that and never opens out
+// at all (see carryText). The callers that do open it are the runs cut short,
+// the recovered ones, and a legacy job dir, and those are polled like any other.
+// The size is only a hint: the LimitReader still owns the cap (so an out over it
+// is truncated, not read whole), and the buffer still grows on its own if the
 // file changed since the Stat.
 func readFile(p string) (string, error) {
 	f, err := os.Open(p)

@@ -81,8 +81,8 @@ var (
 	// annReadLocal: answers from local state (the job store, agy's conversation
 	// cache) and writes nothing at all, so readOnlyHint is literal here rather
 	// than a claim about the blast radius of some tolerable write. A status read
-	// answers from files the supervisor owns, and a fresh run's conversation id
-	// is never copied back into its meta (see jobstore.Meta: it lives only in
+	// only reads the job dir's files, and a fresh run's conversation id is never
+	// copied back into its meta (see jobstore.Meta: it lives only in
 	// progress.json, which is where every reader of it looks), so there is no
 	// memoization for a read to perform.
 	annReadLocal = &mcp.ToolAnnotations{
@@ -147,7 +147,7 @@ type statusInput struct {
 type statusOutput struct {
 	State          string `json:"state" jsonschema:"running, done, failed or cancelled"`
 	Elapsed        string `json:"elapsed" jsonschema:"wall-clock time the job has run, frozen at completion once terminal"`
-	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set on any terminal state that produced text, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first. A running job carries none even once it has produced text, so collect the result once the state is terminal"`
+	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set on any terminal state whose text could be recovered, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first. A running job carries none even once it has produced text, so collect the result once the state is terminal"`
 	Error          string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread"`
 	// Partial marks a result that is not a verified final answer; see
