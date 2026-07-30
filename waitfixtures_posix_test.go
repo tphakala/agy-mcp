@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -63,4 +64,27 @@ func startRunningJobForWait(t *testing.T, sleep time.Duration, convLabel string,
 
 	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
 	return job.ID
+}
+
+// armWaitReady wires the readiness handshake into a wait subcommand about to be
+// started as a child process, and returns a function that blocks until the child
+// has installed its SIGINT/SIGTERM handler. Call it before cmd.Start, then call
+// the returned function before signalling.
+//
+// Signalling any earlier is the issue #86 race: until the handler is installed
+// the default disposition kills the child, which reports as exit code -1 with
+// empty output rather than the exit code under test. cmd.Env has to be set
+// explicitly because the fixtures above use t.Setenv, so the child needs the
+// current process environment plus this one variable.
+func armWaitReady(t *testing.T, cmd *exec.Cmd) func() {
+	t.Helper()
+	ready := filepath.Join(t.TempDir(), "wait-ready")
+	cmd.Env = append(os.Environ(), waitReadyFileEnv+"="+ready)
+	return func() {
+		t.Helper()
+		testutil.WaitFor(t, 10*time.Second, func() bool {
+			_, err := os.Stat(ready)
+			return err == nil
+		}, "child never signalled that its signal handler is installed")
+	}
 }

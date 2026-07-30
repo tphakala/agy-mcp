@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -85,5 +86,36 @@ func waitForJob(id string, timeout time.Duration) (manager.Status, bool, error) 
 func waitForJobWith(mgr *manager.Manager, id string, timeout time.Duration) (manager.Status, bool, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	// The handler is installed by the time NotifyContext returns, so from here a
+	// SIGINT or SIGTERM cancels this wait instead of killing the process. That is
+	// the moment the readiness file announces.
+	signalWaitReady()
 	return mgr.WaitTerminal(ctx, id, time.Now().Add(timeout), nil)
+}
+
+// waitReadyFileEnv names an optional file the wait subcommands create once the
+// SIGINT/SIGTERM handler above is installed.
+//
+// A caller that means to interrupt a wait has no other way to know when that
+// handler is in place, and the window before it is not negligible: flag parsing,
+// config resolution and manager construction all run first. A signal that lands
+// in that window meets the default disposition and kills the process outright,
+// losing the exit contract the signal was sent to exercise (130 for wait-job, an
+// exit-2 wake for hook-wait). Waiting for this file to appear before signalling
+// closes the window; the alternative, sleeping a margin and hoping, is only
+// probabilistically safe and was the cause of issue #86.
+//
+// Unset by default, in which case nothing is written and nothing changes.
+const waitReadyFileEnv = "AGY_MCP_WAIT_READY_FILE"
+
+// signalWaitReady creates the file named by AGY_MCP_WAIT_READY_FILE, if the
+// variable is set. Errors are deliberately swallowed: the file is a courtesy to
+// a parent process and must never derail the wait it announces. A caller that
+// never sees the file is left with whatever timeout it would have needed anyway.
+func signalWaitReady() {
+	path := os.Getenv(waitReadyFileEnv)
+	if path == "" {
+		return
+	}
+	_ = os.WriteFile(path, nil, 0o600)
 }

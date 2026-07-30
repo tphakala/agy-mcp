@@ -48,6 +48,7 @@ func TestHookWaitWakesOnInterrupt(t *testing.T) {
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
+	awaitReady := armWaitReady(t, cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -60,10 +61,10 @@ func TestHookWaitWakesOnInterrupt(t *testing.T) {
 			_ = cmd.Wait()
 		}
 	})
-	// Give the child a moment to reach signal.NotifyContext (resolveWaitManager and
-	// Parse run first; the job sleeps 5s, so there is ample margin either way)
-	// before signalling it.
-	time.Sleep(300 * time.Millisecond)
+	// Block until the child reports its signal handler is installed. Parse and
+	// resolveWaitManager run before that point, and a SIGINT landing there would
+	// kill the child outright instead of exercising the interrupt path.
+	awaitReady()
 	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}

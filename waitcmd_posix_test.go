@@ -40,6 +40,7 @@ func TestWaitJobInterrupted(t *testing.T) {
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
+	awaitReady := armWaitReady(t, cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -53,11 +54,10 @@ func TestWaitJobInterrupted(t *testing.T) {
 		}
 	})
 	// waitForJob resolves the wait config and constructs the manager before
-	// waitForJobWith installs the signal.NotifyContext handler, so this margin
-	// covers that whole pre-handler window. wait-job produces no observable side
-	// effect until it goes terminal, so there is nothing to poll for readiness; the
-	// job sleeps 5s, leaving ample margin either way.
-	time.Sleep(300 * time.Millisecond)
+	// waitForJobWith installs the signal.NotifyContext handler, and a SIGINT
+	// arriving in that window kills the child rather than interrupting its wait.
+	// Block until the child announces the handler is in place.
+	awaitReady()
 	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}

@@ -116,7 +116,13 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 	}
 	if in.Timeout != "" {
 		d, err := time.ParseDuration(in.Timeout)
-		if err != nil || d <= 0 {
+		if err != nil {
+			// Keep the parse error: it names what is actually wrong with the input
+			// ("missing unit in duration", "unknown unit"), which the generic hint
+			// below cannot express and the caller would otherwise have to guess.
+			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: %w", in.Timeout, err)
+		}
+		if d <= 0 {
 			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: want a positive Go duration like 20m", in.Timeout)
 		}
 		if d > maxJobTimeout {

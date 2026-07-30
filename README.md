@@ -188,6 +188,8 @@ Two related subcommands, useful beyond Claude Code:
 - `agy-mcp wait-job [-timeout 1h] <job_id>` blocks until the job is terminal and prints the final state word (`done`, `failed`, or `cancelled`) to stdout. Exit codes: 0 terminal, 1 error, 2 usage, 3 timeout, 130 interrupted. It needs only the job state directory, not the agy binary, so it works in minimal environments.
 - `agy-mcp hook-wait [-timeout 1h]` is the hook entrypoint described above: it reads the PostToolUse payload from stdin, so it is not useful to invoke by hand, but it is a single self-contained binary call, no shell wrapper or jq required, and it works on Linux, macOS, and Windows. The file-based wake contract is exercised by tests on all three platforms; the signal-interrupt wake (SIGINT/SIGTERM) is a POSIX behavior and is tested there.
 
+Both subcommands install their SIGINT/SIGTERM handler only after resolving the job state directory, so a signal sent immediately after launch can land before the handler exists and kill the process outright, losing the interrupt exit code. A parent that intends to interrupt a wait can close that window by setting `AGY_MCP_WAIT_READY_FILE` to a path: the subcommand creates that file the moment the handler is in place, so waiting for it to appear makes the signal deliverable. Leave it unset and nothing is written.
+
 MCP clients other than Claude Code get the same no-polling benefit in-protocol: call `agy_wait` with a `job_id` from `agy_run` (or from an `agy_run_sync` that outlived its inline wait) and the tool blocks (bounded by `wait`, default 2m, max 10m) until the job finishes.
 
 ## HTTP mode
@@ -228,6 +230,7 @@ v2 requires agy 1.1.8 and drives it through `--output-format stream-json`. The u
 | `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
 | `AGY_MCP_DEFAULT_MODEL` | agy default | default model |
 | `AGY_MCP_HTTP_TOKEN` | (none) | optional bearer token for HTTP mode; empty = unauthenticated |
+| `AGY_MCP_WAIT_READY_FILE` | (none) | file `wait-job` / `hook-wait` create once their SIGINT/SIGTERM handler is installed; empty = nothing is written |
 
 ## Development
 
