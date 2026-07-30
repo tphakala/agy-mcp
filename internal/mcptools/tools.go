@@ -79,11 +79,11 @@ var (
 		OpenWorldHint:   new(true),
 	}
 	// annReadLocal: answers from local state (the job store, agy's conversation
-	// cache) and changes nothing the caller can observe. Not literally
-	// side-effect-free: reading a finished job's status memoizes the captured
-	// conversation id into the job's meta (manager.persistCapturedID). That write
-	// is idempotent bookkeeping over a value the job already produced, so
-	// readOnlyHint still describes the blast radius accurately.
+	// cache) and writes nothing at all, so readOnlyHint is literal here rather
+	// than a claim about the blast radius of some tolerable write. A status read
+	// derives everything from the job dir, and a conversation id reaches a job's
+	// meta exactly once, when StartJob creates it, so no read is left with
+	// bookkeeping to persist.
 	annReadLocal = &mcp.ToolAnnotations{
 		ReadOnlyHint:  true,
 		OpenWorldHint: new(false),
@@ -136,7 +136,7 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 type runOutput struct {
 	JobID          string `json:"job_id" jsonschema:"handle for this run; pass it to agy_wait, agy_status or agy_cancel"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Rarely empty on a fresh run, when agy had not yet named the conversation; agy_status reports it moments later"`
-	State          string `json:"state" jsonschema:"always running: the job has been started and cannot have finished yet. Block with agy_wait or check agy_status for the outcome"`
+	State          string `json:"state" jsonschema:"always running: the state at hand-off, not a live check. A short run can already have finished by the time this is returned and still reports running here. Block with agy_wait or check agy_status for the outcome"`
 }
 
 type statusInput struct {
@@ -146,7 +146,7 @@ type statusInput struct {
 type statusOutput struct {
 	State          string `json:"state" jsonschema:"running, done, failed or cancelled"`
 	Elapsed        string `json:"elapsed" jsonschema:"wall-clock time the job has run, frozen at completion once terminal"`
-	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set whenever the run produced any text, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first"`
+	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set on any terminal state that produced text, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first. A running job carries none even once it has produced text, so collect the result once the state is terminal"`
 	Error          string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread"`
 	// Partial marks a result that is not a verified final answer; see
@@ -159,7 +159,7 @@ type statusOutput struct {
 	// StepType answers "what is it doing" for a running job, which is the whole
 	// point of polling one. It reaches the wire as well as the progress
 	// notification because Claude Code never surfaces notifications to the model.
-	StepType string `json:"step_type,omitempty" jsonschema:"what agy is doing right now (for example agent_response or a tool call), for a running job; a hint that lags by up to one poll"`
+	StepType string `json:"step_type,omitempty" jsonschema:"what agy is doing right now (for example agent_response or a tool call); a hint that lags by up to one poll. A terminal job keeps the last step it recorded rather than clearing it, so read it as live progress only while state is running"`
 }
 
 // usageOutput mirrors agy's usage object on the wire. It is declared here rather
