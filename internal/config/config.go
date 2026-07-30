@@ -224,5 +224,11 @@ func ResolveWait() (Config, error) {
 	// consume them today.
 	c.DefaultModel = os.Getenv("AGY_MCP_DEFAULT_MODEL")
 	c.HTTPToken = os.Getenv("AGY_MCP_HTTP_TOKEN")
+	// One AGY_MCP_ variable is deliberately not read here: AGY_MCP_WAIT_READY_FILE,
+	// which the wait subcommands read in package main (see waitReadyFileEnv). It is
+	// consumed at the instant their signal handler is installed, which is past the
+	// point a resolved Config is threaded to, so routing it through here would buy
+	// uniformity at the cost of carrying the value through two more signatures.
+	// Noted so an audit of the env surface from this file is not misled.
 	return c, nil
 }

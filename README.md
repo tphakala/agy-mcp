@@ -188,7 +188,7 @@ Two related subcommands, useful beyond Claude Code:
 - `agy-mcp wait-job [-timeout 1h] <job_id>` blocks until the job is terminal and prints the final state word (`done`, `failed`, or `cancelled`) to stdout. Exit codes: 0 terminal, 1 error, 2 usage, 3 timeout, 130 interrupted. It needs only the job state directory, not the agy binary, so it works in minimal environments.
 - `agy-mcp hook-wait [-timeout 1h]` is the hook entrypoint described above: it reads the PostToolUse payload from stdin, so it is not useful to invoke by hand, but it is a single self-contained binary call, no shell wrapper or jq required, and it works on Linux, macOS, and Windows. The file-based wake contract is exercised by tests on all three platforms; the signal-interrupt wake (SIGINT/SIGTERM) is a POSIX behavior and is tested there.
 
-Both subcommands install their SIGINT/SIGTERM handler only after resolving the job state directory, so a signal sent immediately after launch can land before the handler exists and kill the process outright, losing the interrupt exit code. A parent that intends to interrupt a wait can close that window by setting `AGY_MCP_WAIT_READY_FILE` to a path: the subcommand creates that file the moment the handler is in place, so waiting for it to appear makes the signal deliverable. Leave it unset and nothing is written.
+On POSIX, both subcommands install their SIGINT/SIGTERM handler only after parsing flags, resolving the job state directory and building the wait manager (and hook-wait also reads its payload from stdin first), so a signal sent immediately after launch can land before the handler exists and kill the process outright, losing the interrupt exit code. A parent that intends to interrupt a wait can close that window by setting `AGY_MCP_WAIT_READY_FILE`: the subcommand creates that file the moment the handler is in place, so waiting for it to appear makes the signal deliverable. Leave it unset and nothing is written. Three caveats, because existence is the entire signal: the path must be absolute (a relative one resolves against each process's own working directory, and hook-wait runs from the session cwd), it must be fresh and unique per invocation (a file left from an earlier run satisfies the wait immediately and hands back the race), and the parent still needs its own timeout, since both subcommands have exit paths that return before any handler is armed. An existing file at that path is refused rather than overwritten, so a stale one fails the safe way.
 
 MCP clients other than Claude Code get the same no-polling benefit in-protocol: call `agy_wait` with a `job_id` from `agy_run` (or from an `agy_run_sync` that outlived its inline wait) and the tool blocks (bounded by `wait`, default 2m, max 10m) until the job finishes.
 
@@ -230,7 +230,7 @@ v2 requires agy 1.1.8 and drives it through `--output-format stream-json`. The u
 | `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
 | `AGY_MCP_DEFAULT_MODEL` | agy default | default model |
 | `AGY_MCP_HTTP_TOKEN` | (none) | optional bearer token for HTTP mode; empty = unauthenticated |
-| `AGY_MCP_WAIT_READY_FILE` | (none) | file `wait-job` / `hook-wait` create once their SIGINT/SIGTERM handler is installed; empty = nothing is written |
+| `AGY_MCP_WAIT_READY_FILE` | (none) | absolute path `wait-job` / `hook-wait` create once their SIGINT/SIGTERM handler is installed, so a parent can signal without racing it; must be fresh per invocation, an existing file is refused rather than overwritten; empty = nothing is written |
 
 ## Development
 

@@ -68,23 +68,37 @@ func startRunningJobForWait(t *testing.T, sleep time.Duration, convLabel string,
 
 // armWaitReady wires the readiness handshake into a wait subcommand about to be
 // started as a child process, and returns a function that blocks until the child
-// has installed its SIGINT/SIGTERM handler. Call it before cmd.Start, then call
-// the returned function before signalling.
+// has installed its SIGINT/SIGTERM handler.
 //
 // Signalling any earlier is the issue #86 race: until the handler is installed
 // the default disposition kills the child, which reports as exit code -1 with
-// empty output rather than the exit code under test. cmd.Env has to be set
-// explicitly because the fixtures above use t.Setenv, so the child needs the
-// current process environment plus this one variable.
+// empty output rather than the exit code under test.
+//
+// Two ordering requirements, one of them enforced below. It must run before
+// cmd.Start, because exec.Cmd reads Env once at Start and a later assignment is
+// ignored. It must also run after every t.Setenv the child needs, because
+// setting Env at all replaces the inherited environment, and the os.Environ()
+// snapshot is taken here rather than at Start. Both fixtures above do their
+// t.Setenv work before returning, so callers get this right by writing the
+// natural order.
 func armWaitReady(t *testing.T, cmd *exec.Cmd) func() {
 	t.Helper()
+	if cmd.Process != nil {
+		t.Fatal("armWaitReady must be called before cmd.Start: exec.Cmd reads Env at Start")
+	}
 	ready := filepath.Join(t.TempDir(), "wait-ready")
-	cmd.Env = append(os.Environ(), waitReadyFileEnv+"="+ready)
+	// Append rather than overwrite: a sibling test in this package (serve_noagy_test.go)
+	// builds cmd.Env itself, and silently dropping that would be invisible.
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, waitReadyFileEnv+"="+ready)
 	return func() {
 		t.Helper()
 		testutil.WaitFor(t, 10*time.Second, func() bool {
 			_, err := os.Stat(ready)
 			return err == nil
-		}, "child never signalled that its signal handler is installed")
+		}, "child never signalled that its signal handler is installed; it may have exited early, "+
+			"so check the exit code and stderr reported by the assertions below")
 	}
 }

@@ -53,12 +53,13 @@ var buildBinary = sync.OnceValues(func() (string, error) {
 		return "", fmt.Errorf("build agy-mcp: %w\n%s", err, out)
 	}
 	// Exec the fresh binary once and discard the result, so the operating system
-	// pays its first-exec cost here rather than inside a test that is racing a
-	// timer against the child's startup. On macOS that cost is code-signature
-	// validation of a newly written binary, measured at ~360ms cold against
-	// ~10ms warm; TestHookWaitWakesOnInterrupt signals at 300ms and so killed the
-	// child before it had installed its signal handler, failing with a
-	// signal-death exit rather than the expected wake.
+	// pays its first-exec cost here rather than inside a test waiting on the
+	// child's startup. On macOS that cost is code-signature validation of a newly
+	// written binary, measured at ~360ms cold against ~10ms warm. No test depends
+	// on this for correctness any more: the interrupt tests used to race a 300ms
+	// timer against the child installing its signal handler, and now block on the
+	// readiness handshake instead (see waitReadyFileEnv). What it still buys is
+	// keeping that cold-start cost out of every readiness budget in the package.
 	//
 	// `wait-job` with no arguments is the cheapest complete run available: it
 	// prints usage and exits 2 without touching the state dir or execing agy.
