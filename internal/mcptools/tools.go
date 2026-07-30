@@ -81,9 +81,10 @@ var (
 	// annReadLocal: answers from local state (the job store, agy's conversation
 	// cache) and writes nothing at all, so readOnlyHint is literal here rather
 	// than a claim about the blast radius of some tolerable write. A status read
-	// derives everything from the job dir, and a conversation id reaches a job's
-	// meta exactly once, when StartJob creates it, so no read is left with
-	// bookkeeping to persist.
+	// answers from files the supervisor owns, and a fresh run's conversation id
+	// is never copied back into its meta (see jobstore.Meta: it lives only in
+	// progress.json, which is where every reader of it looks), so there is no
+	// memoization for a read to perform.
 	annReadLocal = &mcp.ToolAnnotations{
 		ReadOnlyHint:  true,
 		OpenWorldHint: new(false),
