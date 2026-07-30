@@ -24,8 +24,24 @@ func TestSignalWaitReady(t *testing.T) {
 		}
 	})
 
+	// Two things make this assertion mean something. The code is aimed at the
+	// directory and shown to write there before the aim is taken away, so the
+	// absence afterwards is a fact about a path the function knows; and the
+	// directory is also the process's working directory, so a guard that stopped
+	// returning early and fell back to a bare filename would land here too.
+	// Without both, the subtest holds for every possible implementation, including
+	// one that writes on every call. It still cannot see a fallback to some
+	// unrelated absolute path, which no assertion short of scanning the filesystem
+	// could.
 	t.Run("unset writes nothing", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Chdir(dir)
+		path := filepath.Join(dir, "ready")
+		t.Setenv(waitReadyFileEnv, path)
+		signalWaitReady()
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("the readiness file was not written where the test aimed it: %v", err)
+		}
 		t.Setenv(waitReadyFileEnv, "")
 		signalWaitReady()
 		entries, err := os.ReadDir(dir)
@@ -57,11 +73,21 @@ func TestSignalWaitReady(t *testing.T) {
 		}
 	})
 
-	// The swallowed-error promise: a path that cannot be written must return
+	// The swallowed-error promise: a path that cannot be created must still return
 	// normally, because this call sits between the signal handler and the wait it
-	// announces and may never derail either.
-	t.Run("an unwritable path is swallowed", func(t *testing.T) {
-		t.Setenv(waitReadyFileEnv, filepath.Join(t.TempDir(), "no-such-dir", "ready"))
+	// announces and may never derail either. It is a smoke case by nature, since
+	// the only observable of a swallowed error is that nothing happens: it proves
+	// the call returns and creates no file, not how it failed.
+	t.Run("a path that cannot be created is swallowed", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv(waitReadyFileEnv, filepath.Join(dir, "no-such-dir", "ready"))
 		signalWaitReady()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("created %d entries under a missing parent directory, want none", len(entries))
+		}
 	})
 }

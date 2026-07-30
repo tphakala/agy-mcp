@@ -123,8 +123,8 @@ func waitForJobWith(mgr *manager.Manager, id string, timeout time.Duration) (man
 //     blocking on this file forever.
 //
 // Unset by default, in which case nothing is written and nothing changes. It is
-// primarily a test seam: armWaitReady, in waitfixtures_posix_test.go, is its
-// only in-tree consumer.
+// primarily a test seam: its in-tree consumers are armWaitReady, in
+// waitfixtures_posix_test.go, and the direct test in waitready_test.go.
 const waitReadyFileEnv = "AGY_MCP_WAIT_READY_FILE"
 
 // signalWaitReady creates the file named by AGY_MCP_WAIT_READY_FILE, if the

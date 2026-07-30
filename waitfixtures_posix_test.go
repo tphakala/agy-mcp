@@ -87,8 +87,9 @@ func armWaitReady(t *testing.T, cmd *exec.Cmd) func() {
 		t.Fatal("armWaitReady must be called before cmd.Start: exec.Cmd reads Env at Start")
 	}
 	ready := filepath.Join(t.TempDir(), "wait-ready")
-	// Append rather than overwrite: a sibling test in this package (serve_noagy_test.go)
-	// builds cmd.Env itself, and silently dropping that would be invisible.
+	// Append rather than overwrite. No current caller sets cmd.Env first, but tests
+	// in this package do build it by hand (serve_noagy_test.go), so a future caller
+	// combining the two would otherwise lose its variables with nothing to see.
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
 	}
