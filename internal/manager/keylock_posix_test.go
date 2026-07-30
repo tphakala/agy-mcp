@@ -86,10 +86,13 @@ func TestCrossLockTryLockRejectsDuplicateHeldKey(t *testing.T) {
 	}
 }
 
-// TestCrossLockHashesArbitraryKeys: a gate key is an absolute cwd or a conversation
-// id, so it can contain path separators and "..". Hashing the key into the filename
-// must keep the lock file inside the locks dir (no path escape) and still serialize
-// siblings, for both traversal-laden and very long keys.
+// TestCrossLockHashesArbitraryKeys: a gate key embeds a conversation id that
+// nothing on the way in validates (see lockPath), so it can contain path
+// separators and "..". Hashing the key into the filename must keep the lock file
+// inside the locks dir (no path escape) and still serialize siblings, for both
+// traversal-laden and very long keys. The keys below are spelled "cwd:" for
+// historical reasons; the prefix is immaterial, since what is under test is that
+// an arbitrary key cannot escape.
 func TestCrossLockHashesArbitraryKeys(t *testing.T) {
 	dir := t.TempDir()
 	a := newCrossLock(dir)

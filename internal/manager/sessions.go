@@ -17,8 +17,8 @@ type Session struct {
 }
 
 // agyCachePath returns the path to last_conversations.json, honoring HOME. An
-// empty return (the home dir is unresolvable) degrades every consumer to "no
-// sessions" and disables conversation-id capture, so log it rather than failing
+// empty return (the home dir is unresolvable) disables both features that read the
+// cache, continue_latest and session listing, so log it rather than failing
 // silently; the cause is almost always a missing HOME in a restricted environment.
 func agyCachePath() string {
 	home, err := os.UserHomeDir()
@@ -31,7 +31,7 @@ func agyCachePath() string {
 
 // ListSessions returns known conversations, optionally filtered to one dir. It
 // reads m.cacheFile so it shares the manager's single source of truth for the agy
-// cache path (and is injectable in tests) like the capture/resolve paths.
+// cache path (and is injectable in tests), as resolveLatest does.
 func (m *Manager) ListSessions(dir string) ([]Session, error) {
 	return readSessions(m.cacheFile, dir)
 }

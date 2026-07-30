@@ -14,9 +14,10 @@ import (
 )
 
 func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
-	// withCacheFile injects a test-owned cache file so the fresh run's id capture
-	// does not read the developer's real agy cache or leak a capture goroutine
-	// racing cleanup.
+	// withCacheFile injects a test-owned cache file so nothing here can read the
+	// developer's real agy cache. This run resolves no conversation (no
+	// continue_latest), so the file is never actually read; the injection is
+	// insurance against a future change here, not a dependency of this test.
 	m := newManager(t, managerOpts{
 		agyPath:        "/usr/bin/agy",
 		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),

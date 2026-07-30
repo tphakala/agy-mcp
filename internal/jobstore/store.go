@@ -86,10 +86,19 @@ func ResultPath(dir string) string   { return filepath.Join(dir, ResultFile) }
 // gives each of them a file with exactly one writer, which is what makes the
 // atomic rewrite sufficient on its own.
 type Progress struct {
-	ConversationID string    `json:"conversation_id,omitempty"`
-	StepIndex      int       `json:"step_index"`
-	StepType       string    `json:"step_type,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	// StepIndex is the index of the step the run is on. No PRODUCTION code reads it
+	// back off disk: the manager reports StepType, not the index. It is kept
+	// because the supervisor compares it against each incoming event to decide
+	// whether anything observable actually moved (see consumeStream), which is what
+	// stops a repeated update for one step from atomically rewriting a
+	// byte-identical file. Persisting it lets a test assert the value, which keeps
+	// the ASSIGNMENT honest; the comparison itself is asserted by nothing, and
+	// deleting it leaves the whole suite green, so treat that dedup as an
+	// optimization a later change can silently revert.
+	StepIndex int       `json:"step_index"`
+	StepType  string    `json:"step_type,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // WriteProgressDir atomically rewrites a job's progress file.
@@ -228,8 +237,9 @@ func writeFileAtomic(dir, name string, b []byte) error {
 var ErrInvalidID = errors.New("invalid job id")
 
 // Store is a directory-backed collection of jobs.
-// Store holds no mutex on purpose. It once needed one to make
-// SetConversationID's load-modify-rewrite atomic against a concurrent
+//
+// Store holds no mutex on purpose. It once needed one to make a since-deleted
+// load-modify-rewrite (SetConversationID) atomic against a concurrent
 // UpdateMeta; with the conversation-cache capture gone there is no
 // read-modify-write left, and every remaining writer hands in a complete Meta.
 // What protects a reader is writeMetaAtomic's temp-file-and-rename, not a lock,

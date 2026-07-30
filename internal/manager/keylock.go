@@ -13,16 +13,16 @@ import (
 // gate's per-key serialization holds across separate agy-mcp processes that share
 // one AGY_MCP_STATE_DIR. That sharing is the default in stdio mode, where every MCP
 // client session spawns its own agy-mcp process: the in-process gate (concurrency.go)
-// stops same-key concurrency within one process, and this stops it across processes,
-// closing the agy session-lock hang and the conversation-cache misattribution the
-// gate alone cannot prevent on a shared state dir.
+// stops same-key concurrency within one process, and this stops it across
+// processes, closing the agy session-lock hang that the gate alone cannot prevent
+// on a shared state dir.
 //
 // A lock is held by the manager process for the whole run: acquired alongside the
 // gate slot and released when the job ends. The held fd is kept open and stored
 // here; closing it drops the flock. Lock files are never unlinked, because removing
 // a flock file races (one process unlinks while another recreates, and both then
 // hold locks on different inodes for the same path), so the empty files are left in
-// place. They accumulate one per distinct conversation/cwd ever locked, each zero
+// place. They accumulate one per distinct conversation ever locked, each zero
 // bytes.
 type crossLock struct {
 	dir string
@@ -34,10 +34,34 @@ func newCrossLock(stateDir string) *crossLock {
 	return &crossLock{dir: filepath.Join(stateDir, "locks"), fds: map[string]*os.File{}}
 }
 
-// lockPath maps a gate key to its lock file. The key (a conversation id or an
-// absolute cwd) is hashed so an arbitrary path can neither escape the locks dir nor
-// collide with another key, and so sibling processes derive the same path for the
-// same key.
+// lockPath maps a gate key to its lock file, as <locks dir>/<sha256 of key>.lock.
+//
+// The hash is load-bearing, not cosmetic. The key is "conv:" plus a conversation
+// id (keyFor), and nothing validates that id anywhere on the way here: it arrives
+// raw off the MCP wire, or out of agy's own cache via resolveLatest, or replayed
+// from meta.json on restore. Hashing is what turns that arbitrary string into one
+// safe, unique, fixed-length filename. So it cannot escape the locks dir (an id
+// carrying enough ".." would otherwise resolve to a path outside it; how far out
+// depends on the state dir's depth, and whether the open then succeeds or merely
+// fails somewhere it should never have reached is not the point); cannot alias onto
+// another key's file, which matters because NTFS and a default APFS or HFS+ volume
+// are case-insensitive, so an unhashed "conv:ABC" and "conv:abc" would land on one
+// lock file; cannot outgrow a filesystem's name limit; and is a legal filename
+// everywhere, which the raw key is not: the "conv:" colon selects an alternate data
+// stream on Windows rather than naming a file.
+// Hashing is also deterministic, so sibling processes derive one path from one key
+// without agreeing on an escaping scheme. Validate the id at the entry point and
+// the escape half stops being the only guard; until then it is.
+//
+// No worked example of the length case, and none of Windows' name-mangling ones
+// (trailing dots and spaces, reserved device names), on purpose. Those arguments
+// fit validJobID (jobstore), where the id IS the whole path component, and they do
+// not transplant to here, where the component is the hash plus ".lock"; derive any
+// concrete case for "conv:"+id+".lock" rather than for the id on its own. The
+// case-folding example above survives that test, which is why it is stated.
+//
+// The empty key never reaches here: both routes into tryLock (admit and
+// forceAdmit) return before it.
 func (c *crossLock) lockPath(key string) string {
 	return filepath.Join(c.dir, fmt.Sprintf("%x.lock", sha256.Sum256([]byte(key))))
 }

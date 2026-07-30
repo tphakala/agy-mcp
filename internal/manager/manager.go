@@ -341,8 +341,10 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if cwd == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			// An empty cwd would produce gate key "", which skips serialization
-			// entirely and runs agy in an inherited directory. Fail instead.
+			// An empty cwd would run agy in whatever directory this process
+			// inherited, and would be persisted as the job's cwd. Fail instead.
+			// (It has no bearing on serialization: keyFor reads only the
+			// conversation id, so every fresh run keys on nothing regardless.)
 			return Job{}, fmt.Errorf("determine working directory: %w", err)
 		}
 		cwd = wd

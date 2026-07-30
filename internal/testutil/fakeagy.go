@@ -16,10 +16,11 @@ import (
 	"github.com/tphakala/agy-mcp/v2/internal/streamjson"
 )
 
-// DefaultFakeConversationID is the conversation id a FakeAgy reports when the
+// defaultFakeConversationID is the conversation id a FakeAgy reports when the
 // test does not pin one. It is a well-formed UUID so it reads like a real agy
-// value in failure output.
-const DefaultFakeConversationID = "11111111-2222-3333-4444-555555555555"
+// value in failure output. Tests read it through ConvID rather than directly,
+// which is why it is not exported.
+const defaultFakeConversationID = "11111111-2222-3333-4444-555555555555"
 
 // FakeAgy configures a stand-in agy binary for tests.
 //
@@ -43,7 +44,7 @@ type FakeAgy struct {
 	IgnoreSIGTERM bool
 
 	// ConversationID overrides the conversation id in the emitted events.
-	// Defaults to DefaultFakeConversationID.
+	// Defaults to defaultFakeConversationID.
 	ConversationID string
 	// NoConversationID emits events with no conversation id, reproducing a run
 	// that failed before agy created a conversation (an unresolvable model, say).
@@ -57,10 +58,6 @@ type FakeAgy struct {
 	// OmitResult emits the init and step events but no terminal result, standing
 	// in for a run cut short before agy could summarize it.
 	OmitResult bool
-	// RawStdout, when set, is written to stdout verbatim instead of a generated
-	// event stream. It is how a test feeds the supervisor malformed or oversized
-	// lines. It overrides Stdout and the other stream fields.
-	RawStdout string
 
 	// Version is what the script reports for `agy --version`, which the manager
 	// probes once before it will run anything. Defaults to the minimum agy-mcp
@@ -102,17 +99,15 @@ func (cfg FakeAgy) ConvID() string {
 	case cfg.ConversationID != "":
 		return cfg.ConversationID
 	}
-	return DefaultFakeConversationID
+	return defaultFakeConversationID
 }
 
-// StreamLines renders the configured run as agy's stream-json output. It is
-// exported so a test can feed the same bytes straight to a reader without going
-// through a spawned process.
-func (cfg FakeAgy) StreamLines(t *testing.T) string {
+// streamLines renders the configured run as agy's stream-json output, which
+// WriteFakeAgy stages as the script's stdout payload. It is unexported because the
+// only consumer is in this file. One candidate does exist if anyone wants it back:
+// supervisor_windows_test.go hand-rolls an equivalent three-event stream.
+func (cfg FakeAgy) streamLines(t *testing.T) string {
 	t.Helper()
-	if cfg.RawStdout != "" {
-		return cfg.RawStdout
-	}
 	convID := cfg.ConvID()
 	status := cfg.Status
 	if status == "" {
@@ -225,7 +220,7 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 	outPath := filepath.Join(dir, "fake-agy.out")
 	errPath := filepath.Join(dir, "fake-agy.err")
 	plainPath := filepath.Join(dir, "fake-agy.plain")
-	if err := os.WriteFile(outPath, []byte(cfg.StreamLines(t)), 0o644); err != nil {
+	if err := os.WriteFile(outPath, []byte(cfg.streamLines(t)), 0o644); err != nil {
 		t.Fatalf("write fake agy stdout: %v", err)
 	}
 	if err := os.WriteFile(errPath, []byte(cfg.Stderr), 0o644); err != nil {

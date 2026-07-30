@@ -41,9 +41,6 @@ const goodStream = `{"event":"init","conversation_id":"c-1","init":{"cwd":"/tmp/
 func TestConsumeStreamHappyPath(t *testing.T) {
 	dir, out, oc := consume(t, goodStream)
 
-	if oc.conversationID != "c-1" {
-		t.Fatalf("conversationID = %q, want c-1", oc.conversationID)
-	}
 	if oc.result == nil || oc.result.Response != "the answer" {
 		t.Fatalf("result = %+v", oc.result)
 	}
@@ -72,9 +69,15 @@ func TestConsumeStreamOnlyAppendsAgentResponse(t *testing.T) {
 {"event":"step_update","step_update":{"step_index":1,"step_type":"agent_response","text_delta":"kept"}}
 {"event":"step_update","step_update":{"step_index":2,"step_type":"checkpoint","text_delta":"NOR THIS"}}
 `
-	_, out, _ := consume(t, stream)
+	_, out, oc := consume(t, stream)
 	if got := out.String(); got != "kept" {
 		t.Fatalf("out = %q, want only the agent_response text", got)
+	}
+	// Positive control. Without it a typo in either "must not appear" line makes
+	// this pass for the wrong reason: an undecodable line is skipped, so its text
+	// never reaches out and the absence assertions hold vacuously.
+	if oc.malformed != 0 {
+		t.Fatalf("malformed = %d, want 0; a skipped line would satisfy the absence checks without proving anything", oc.malformed)
 	}
 }
 
@@ -95,8 +98,10 @@ func TestConsumeStreamAccumulatesDeltas(t *testing.T) {
 	}
 }
 
-// A run cut off before its result event leaves the streamed text and the
-// conversation behind, which is what the manager reports as a partial result.
+// A run cut off before its result event still leaves its conversation behind,
+// which is what lets the manager report a continuable partial result. This
+// fixture's cut lands mid-line, so the truncated step contributes no text: the
+// line is counted as malformed rather than decoded.
 func TestConsumeStreamInterruptedKeepsPartial(t *testing.T) {
 	stream := `{"event":"init","conversation_id":"c-9"}
 {"event":"step_update","step_update":{"step_index":0,"step_type":"agent_response","text_delta":"half an ans`
@@ -104,11 +109,14 @@ func TestConsumeStreamInterruptedKeepsPartial(t *testing.T) {
 	if oc.result != nil {
 		t.Fatal("no terminal result should have been decoded")
 	}
-	if oc.conversationID != "c-9" {
-		t.Fatalf("conversationID = %q, want c-9 from the init event", oc.conversationID)
-	}
 	if out.Len() != 0 {
 		t.Fatalf("out = %q; a truncated line is not a decodable step", out.String())
+	}
+	// The count is the only observable separating "cut mid-line" from "ended
+	// cleanly with no result", which the accumulates-deltas test already covers,
+	// and it is what makes persist emit its skipped-lines note.
+	if oc.malformed != 1 {
+		t.Fatalf("malformed = %d, want 1 for the truncated tail", oc.malformed)
 	}
 	if p := readProgress(t, dir); p.ConversationID != "c-9" {
 		t.Fatalf("progress = %+v, want the conversation recorded before the cut", p)
@@ -134,9 +142,8 @@ func TestPersistWritesResultAndNotesMalformed(t *testing.T) {
 	dir := t.TempDir()
 	var errBuf bytes.Buffer
 	oc := streamOutcome{
-		conversationID: "c-1",
-		result:         &streamjson.Result{ConversationID: "c-1", Status: streamjson.StatusSuccess, Response: "done"},
-		malformed:      3,
+		result:    &streamjson.Result{ConversationID: "c-1", Status: streamjson.StatusSuccess, Response: "done"},
+		malformed: 3,
 	}
 	oc.persist(dir, &errBuf)
 
@@ -163,7 +170,7 @@ func TestPersistWritesResultAndNotesMalformed(t *testing.T) {
 func TestPersistWritesNoResultFileWhenNoneReached(t *testing.T) {
 	dir := t.TempDir()
 	var errBuf bytes.Buffer
-	streamOutcome{conversationID: "c-1"}.persist(dir, &errBuf)
+	streamOutcome{}.persist(dir, &errBuf)
 
 	if b, _ := jobstore.ReadResultDir(dir); b != nil {
 		t.Fatal("a run with no terminal result must not write a result file")

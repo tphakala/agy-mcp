@@ -11,12 +11,18 @@ import (
 )
 
 // streamOutcome is what the supervisor learned from one run's stream-json
-// output: the conversation agy used, the terminal result if the run reached
-// one, and how many unusable lines were skipped along the way.
+// output: the terminal result if the run reached one, and how many unusable
+// lines were skipped along the way.
+//
+// It carries no conversation id of its own, because nothing outside the tests
+// ever read one, and the id already leaves here by the two routes callers do
+// read: live in progress.json, written as soon as the init event names it, which
+// is what lets the manager report it mid-run; and after the fact inside
+// result.json, since result carries agy's own ConversationID (the manager reads
+// that as a fallback, see carryResultMetadata).
 type streamOutcome struct {
-	conversationID string
-	result         *streamjson.Result
-	malformed      int
+	result    *streamjson.Result
+	malformed int
 }
 
 // consumeStream decodes agy's event stream to completion, mirroring it into the
@@ -48,7 +54,6 @@ func consumeStream(jobDir string, r io.Reader, out io.Writer) streamOutcome {
 		changed := false
 		if cid := ev.ConversationIDOf(); cid != "" && cid != prog.ConversationID {
 			prog.ConversationID = cid
-			oc.conversationID = cid
 			changed = true
 		}
 		switch ev.Kind {

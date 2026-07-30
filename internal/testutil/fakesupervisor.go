@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
@@ -42,18 +41,14 @@ type FakeSupervisor struct {
 	Out string
 	// Exit is the fixed exit code recorded when AgyPath is empty.
 	Exit int
-	// CachePath, when set, makes the script write CacheJSON to that path
-	// after exit_code, mimicking the real ordering: the supervisor writes the
-	// exit sentinel at process exit, and agy's cache daemon flushes the
-	// conversation cache around or after that moment.
+	// CachePath, when set, makes the script write CacheJSON to that path after
+	// exit_code. It stages agy's own last_conversations.json for the two features
+	// that read it, continue_latest and list_sessions; the position after the
+	// sentinel is just where the real cache daemon happens to flush, and no manager
+	// path observes the cache relative to job completion any more.
 	CachePath string
 	// CacheJSON is the cache payload to write; requires CachePath.
 	CacheJSON string
-	// CacheDelay, when positive, writes the cache from a backgrounded subshell
-	// that sleeps this long first, so the cache lands only after the script
-	// (and its exit_code) is gone. This reproduces the cache-daemon lag that
-	// the manager's capture retry exists for. Requires CachePath.
-	CacheDelay time.Duration
 	// OmitProgressMarker stages a job dir WITHOUT the marker the real supervisor
 	// writes before exec, which is the shape a job an older build wrote produces,
 	// and also the shape a job exec'd under another output format produces (the
@@ -68,9 +63,10 @@ type FakeSupervisor struct {
 // supervisor (`agy-mcp run-job <jobdir>`) and returns its path. The script is
 // created under t.TempDir(). Fixed out and cache payloads are written to
 // sibling files and reproduced via cat so arbitrary byte content survives
-// shell quoting. exit_code is written before the cache payload, matching the
-// real ordering the manager must tolerate: job completion (the sentinel) can
-// be observable before the conversation cache has been flushed.
+// shell quoting. exit_code is written before the cache payload, which is the
+// order the real pair happens to produce; nothing in the manager depends on it
+// any more, since the cache is read only by continue_latest (before a supervisor
+// exists) and by list_sessions.
 func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 	t.Helper()
 	if cfg.AgyPath != "" && (cfg.Out != "" || cfg.Exit != 0) {
@@ -78,9 +74,6 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 	}
 	if cfg.CacheJSON != "" && cfg.CachePath == "" {
 		t.Fatal("FakeSupervisor: CacheJSON requires CachePath")
-	}
-	if cfg.CacheDelay > 0 && cfg.CachePath == "" {
-		t.Fatal("FakeSupervisor: CacheDelay requires CachePath")
 	}
 	if cfg.Agy != nil && cfg.AgyPath == "" {
 		t.Fatal("FakeSupervisor: Agy requires AgyPath")
@@ -147,14 +140,7 @@ func WriteFakeSupervisor(t *testing.T, cfg FakeSupervisor) string {
 		if err := os.WriteFile(cachePayload, []byte(cfg.CacheJSON), 0o644); err != nil {
 			t.Fatalf("write fake supervisor cache payload: %v", err)
 		}
-		if cfg.CacheDelay > 0 {
-			// Backgrounded so the script (the fake supervisor process) exits
-			// first and the cache lands later, like agy's real cache daemon.
-			fmt.Fprintf(&sb, "( sleep %.3f; cat %q > %q ) &\n",
-				cfg.CacheDelay.Seconds(), cachePayload, cfg.CachePath)
-		} else {
-			fmt.Fprintf(&sb, "cat %q > %q\n", cachePayload, cfg.CachePath)
-		}
+		fmt.Fprintf(&sb, "cat %q > %q\n", cachePayload, cfg.CachePath)
 	}
 
 	if err := os.WriteFile(path, []byte(sb.String()), 0o755); err != nil {
