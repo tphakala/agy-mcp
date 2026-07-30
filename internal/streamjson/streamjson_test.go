@@ -189,12 +189,17 @@ func TestShortLineIsReturnedInPlace(t *testing.T) {
 	if err != nil || truncated {
 		t.Fatalf("first readLine: truncated=%v err=%v", truncated, err)
 	}
+	// Read the bytes before reading again, because that is the rule this test
+	// exists to demonstrate: the slice is only valid until the next call. The
+	// length and capacity are read afterwards on purpose, being fields of a slice
+	// header this test owns a copy of rather than bytes in a buffer it does not.
+	firstContents := string(first)
 	second, _, err := r.readLine()
 	if err != nil {
 		t.Fatalf("second readLine: %v", err)
 	}
-	if string(first) != line || string(second) != line {
-		t.Fatalf("lines = %q, %q, want %q twice", first, second, line)
+	if firstContents != line || string(second) != line {
+		t.Fatalf("lines = %q, %q, want %q twice", firstContents, second, line)
 	}
 	if r.buf != nil {
 		t.Errorf("the fast path grew the scratch to %d bytes; it must accumulate nothing", cap(r.buf))
