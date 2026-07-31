@@ -214,10 +214,10 @@ func WriteCancelDir(dir string) error {
 //
 // 0600 throughout: these files record prompts, agy output and job metadata,
 // which often embed source code, so they must not be readable by other users on
-// a multi-user host. os.CreateTemp opens at 0600 already (os/tempfile.go:49,
-// go1.26.5), but it does so BEFORE umask, so the explicit Chmod is what
-// restores the mode under a umask that would mask an owner bit, as well as
-// guarding a future change to that default.
+// a multi-user host. os.CreateTemp asks for 0600 (os/tempfile.go:49, go1.26.5),
+// but that request still passes through the process umask, so the file can land
+// tighter than 0600. The explicit Chmod sets the mode outright, which pins the
+// contract against both a umask and a future change to CreateTemp's default.
 func writeFileAtomic(dir, name string, b []byte) error {
 	tmp, err := os.CreateTemp(dir, name+"-*.tmp")
 	if err != nil {
