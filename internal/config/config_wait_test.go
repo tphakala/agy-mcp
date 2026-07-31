@@ -5,9 +5,11 @@ import (
 )
 
 // TestResolveWaitNeedsNoAgy: ResolveWait must succeed with no agy anywhere on
-// PATH (the wait-only subcommands are pure observers of the job store), while
-// Resolve fails in the same environment, proving the seam matters. Untagged so
-// it runs on Windows too, where the wait subcommands ship the same guarantee.
+// PATH, since the wait-only subcommands are pure observers of the job store.
+// Untagged so it runs on Windows too, where the wait subcommands ship the same
+// guarantee. Resolve tolerates a missing agy as well now (it defers the lookup
+// to exec time), so the seam between the two resolvers is pinned by
+// TestResolveWaitSkipsAgyLookupWhenPresent instead, with agy actually present.
 func TestResolveWaitNeedsNoAgy(t *testing.T) {
 	// os.UserHomeDir reads HOME on Unix and USERPROFILE on Windows; pin both to
 	// temp dirs so the XDG fallback (should Resolve reach it) never touches the
@@ -22,9 +24,6 @@ func TestResolveWaitNeedsNoAgy(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
 
-	if _, err := Resolve(); err == nil {
-		t.Fatal("Resolve succeeded without agy on PATH; the control condition is broken")
-	}
 	c, err := ResolveWait()
 	if err != nil {
 		t.Fatalf("ResolveWait: %v", err)

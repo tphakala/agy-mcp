@@ -2,7 +2,7 @@
 
 package manager
 
-import "github.com/tphakala/agy-mcp/internal/jobstore"
+import "github.com/tphakala/agy-mcp/v2/internal/jobstore"
 
 // Liveness stubs for platforms with no supervision implementation.
 // Linux reads the kernel boot id and /proc; Windows queries the process via

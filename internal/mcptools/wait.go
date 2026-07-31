@@ -5,13 +5,13 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 // waitInput is the input for agy_wait.
 type waitInput struct {
-	JobID string `json:"job_id" jsonschema:"the job id to wait for"`
-	Wait  string `json:"wait,omitempty" jsonschema:"max time to wait inline (Go duration, default 2m, max 10m); on overrun the job keeps running and can be waited on again or polled with agy_status"`
+	JobID string `json:"job_id" jsonschema:"job id to wait for, as returned by agy_run or agy_run_sync"`
+	Wait  string `json:"wait,omitempty" jsonschema:"max time to block inline (Go duration, default 2m); a larger value is silently clamped to 10m. Caps only the inline wait, not the job itself: on overrun the job keeps running and can be waited on again or polled with agy_status"`
 }
 
 // registerWait adds the agy_wait tool: block on an existing job until it
@@ -20,13 +20,16 @@ type waitInput struct {
 // replaces an agy_status poll loop.
 func registerWait(s *mcp.Server, mgr *manager.Manager) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: toolAgyWait,
-		Description: "Block until an agy job finishes (bounded by wait, default 2m, max 10m). " +
+		Name:        toolAgyWait,
+		Title:       "Wait for an agy job",
+		Annotations: annReadLocal,
+		Description: "Block until an agy job finishes (bounded by wait). " +
 			"Accepts any job_id, whether it came from agy_run or from an agy_run_sync that " +
-			"outlived its inline wait. Sends MCP progress notifications while waiting. Prefer " +
-			"one agy_wait over repeated agy_status polling when the next step depends on the " +
-			"job's result. If the job outlives the wait cap that is not a failure: it keeps " +
-			"running; call agy_wait again or poll agy_status.",
+			"outlived its inline wait. Prefer one agy_wait over repeated agy_status polling " +
+			"when the next step depends on the job's result; use agy_status instead for a " +
+			"single non-blocking check. Streams progress notifications while waiting when the " +
+			"client asks for them. Outliving the wait cap is not a failure: the job keeps " +
+			"running under its own timeout, so call agy_wait again.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in waitInput) (*mcp.CallToolResult, runSyncOutput, error) {
 		wait, err := parseWait(in.Wait)
 		if err != nil {

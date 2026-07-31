@@ -6,12 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 // waitJobMain implements "agy-mcp wait-job [-timeout 1h] <job_id>": block
@@ -85,5 +86,70 @@ func waitForJob(id string, timeout time.Duration) (manager.Status, bool, error) 
 func waitForJobWith(mgr *manager.Manager, id string, timeout time.Duration) (manager.Status, bool, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	// The handler is installed by the time NotifyContext returns, so from here a
+	// SIGINT or SIGTERM cancels this wait instead of killing the process. That is
+	// the moment the readiness file announces.
+	signalWaitReady()
 	return mgr.WaitTerminal(ctx, id, time.Now().Add(timeout), nil)
+}
+
+// waitReadyFileEnv names an optional file the wait subcommands create once the
+// SIGINT/SIGTERM handler above is installed.
+//
+// A caller that means to interrupt a wait has no other way to know when that
+// handler is in place, and the window before it is not negligible: flag parsing,
+// config resolution and manager construction all run first, and hook-wait also
+// blocks reading its payload from stdin. A signal that lands in that window
+// meets the default disposition and kills the process outright, losing the exit
+// contract the signal was sent to exercise (130 for wait-job, an exit-2 wake for
+// hook-wait). Waiting for this file to appear before signalling closes the
+// window; the alternative, sleeping a margin and hoping, is only
+// probabilistically safe and was the cause of issue #86. The other answer this
+// repo uses, polling for a side effect the child already produces (see
+// TestRunJobCancelViaSignal, which waits for the supervisor's out/err files), is
+// unavailable here: a wait subcommand only observes the job store and writes
+// nothing until it goes terminal.
+//
+// The contract is narrow and the caller holds up half of it:
+//   - The path must be absolute. A relative one resolves against each process's
+//     own working directory, and hook-wait runs from the session cwd, so parent
+//     and child would silently watch different files.
+//   - The path must be fresh, and unique per invocation. Existence is the whole
+//     signal, so a file left over from an earlier run satisfies a waiting parent
+//     immediately and hands back the very race this exists to close.
+//   - The file may never appear. Both subcommands can return before they arm a
+//     handler (a malformed payload, an unresolvable state dir, hook-wait's
+//     agy_run_sync short-circuit), so a parent needs its own timeout rather than
+//     blocking on this file forever.
+//
+// Unset by default, in which case nothing is written and nothing changes. It is
+// primarily a test seam: its in-tree consumers are armWaitReady, in
+// waitfixtures_posix_test.go, and the direct test in waitready_test.go.
+const waitReadyFileEnv = "AGY_MCP_WAIT_READY_FILE"
+
+// signalWaitReady creates the file named by AGY_MCP_WAIT_READY_FILE, if the
+// variable is set. It must remain the first statement after the handler is
+// installed: announcing readiness any earlier reopens issue #86, and does so
+// invisibly, because an early announcement still produces the file a waiting
+// parent is looking for.
+//
+// O_EXCL is what keeps a caller-named path from becoming a liability. It refuses
+// an existing file rather than truncating it, declines to follow a symlink on
+// the final component, and cannot block the way an ordinary open for writing
+// blocks on a FIFO with no reader. All three are reachable from a variable a
+// user exported once for one run and then forgot.
+//
+// Errors are deliberately swallowed: the file is a courtesy to a parent process
+// and must never derail the wait it announces. A caller that never sees the file
+// is left with whatever timeout it would have needed anyway.
+func signalWaitReady() {
+	path := os.Getenv(waitReadyFileEnv)
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return
+	}
+	_ = f.Close()
 }

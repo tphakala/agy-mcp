@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // TestListModelsIncludesStderrOnError: when `agy models` fails, the error must

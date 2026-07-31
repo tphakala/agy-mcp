@@ -9,14 +9,28 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 func testManager(t *testing.T) *manager.Manager {
 	t.Helper()
 	return manager.New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4, DefaultTimeout: time.Minute,
 		ConversationCacheFile: filepath.Join(t.TempDir(), "last_conversations.json")})
+}
+
+// postJSON builds a JSON POST bound to the test's context. The error is checked
+// here rather than discarded at each call site: the inputs are literals today,
+// so it cannot fire, but a URL or body that later becomes malformed would
+// otherwise nil-deref req instead of failing the test cleanly.
+func postJSON(t *testing.T, url, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req
 }
 
 // TestHTTPRejectsCrossOriginPost verifies the Streamable HTTP handler rejects a
@@ -26,11 +40,7 @@ func TestHTTPRejectsCrossOriginPost(t *testing.T) {
 	ts := httptest.NewServer(HTTPHandler(testManager(t), ""))
 	defer ts.Close()
 
-	req, err := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	req := postJSON(t, ts.URL, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -76,8 +86,7 @@ func TestHTTPBearerAuth(t *testing.T) {
 	})
 
 	t.Run("missing token is 401", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(`{}`))
-		req.Header.Set("Content-Type", "application/json")
+		req := postJSON(t, ts.URL, `{}`)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("do: %v", err)
@@ -89,8 +98,7 @@ func TestHTTPBearerAuth(t *testing.T) {
 	})
 
 	t.Run("wrong token is 401", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(`{}`))
-		req.Header.Set("Content-Type", "application/json")
+		req := postJSON(t, ts.URL, `{}`)
 		req.Header.Set("Authorization", "Bearer wrong")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -105,8 +113,7 @@ func TestHTTPBearerAuth(t *testing.T) {
 	t.Run("lowercase scheme accepted", func(t *testing.T) {
 		// RFC 7235: the auth-scheme is case-insensitive, so "bearer <token>" with the
 		// correct token must authenticate (it reaches the MCP handler, so it is never 401).
-		req, _ := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(`{}`))
-		req.Header.Set("Content-Type", "application/json")
+		req := postJSON(t, ts.URL, `{}`)
 		req.Header.Set("Authorization", "bearer s3cret")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -127,8 +134,7 @@ func TestHTTPNoTokenSkipsAuth(t *testing.T) {
 	ts := httptest.NewServer(HTTPHandler(testManager(t), ""))
 	defer ts.Close()
 
-	req, _ := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(`{}`))
-	req.Header.Set("Content-Type", "application/json")
+	req := postJSON(t, ts.URL, `{}`)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
@@ -195,8 +201,8 @@ func TestHTTPServeAdvertisesInstructions(t *testing.T) {
 		t.Fatal("no InitializeResult")
 	}
 	// Spot-check anchors, not the full text: a use-case cue, the sync entry-point
-	// tool name, and the parallelism caveat that mirrors the cwd conflict error.
-	for _, want := range []string{"Peer review", "agy_run_sync", "conflict error"} {
+	// tool name, and the parallelism guidance that mirrors the gate's real scope.
+	for _, want := range []string{"Peer review", "agy_run_sync", "SAME conversation_id"} {
 		if !strings.Contains(init.Instructions, want) {
 			t.Errorf("server instructions missing %q; got:\n%s", want, init.Instructions)
 		}

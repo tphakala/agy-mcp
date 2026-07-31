@@ -10,31 +10,32 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-// Meta describes a job. The identity fields are set at creation; PID,
-// StartTimeTicks, and ConversationID are filled in afterward by atomic rewrites
-// (UpdateMeta / SetConversationID).
+// Meta describes a job. The identity fields are set at creation. PID and
+// StartTimeTicks are filled in afterward by an atomic rewrite (UpdateMeta) once
+// the supervisor has been spawned.
+//
+// ConversationID is set at creation for a continuation only, from the id the
+// caller supplied or the one continue_latest resolved. A fresh run's id is never
+// recorded here at all: agy names it in the init event of its stream, which
+// necessarily arrives after Create, and the supervisor records it in
+// progress.json. Anything that needs a fresh run's conversation id must read
+// progress.json, which is why Status and conversationLive both scan it.
 type Meta struct {
-	ID             string    `json:"id"`
-	AgyPath        string    `json:"agy_path"`
-	Args           []string  `json:"args"`
-	Cwd            string    `json:"cwd"`
-	Model          string    `json:"model,omitempty"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	Prompt         string    `json:"prompt"`
-	StartedAt      time.Time `json:"started_at"`
-	PID            int       `json:"pid"`
-	StartTimeTicks uint64    `json:"start_time_ticks,omitempty"` // supervisor start time (Linux /proc ticks, Windows FILETIME); 0 = unknown
-	BootID         string    `json:"boot_id"`
-	CwdUUIDBefore  string    `json:"cwd_uuid_before,omitempty"`
-	// CaptureDisabled marks a fresh run whose pre-run cache snapshot could not
-	// be read: without a trustworthy snapshot a post-run cache diff cannot be
-	// attributed safely, so conversation-id capture is skipped for this job.
-	CaptureDisabled bool          `json:"capture_disabled,omitempty"`
-	Timeout         time.Duration `json:"timeout,omitempty"`
+	ID             string        `json:"id"`
+	AgyPath        string        `json:"agy_path"`
+	Args           []string      `json:"args"`
+	Cwd            string        `json:"cwd"`
+	Model          string        `json:"model,omitempty"`
+	ConversationID string        `json:"conversation_id,omitempty"`
+	Prompt         string        `json:"prompt"`
+	StartedAt      time.Time     `json:"started_at"`
+	PID            int           `json:"pid"`
+	StartTimeTicks uint64        `json:"start_time_ticks,omitempty"` // supervisor start time (Linux /proc ticks, Windows FILETIME); 0 = unknown
+	BootID         string        `json:"boot_id"`
+	Timeout        time.Duration `json:"timeout,omitempty"`
 }
 
 // Exit-code sentinels the supervisor writes to the exit_code file and the
@@ -53,21 +54,103 @@ const (
 // than spelling the literals, so renaming a file is a single edit that the
 // compiler propagates instead of a silent skew caught only at integration time.
 const (
-	MetaFile     = "meta.json" // job metadata (atomic rewrite)
-	OutFile      = "out"       // captured agy stdout
-	ErrFile      = "err"       // captured agy stderr
-	ExitCodeFile = "exit_code" // completion sentinel
-	CancelFile   = "cancel"    // manager -> supervisor cancel request sentinel
+	MetaFile     = "meta.json"     // job metadata (atomic rewrite)
+	OutFile      = "out"           // response text, appended as agy streams it
+	ErrFile      = "err"           // captured agy stderr
+	ExitCodeFile = "exit_code"     // completion sentinel
+	CancelFile   = "cancel"        // manager -> supervisor cancel request sentinel
+	ProgressFile = "progress.json" // latest stream position (atomic rewrite)
+	ResultFile   = "result.json"   // terminal stream-json result payload (written once)
 )
 
-// MetaPath, OutPath, ErrPath, and ExitCodePath join a job directory with the
-// corresponding file name. They are the shared spelling for callers that hold
-// only the directory (the supervisor, the manager's status reader) rather than
-// a store id.
+// MetaPath, OutPath, ErrPath, ExitCodePath, ProgressPath and ResultPath join a
+// job directory with the corresponding file name. They are the shared spelling
+// for callers that hold only the directory (the supervisor, the manager's
+// status reader) rather than a store id.
 func MetaPath(dir string) string     { return filepath.Join(dir, MetaFile) }
 func OutPath(dir string) string      { return filepath.Join(dir, OutFile) }
 func ErrPath(dir string) string      { return filepath.Join(dir, ErrFile) }
 func ExitCodePath(dir string) string { return filepath.Join(dir, ExitCodeFile) }
+func ProgressPath(dir string) string { return filepath.Join(dir, ProgressFile) }
+func ResultPath(dir string) string   { return filepath.Join(dir, ResultFile) }
+
+// Progress is the supervisor's running summary of a job's stream position. It
+// exists so the conversation id agy reports in its init event is readable by
+// the manager while the job is still running, and so a progress notification
+// can name the step the run is on.
+//
+// It is deliberately a separate file rather than a field on Meta. The manager
+// rewrites meta.json after spawning the supervisor (to record the supervisor
+// PID), so a supervisor writing the same file would race that update, and no
+// lock could arbitrate it: the two are separate processes. Splitting the file
+// gives each of them a file with exactly one writer, which is what makes the
+// atomic rewrite sufficient on its own.
+type Progress struct {
+	ConversationID string `json:"conversation_id,omitempty"`
+	// StepIndex is the index of the step the run is on. No PRODUCTION code reads it
+	// back off disk: the manager reports StepType, not the index. It is kept
+	// because the supervisor compares it against each incoming event to decide
+	// whether anything observable actually moved (see consumeStream), which is what
+	// stops a repeated update for one step from atomically rewriting a
+	// byte-identical file. Persisting it lets a test assert the value, which keeps
+	// the ASSIGNMENT honest; the comparison itself is asserted by nothing, and
+	// deleting it leaves the whole suite green, so treat that dedup as an
+	// optimization a later change can silently revert.
+	StepIndex int       `json:"step_index"`
+	StepType  string    `json:"step_type,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// WriteProgressDir atomically rewrites a job's progress file.
+func WriteProgressDir(dir string, p Progress) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(dir, ProgressFile, b)
+}
+
+// ReadProgressDir reads a job's progress file. ok is false when the file is
+// absent or undecodable: progress is a hint, never a correctness gate, so a
+// caller treats a failed read as "nothing known yet" rather than an error.
+func ReadProgressDir(dir string) (Progress, bool) {
+	b, err := readReplaced(ProgressPath(dir))
+	if err != nil {
+		return Progress{}, false
+	}
+	var p Progress
+	if err := json.Unmarshal(b, &p); err != nil {
+		return Progress{}, false
+	}
+	return p, true
+}
+
+// WriteResultDir atomically writes a job's terminal result payload. The bytes
+// are the marshalled stream-json result event; jobstore owns the file, not its
+// schema, so the payload passes through opaque.
+func WriteResultDir(dir string, b []byte) error {
+	return writeFileAtomic(dir, ResultFile, b)
+}
+
+// ReadResultDir returns a job's terminal result payload. A missing file yields
+// (nil, nil): the run never reached a terminal result, which is what marks its
+// captured output as partial.
+//
+// Any other read failure is returned as an error rather than folded into that
+// absence. The distinction is load bearing: this payload decides a job's state,
+// result, error and accounting, so reporting an unreadable file as "never
+// written" would silently downgrade a complete answer to a partial one and tell
+// the caller their result may be truncated when it is on disk and whole.
+func ReadResultDir(dir string) ([]byte, error) {
+	b, err := readReplaced(ResultPath(dir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
 
 // CancelPath is the manager -> supervisor cancel sentinel in a job directory.
 // On Windows the manager creates this file to request cancellation and the
@@ -80,7 +163,7 @@ func CancelPath(dir string) string { return filepath.Join(dir, CancelFile) }
 // lets it share Load's real read+unmarshal instead of re-implementing it.
 func LoadDir(dir string) (Meta, error) {
 	var m Meta
-	b, err := os.ReadFile(MetaPath(dir))
+	b, err := readReplaced(MetaPath(dir))
 	if err != nil {
 		return m, err
 	}
@@ -102,17 +185,53 @@ func LoadDir(dir string) (Meta, error) {
 // contract: the sentinel is not sensitive, but a uniform owner-only mode is
 // simpler to reason about.
 func WriteExitCodeDir(dir string, code int) error {
-	tmp, err := os.CreateTemp(dir, "exit_code-*.tmp")
+	return writeFileAtomic(dir, ExitCodeFile, []byte(strconv.Itoa(code)))
+}
+
+// WriteCancelDir creates a job's cancel sentinel, the manager's Windows-only
+// route for asking a supervisor to stop (unix delivers SIGTERM instead, so this
+// has no caller there). Existence is the whole signal, so the file is empty.
+//
+// It goes through writeFileAtomic rather than hand-rolling a temp and a rename,
+// so the job dir has one atomic writer instead of two. Note that the contention
+// retry writeFileAtomic brings with it is not what motivates this: nothing ever
+// opens the sentinel, since the supervisor's poll only Stats it, so this
+// destination is the one that cannot be held by a reader.
+func WriteCancelDir(dir string) error {
+	return writeFileAtomic(dir, CancelFile, nil)
+}
+
+// writeFileAtomic writes b to dir/name via a uniquely-named temp file and a
+// rename, so a reader never observes a partially written file and a crash
+// mid-write leaves either the previous contents or none, never a torn mix. It
+// is the single implementation behind every job-directory write (meta, exit
+// code, progress, result, cancel), so none of them can drift into a non-atomic
+// shortcut. out and err are the only job-dir files it does not publish; the
+// supervisor appends to those as agy streams, so they are never replaced.
+//
+// The rename retries a destination another process holds open; see
+// retryContended for why that is reachable on Windows and nowhere else.
+//
+// 0600 throughout: these files record prompts, agy output and job metadata,
+// which often embed source code, so they must not be readable by other users on
+// a multi-user host. os.CreateTemp asks for 0600 (os/tempfile.go:49, go1.26.5),
+// but that request still passes through the process umask, so the file can land
+// tighter than 0600. The explicit Chmod sets the mode outright, which pins the
+// contract against both a umask and a future change to CreateTemp's default.
+func writeFileAtomic(dir, name string, b []byte) error {
+	tmp, err := os.CreateTemp(dir, name+"-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.WriteString(strconv.Itoa(code)); err != nil {
+	if _, err := tmp.Write(b); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return err
 	}
-	// Flush before the rename so a crash cannot leave a renamed but empty sentinel.
+	// Flush the data before the rename so a crash cannot leave a renamed but
+	// empty or short file, which a reader would parse as corrupt rather than
+	// absent.
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
@@ -122,13 +241,11 @@ func WriteExitCodeDir(dir string, code int) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	// os.CreateTemp already makes the temp 0600, so this only guards a future
-	// change to its default mode.
 	if err := os.Chmod(tmpName, 0o600); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, ExitCodePath(dir)); err != nil {
+	if err := renameReplace(tmpName, filepath.Join(dir, name)); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
@@ -139,13 +256,16 @@ func WriteExitCodeDir(dir string, code int) error {
 var ErrInvalidID = errors.New("invalid job id")
 
 // Store is a directory-backed collection of jobs.
+//
+// Store holds no mutex on purpose. It once needed one to make a since-deleted
+// load-modify-rewrite (SetConversationID) atomic against a concurrent
+// UpdateMeta; with the conversation-cache capture gone there is no
+// read-modify-write left, and every remaining writer hands in a complete Meta.
+// What protects a reader is writeMetaAtomic's temp-file-and-rename, not a lock,
+// and that holds across the manager/supervisor process boundary where a mutex
+// could not reach anyway.
 type Store struct {
 	root string
-	// mu serializes every meta rewrite (UpdateMeta and SetConversationID). It is
-	// what lets SetConversationID's read-modify-write be atomic: it holds mu across
-	// the Load and the rewrite, and because UpdateMeta also takes mu a concurrent
-	// UpdateMeta cannot land between the two and be clobbered.
-	mu sync.Mutex
 }
 
 // New returns a Store rooted at dir/jobs.
@@ -211,24 +331,14 @@ func (s *Store) Load(id string) (Meta, error) {
 	return LoadDir(s.jobDir(id))
 }
 
-// UpdateMeta atomically rewrites a job's meta.json. It takes s.mu so every meta
-// rewrite is serialized: a concurrent reader (such as the freshly spawned
-// supervisor) never observes a partially written file, and SetConversationID's
-// read-modify-write cannot be clobbered by a concurrent UpdateMeta landing
-// between its Load and its rewrite.
+// UpdateMeta atomically rewrites a job's meta.json. The caller supplies a
+// complete Meta, so there is nothing to serialize: writeMetaAtomic's rename is
+// what stops a concurrent reader (such as the freshly spawned supervisor) from
+// observing a partially written file.
 func (s *Store) UpdateMeta(m Meta) error {
 	if !validJobID(m.ID) {
 		return ErrInvalidID
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.updateMetaLocked(m)
-}
-
-// updateMetaLocked performs the atomic rewrite. The caller must hold s.mu. It is
-// the shared body of UpdateMeta (which acquires the lock) and SetConversationID
-// (which already holds it), so the two never deadlock by re-locking.
-func (s *Store) updateMetaLocked(m Meta) error {
 	return writeMetaAtomic(s.jobDir(m.ID), m)
 }
 
@@ -241,64 +351,7 @@ func writeMetaAtomic(dir string, m Meta) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, "meta-*.json.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	// Flush the data to disk before the rename so a crash cannot leave a renamed
-	// but zero-length meta.json, which would orphan the job (Load fails, GC skips).
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	// 0600: meta.json records the prompt and cwd; keep it owner-only. os.CreateTemp
-	// already makes the temp 0600, so this only guards against a future mode change.
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, MetaPath(dir)); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return nil
-}
-
-// SetConversationID persists convID as the job's conversation id, but only when
-// it is currently unset: it reloads the latest meta and rewrites just that field,
-// so it cannot clobber a concurrent meta update, and a second caller that races to
-// capture the same job is a no-op. It returns the effective conversation id (the
-// existing one if already set, otherwise convID).
-func (s *Store) SetConversationID(id, convID string) (string, error) {
-	// Serialize the read-modify-write so two callers racing to capture the same
-	// job cannot both observe an empty id and have the later write win (TOCTOU).
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := s.Load(id)
-	if err != nil {
-		return "", err
-	}
-	if m.ConversationID != "" {
-		return m.ConversationID, nil
-	}
-	m.ConversationID = convID
-	// Already holding s.mu, so rewrite via the locked variant; calling UpdateMeta
-	// here would re-acquire s.mu and deadlock.
-	if err := s.updateMetaLocked(m); err != nil {
-		return "", err
-	}
-	return convID, nil
+	return writeFileAtomic(dir, MetaFile, b)
 }
 
 // Remove deletes a job's directory and everything in it.
@@ -357,7 +410,7 @@ func (s *Store) ExitCode(id string) (int, bool) {
 	if !validJobID(id) {
 		return 0, false
 	}
-	b, err := os.ReadFile(ExitCodePath(s.jobDir(id)))
+	b, err := readReplaced(ExitCodePath(s.jobDir(id)))
 	if err != nil {
 		return 0, false
 	}

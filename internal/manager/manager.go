@@ -12,13 +12,15 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/proc"
+	"github.com/tphakala/agy-mcp/v2/internal/agyver"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/proc"
 )
 
 // Manager coordinates jobs backed by an on-disk store.
@@ -29,49 +31,23 @@ type Manager struct {
 	xlock     *crossLock // serializes same-key jobs across sibling processes sharing the state dir
 	cacheFile string     // agy conversation cache (last_conversations.json); injectable for tests
 
-	// pendingCaptures holds the job ids of fresh runs whose conversation-id
-	// capture is armed but not yet settled (the post-exit capture attempt has
-	// not finished). Keyed by job id; values are struct{}.
-	pendingCaptures sync.Map
+	// verifiedAgy is the agy path whose version has been checked and accepted in
+	// this process; verifyMu guards it. Caching the path (rather than a bare
+	// bool) means a configuration that resolves to a different binary is
+	// re-checked instead of inheriting the previous verdict.
+	verifyMu    sync.Mutex
+	verifiedAgy string
 
-	// settledCapture memoizes job ids whose lazy capture is permanently over
-	// (no id is coming): either the run is long past its timeout with no cache
-	// change, or a later same-cwd run made attribution unsafe. Settled jobs
-	// stop re-reading the cache on every Status poll.
-	//
-	// concludedCapture memoizes job ids whose in-process eager capture attempt
-	// has finished. concludeCapture sets this BEFORE it clears pendingCaptures, so
-	// !CapturePending implies concluded, never the reverse (concluded can be true
-	// for a moment while pendingCaptures is still set). WaitTerminal's capture-grace
-	// exit for an in-process waiter relies on that direction. Unlike settledCapture
-	// it does NOT stop the lazy capture: a slow cache flush must still be picked up
-	// by a later Status read. Both maps share settledMu.
-	settledMu        sync.Mutex
-	settledCapture   map[string]struct{}
-	concludedCapture map[string]struct{}
+	// readAgyVersion is an indirection over the free function of the same name so
+	// a test can drive the version gate without a real agy on disk. Defaulted in
+	// New; a field rather than a package var so tests stay isolated and parallel.
+	readAgyVersion func(context.Context, string) (string, error)
 
-	// Timing for the fresh-run conversation-id capture and the restored-job
-	// liveness watcher. Fields (not package globals) so tests stay isolated and can
-	// run in parallel. agy's conversation cache is flushed by a separate daemon that
-	// can lag the foreground agy exit, so the capture retries briefly. Verified
-	// against agy 1.0.7 and re-verified against 1.0.11: agy rewrites
-	// last_conversations.json in place (O_TRUNC, no file lock), so a concurrent
-	// read can be torn; loadCache reports torn reads
-	// as errors, capture treats them as "no capture yet" and this retry loop
-	// re-reads, and StartJob disables capture when the pre-run snapshot itself is
-	// unreadable, so no mutex is needed. agy also ignores a caller-supplied fresh --conversation UUID and
-	// mints its own, which is why the id must be captured by diffing the cache
-	// rather than generated and passed in.
-	//
-	// Watch item: this whole mechanism depends on agy continuing to maintain
-	// last_conversations.json as a cwd->uuid map. agy has been migrating its
-	// conversation store toward SQLite (1.0.4 made .db "the CLI's conversation
-	// format"; 1.0.8 added .db/.db-wal scanning to /resume). The JSON file is
-	// still written as of 1.0.11, but if a future agy drops it for a SQLite-only
-	// store, captureNewUUID silently stops finding ids and continuation breaks.
-	// Revisit loadCache/captureNewUUID against the cache format on each agy bump.
-	captureBudget        time.Duration
-	capturePoll          time.Duration
+	// Timing fields (not package globals) so tests stay isolated and can run in
+	// parallel. conversationIDWait bounds StartJob's wait for agy's init event;
+	// restoredPollInterval paces the liveness watcher for jobs whose supervisor
+	// outlived a manager restart.
+	conversationIDWait   time.Duration
 	restoredPollInterval time.Duration
 
 	// readStartTimeTicks is a per-instance indirection over the free function of
@@ -90,12 +66,6 @@ type Manager struct {
 	testHookMidRelease func()
 }
 
-// defaultCaptureBudget bounds how long captureFreshConversationID waits for
-// agy's cache daemon to flush the new conversation id after a clean exit; it is
-// the eager (in-process) capture window. captureGraceWindow in wait.go must stay
-// strictly larger so a cross-process waiter still outlasts this budget.
-const defaultCaptureBudget = 2 * time.Second
-
 // New constructs a Manager.
 func New(c config.Config) *Manager {
 	// Prefer an explicitly configured cache path; only fall back to the default
@@ -113,12 +83,10 @@ func New(c config.Config) *Manager {
 		gate:                 newGate(c.MaxConcurrency),
 		xlock:                newCrossLock(c.StateDir),
 		cacheFile:            cacheFile,
-		captureBudget:        defaultCaptureBudget,
-		capturePoll:          100 * time.Millisecond,
+		conversationIDWait:   c.ConversationIDWait,
 		restoredPollInterval: 2 * time.Second,
-		settledCapture:       make(map[string]struct{}),
-		concludedCapture:     make(map[string]struct{}),
 		readStartTimeTicks:   readStartTimeTicks,
+		readAgyVersion:       readAgyVersion,
 	}
 }
 
@@ -140,172 +108,197 @@ type Job struct {
 	State          string // "running"
 }
 
-// captureFreshConversationID records the conversation id agy created for a fresh
-// run by diffing the cwd's cache entry against the pre-run snapshot, and persists
-// it to meta so Status reports it. It is a no-op once an id is already known.
+// versionCheckTimeout bounds the `agy --version` probe so a wedged binary
+// cannot park the tool call that triggered it.
+const versionCheckTimeout = 10 * time.Second
+
+// versionKillGrace is how long after the deadline kill the probe waits before
+// abandoning its output pipes, so a descendant that inherited them cannot hold
+// the probe open past its timeout.
+const versionKillGrace = time.Second
+
+// agyBinaryChecked resolves the agy binary and verifies it is new enough to
+// drive, caching the verdict for the process.
 //
-// The caller must invoke this while still holding the run's gate key: the cwd key
-// serializes same-cwd fresh runs, so no other run can overwrite the cache entry
-// between the snapshot and this capture. A torn or missing cache read yields no
-// capture (the run simply reports no id), never a misattribution.
-func (m *Manager) captureFreshConversationID(meta *jobstore.Meta) {
-	if meta.ConversationID != "" || meta.CaptureDisabled {
-		return
+// The check is deferred to first exec rather than done in config.Resolve for
+// the same reason the PATH lookup is: initialize, tools/list and list_sessions
+// never exec agy, so a server that refused to start without a suitable binary
+// would deny a client the whole introspection surface over a binary it may not
+// be about to use.
+//
+// Only success is cached. A missing or too-old agy re-checks on the next call,
+// so installing or upgrading agy is picked up without restarting the server,
+// which is the behaviour the deferred lookup already promises. The cost of that
+// is one extra process spawn per call while agy is unusable, which is the error
+// path.
+func (m *Manager) agyBinaryChecked(ctx context.Context) (string, error) {
+	agy, err := m.cfg.AgyBinary()
+	if err != nil {
+		return "", err
 	}
-	deadline := time.Now().Add(m.captureBudget)
+	m.verifyMu.Lock()
+	defer m.verifyMu.Unlock()
+	if m.verifiedAgy == agy {
+		return agy, nil
+	}
+	raw, err := m.readAgyVersion(ctx, agy)
+	if err != nil {
+		return "", fmt.Errorf("determine version of agy at %s: %w", agy, err)
+	}
+	v, perr := agyver.Parse(raw)
+	if perr != nil {
+		return "", fmt.Errorf("parse agy version from %q (%s): %w", strings.TrimSpace(raw), agy, perr)
+	}
+	if !v.AtLeast(agyver.Required) {
+		return "", fmt.Errorf(
+			"agy %s or newer is required (agy-mcp drives agy through --output-format stream-json, added in %s); found %s at %s",
+			agyver.Required, agyver.Required, v, agy)
+	}
+	m.verifiedAgy = agy
+	return agy, nil
+}
+
+// readAgyVersion runs `agy --version` and returns its raw output.
+//
+// A non-zero exit is deliberately not treated as failure: --version is not
+// listed in agy's --help, so its exit status is not a contract, and the output
+// is what matters. Only a failure to execute at all (a missing or
+// non-executable binary) is an error. stderr is folded in for the same reason,
+// in case a future agy prints the version there.
+func readAgyVersion(ctx context.Context, agy string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, versionCheckTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, agy, "--version")
+	// Without this, killing the process on deadline does not unblock the output
+	// copy: CombinedOutput reads through a pipe whose write end agy's descendants
+	// inherit, so a grandchild that outlives the kill holds the read open and the
+	// probe never returns. WaitDelay closes the pipes shortly after the kill.
+	cmd.WaitDelay = versionKillGrace
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check the deadline BEFORE classifying the exec error. A ctx-killed
+		// process surfaces as *exec.ExitError, which is indistinguishable from a
+		// binary that merely exited non-zero, so swallowing it would let whatever
+		// a wedged agy happened to print be parsed as its version and cached as
+		// verified for the life of the process.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.Canceled) {
+				// The caller gave up. Say so, rather than blaming a binary that was
+				// answering perfectly well.
+				return "", fmt.Errorf("agy --version was cancelled: %w", ctxErr)
+			}
+			return "", fmt.Errorf("agy --version did not complete within %s: %w", versionCheckTimeout, ctxErr)
+		}
+		// WaitDelay fired while the deadline had NOT: agy answered and exited, but
+		// a descendant kept the output pipe open, so exec abandoned the copy. The
+		// version it printed is already buffered in out, and it is the whole point
+		// of the probe. Refusing here would reject a working agy for the exact
+		// reason WaitDelay was set in the first place. Fall through and let Parse
+		// decide; if the output really was truncated, the parse failure says so.
+		if !errors.Is(err, exec.ErrWaitDelay) {
+			// A non-zero exit is not itself a failure: --version is not listed in
+			// agy's --help, so its exit status is not a contract and the output is
+			// what matters. Only a failure to execute at all is an error.
+			if _, isExit := errors.AsType[*exec.ExitError](err); !isExit {
+				return "", err
+			}
+		}
+	}
+	return string(out), nil
+}
+
+// conversationIDPoll is how often the conversation-id wait re-reads the
+// progress file. Its budget is config.ConversationIDWait.
+const conversationIDPoll = 50 * time.Millisecond
+
+// awaitConversationID polls a freshly spawned job's progress file until the
+// supervisor records the conversation id agy reported, the job turns out to be
+// over, or the budget expires. It returns "" when no id arrived, which is not an
+// error: the id is still delivered by the next Status read.
+//
+// The budget is the only place agy_run is not return-immediately, so it exits at
+// the first opportunity rather than always sleeping it out. A terminal job is
+// one such opportunity: the supervisor writes the progress file while decoding
+// the stream and the exit-code sentinel only at the very end, so a visible
+// sentinel with no recorded id means none is coming (the run died before agy's
+// init event, or never started at all).
+func (m *Manager) awaitConversationID(id, dir string) string {
+	deadline := time.Now().Add(m.conversationIDWait)
 	for {
-		if id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore); ok {
-			meta.ConversationID = m.persistCapturedID(meta.ID, id)
-			return
+		if p, ok := jobstore.ReadProgressDir(dir); ok && p.ConversationID != "" {
+			return p.ConversationID
+		}
+		if _, terminal := m.store.ExitCode(id); terminal {
+			// Re-read before giving up. The supervisor writes the progress file
+			// before the sentinel, so a job that finished between the two reads
+			// above has its id on disk even though the first read missed it;
+			// returning "" here without looking again would discard it.
+			if p, ok := jobstore.ReadProgressDir(dir); ok {
+				return p.ConversationID
+			}
+			return ""
 		}
 		if !time.Now().Before(deadline) {
-			return
+			return ""
 		}
-		time.Sleep(m.capturePoll)
+		time.Sleep(conversationIDPoll)
 	}
 }
 
-// lazyCaptureConversationID best-effort captures a fresh run's conversation id
-// from the cache when no in-process watcher captured it (the manager was
-// restarted after the job ended). It returns an already-known id unchanged.
+// conversationLive reports whether some running job is already driving convID.
 //
-// No gate key is held here, so a cache change since the snapshot is not
-// necessarily this job's: a later same-cwd run may have written it. Two guards
-// keep that from becoming a persisted misattribution: a changed entry is not
-// captured while any later same-cwd job exists in the store, and once the run
-// is long enough over that no attributable change can still appear, the
-// capture settles permanently as empty.
-func (m *Manager) lazyCaptureConversationID(meta jobstore.Meta) string {
-	if meta.ConversationID != "" {
-		return meta.ConversationID
+// The gate key alone cannot answer this. A fresh run keys on nothing (agy has
+// not named its conversation yet at admission time), but the supervisor records
+// that name in progress.json within about a second, and StartJob hands it to the
+// caller. Without this scan a caller could take a still-running fresh run's id,
+// pass it straight back as conversation_id, and be admitted under a conv key
+// nobody holds, putting two agy sessions on one conversation: exactly the
+// session-lock hang the gate exists to prevent.
+//
+// A scan is affordable here because it runs only on the continuation path, over
+// jobs bounded by JobTTL. An unreadable job is skipped rather than treated as a
+// match: refusing every continuation because one unrelated job dir is corrupt
+// would be worse than the narrow race this closes.
+func (m *Manager) conversationLive(convID string) (bool, error) {
+	if convID == "" {
+		// Every fresh job has an empty conversation id, so an empty query would
+		// match all of them and refuse every run. Only the continuation path calls
+		// this, but the guard belongs with the function rather than its caller.
+		return false, nil
 	}
-	if meta.CaptureDisabled || m.captureSettled(meta.ID) {
-		return ""
-	}
-	id, ok := captureNewUUID(m.cacheFile, meta.Cwd, meta.CwdUUIDBefore)
-	if !ok {
-		m.maybeSettleCapture(meta)
-		return ""
-	}
-	later, err := m.hasLaterSameCwdRun(meta)
-	if err != nil {
-		// The store could not be scanned to rule out a later same-cwd run. Skip
-		// this attempt without settling, so a transient scan failure does not
-		// permanently lose a still-capturable id; the next poll retries.
-		return ""
-	}
-	if later {
-		m.settleCapture(meta.ID)
-		return ""
-	}
-	return m.persistCapturedID(meta.ID, id)
-}
-
-// persistCapturedID stores a captured conversation id to the job's meta and
-// returns the effective id to report. On a persist failure it logs and falls
-// back to the captured id (best-effort: report what was captured even if it
-// could not be saved). Shared by the eager (captureFreshConversationID) and lazy
-// (lazyCaptureConversationID) capture paths.
-func (m *Manager) persistCapturedID(jobID, captured string) string {
-	final, err := m.store.SetConversationID(jobID, captured)
-	if err != nil {
-		log.Printf("persist captured conversation id for job %s: %v", jobID, err)
-		return captured
-	}
-	return final
-}
-
-// CapturePending reports whether a fresh run's conversation-id capture has not
-// yet settled in this process: capture was armed at start (or restore) and the
-// post-exit capture attempt has not finished. Pollers use it to distinguish
-// "done, id still being captured" from "done, no id is coming".
-func (m *Manager) CapturePending(id string) bool {
-	_, ok := m.pendingCaptures.Load(id)
-	return ok
-}
-
-func (m *Manager) captureSettled(id string) bool {
-	m.settledMu.Lock()
-	defer m.settledMu.Unlock()
-	_, ok := m.settledCapture[id]
-	return ok
-}
-
-func (m *Manager) settleCapture(id string) {
-	m.settledMu.Lock()
-	defer m.settledMu.Unlock()
-	m.settledCapture[id] = struct{}{}
-}
-
-// captureConcluded reports whether this process's eager capture attempt for a
-// job has finished. concludeCapture marks this before it clears pendingCaptures,
-// so !CapturePending implies concluded, not the reverse (concluded can be true
-// while pendingCaptures is momentarily still set). WaitTerminal reads it to end
-// an in-process waiter's grace once no more id can come from the eager path.
-// Unlike captureSettled it does not disable the lazy capture, which keeps
-// retrying on later Status reads.
-func (m *Manager) captureConcluded(id string) bool {
-	m.settledMu.Lock()
-	defer m.settledMu.Unlock()
-	_, ok := m.concludedCapture[id]
-	return ok
-}
-
-func (m *Manager) markCaptureConcluded(id string) {
-	m.settledMu.Lock()
-	defer m.settledMu.Unlock()
-	m.concludedCapture[id] = struct{}{}
-}
-
-// untrackCapture forgets a job's capture-tracking state once the job is gone
-// (garbage-collected from the store), so neither map grows without bound in a
-// long-running server. pendingCaptures is normally already cleared by the time
-// a job is collectable; deleting both keeps the bookkeeping leak-free.
-func (m *Manager) untrackCapture(id string) {
-	m.pendingCaptures.Delete(id)
-	m.settledMu.Lock()
-	delete(m.settledCapture, id)
-	delete(m.concludedCapture, id)
-	m.settledMu.Unlock()
-}
-
-// maybeSettleCapture marks a job's lazy capture as permanently over once the
-// run is certainly long finished: the supervisor's hard timeout bounds the run
-// and agy's cache daemon flushes within moments of the exit, so past
-// StartedAt+Timeout+captureBudget no attributable cache change can still
-// appear. Settling stops later polls from re-reading the cache for a job that
-// will never get an id, and keeps a much-later unrelated cache write from
-// being misattributed to this job.
-func (m *Manager) maybeSettleCapture(meta jobstore.Meta) {
-	horizon := meta.Timeout
-	if horizon <= 0 {
-		horizon = time.Hour // old metas without a recorded timeout: stay conservative
-	}
-	if time.Since(meta.StartedAt) > horizon+m.captureBudget {
-		m.settleCapture(meta.ID)
-	}
-}
-
-// hasLaterSameCwdRun reports whether any other stored job shares meta's cwd and
-// started after it. When one exists, a changed cache entry cannot be attributed
-// to meta's run: the later run may be the one that wrote it. A non-nil error
-// means the store could not be scanned; callers must treat that as "unknown"
-// (skip this attempt) rather than "a later run exists", so a transient scan
-// failure does not permanently settle a still-capturable job.
-func (m *Manager) hasLaterSameCwdRun(meta jobstore.Meta) (bool, error) {
 	ids, err := m.store.List()
 	if err != nil {
-		return false, err
+		// Fail closed, like admit and RestoreGate. Without a scan there is no way
+		// to know whether the conversation is busy, and guessing "idle" admits the
+		// second session this check exists to prevent.
+		return false, fmt.Errorf("scan jobs to check whether conversation %s is already running: %w", convID, err)
 	}
 	for _, id := range ids {
-		if id == meta.ID {
-			continue
-		}
-		other, err := m.store.Load(id)
+		meta, err := m.store.Load(id)
 		if err != nil {
+			// One unreadable job dir must not refuse every continuation forever, so
+			// this skips rather than failing closed; log it, because the skip is a
+			// hole in the check and a silent one would be indistinguishable from a
+			// conversation that really is idle.
+			log.Printf("conversation check: skipping job %s with unreadable meta: %v", id, err)
 			continue
 		}
-		if other.Cwd == meta.Cwd && other.StartedAt.After(meta.StartedAt) {
+		if _, terminal := m.store.ExitCode(id); terminal {
+			continue
+		}
+		if !m.processAlive(meta) {
+			continue
+		}
+		if meta.ConversationID == convID {
+			return true, nil
+		}
+		// A fresh run's id lives only in progress.json; meta never learns it.
+		dir, err := m.store.Dir(id)
+		if err != nil {
+			log.Printf("conversation check: skipping job %s with unusable dir: %v", id, err)
+			continue
+		}
+		if p, ok := jobstore.ReadProgressDir(dir); ok && p.ConversationID == convID {
 			return true, nil
 		}
 	}
@@ -329,6 +322,17 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if !proc.Supported {
 		return Job{}, proc.ErrUnsupported
 	}
+	// Resolve agy before anything reservable is taken. config.Resolve tolerates a
+	// missing agy so the server can still serve introspection, which makes this
+	// the first point that genuinely needs the binary; doing it after admit would
+	// burn a concurrency slot and strand the conversation key on a run that cannot start.
+	// The version gate lives here too: the whole job pipeline decodes agy's
+	// stream-json events, so an agy that cannot emit them must be refused before
+	// a job dir exists, not diagnosed from a confusing empty result later.
+	agy, err := m.agyBinaryChecked(context.Background())
+	if err != nil {
+		return Job{}, err
+	}
 	id, err := newID()
 	if err != nil {
 		return Job{}, fmt.Errorf("generate job id: %w", err)
@@ -337,8 +341,10 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if cwd == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			// An empty cwd would produce gate key "", which skips serialization
-			// entirely and runs agy in an inherited directory. Fail instead.
+			// An empty cwd would run agy in whatever directory this process
+			// inherited, and would be persisted as the job's cwd. Fail instead.
+			// (It has no bearing on serialization: keyFor reads only the
+			// conversation id, so every fresh run keys on nothing regardless.)
 			return Job{}, fmt.Errorf("determine working directory: %w", err)
 		}
 		cwd = wd
@@ -373,19 +379,33 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		}
 	}
 
+	// Refuse a continuation of a conversation some running job already drives.
+	// The gate covers two runs that both name the conversation up front; this
+	// covers the case it cannot see, a still-running fresh run that agy has since
+	// named. Checked before admission so a refusal burns no concurrency slot.
+	if req.ConversationID != "" {
+		live, err := m.conversationLive(req.ConversationID)
+		if err != nil {
+			return Job{}, err
+		}
+		if live {
+			return Job{}, fmt.Errorf("another agy job is already running on conversation %s; wait for it to finish or start a fresh run instead", req.ConversationID)
+		}
+	}
+
 	key := keyFor(req)
 	outcome, err := m.admit(key)
 	if err != nil {
 		// The cross-process lock could not be established (e.g. the locks dir is
 		// unwritable). Fail closed: starting without it could let a sibling process
 		// run a conflicting same-key job and re-expose the session-lock hang.
-		return Job{}, fmt.Errorf("acquire cross-process lock for this conversation or directory: %w", err)
+		return Job{}, fmt.Errorf("acquire cross-process lock for this conversation: %w", err)
 	}
 	switch outcome {
 	case acquireOK:
 		// Slot and cross-process lock reserved; proceed to spawn below.
 	case acquireKeyBusy:
-		return Job{}, fmt.Errorf("a conflicting agy job for this conversation or directory is already running")
+		return Job{}, fmt.Errorf("another agy job is already running on conversation %s; wait for it to finish or start a fresh run instead", req.ConversationID)
 	case acquireAtCap:
 		return Job{}, fmt.Errorf("agy-mcp is at its concurrency cap of %d running job(s); retry once one finishes", m.gate.cap())
 	default:
@@ -397,7 +417,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	args := buildAgyArgs(req)
 	meta := jobstore.Meta{
 		ID:             id,
-		AgyPath:        m.cfg.AgyPath,
+		AgyPath:        agy,
 		Args:           args,
 		Cwd:            req.Cwd,
 		Model:          req.Model,
@@ -416,24 +436,8 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// it. Surface the unreadable boot_id since it degrades cross-boot liveness.
 		log.Printf("job %s: kernel boot id unreadable; cross-boot liveness degraded for this job", id)
 	}
-	// Whenever the run has no resolved conversation id (a fresh run, or a
-	// continue_latest that found no prior conversation), agy will create a new
-	// conversation. Snapshot the cwd's current conversation id so a later diff
-	// can capture the one agy creates.
-	if req.ConversationID == "" {
-		if before, ok := snapshotCwd(m.cacheFile, cwd); ok {
-			meta.CwdUUIDBefore = before
-			m.pendingCaptures.Store(id, struct{}{})
-		} else {
-			// No trustworthy pre-run snapshot: a post-run diff could attribute
-			// a pre-existing conversation to this run. Report no id instead.
-			meta.CaptureDisabled = true
-			log.Printf("job %s: conversation cache unreadable; id capture disabled for this run", id)
-		}
-	}
 	dir, err := m.store.Create(meta)
 	if err != nil {
-		m.pendingCaptures.Delete(id)
 		m.releaseKey(key)
 		return Job{}, fmt.Errorf("create job store entry: %w", err)
 	}
@@ -452,7 +456,6 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// No supervisor was spawned, so the just-created job dir is a never-started
 		// orphan; remove it now rather than leaving it for a later GarbageCollect.
 		_ = m.store.Remove(id)
-		m.pendingCaptures.Delete(id)
 		m.releaseKey(key)
 		return Job{}, fmt.Errorf("spawn supervisor: %w", err)
 	}
@@ -474,7 +477,6 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		go func() {
 			_ = cmd.Wait()
 			_ = m.store.Remove(id)
-			m.pendingCaptures.Delete(id)
 			m.releaseKey(key)
 		}()
 		return Job{}, fmt.Errorf("track supervisor: %w", err)
@@ -510,14 +512,19 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	go func() {
 		_ = cmd.Wait()
 		_ = grp.Close()
-		// Capture the conversation id agy created while the gate key is still held,
-		// then conclude and release. concludeCapture gates the capture on a clean
-		// exit and finishes the bookkeeping in the order WaitTerminal's grace exit
-		// depends on (id == meta.ID for this fresh run).
-		m.concludeCapture(&meta, key)
+		m.releaseKey(key)
 	}()
 
-	return Job{ID: id, ConversationID: req.ConversationID, State: StateRunning}, nil
+	// A run that already knows its conversation reports it immediately. A fresh
+	// one waits briefly for agy's init event to name the conversation it created,
+	// so the caller can continue the thread without first polling for an id. The
+	// wait is bounded and its expiry is not an error: agy_status reports the id
+	// as soon as the event lands.
+	convID := req.ConversationID
+	if convID == "" {
+		convID = m.awaitConversationID(id, dir)
+	}
+	return Job{ID: id, ConversationID: convID, State: StateRunning}, nil
 }
 
 // abortSpawn tears down a supervisor that was started but cannot be recorded as
@@ -533,25 +540,8 @@ func (m *Manager) abortSpawn(cmd *exec.Cmd, grp *proc.Group, id, key string) {
 		_ = cmd.Wait()
 		_ = grp.Close()
 		_ = m.store.Remove(id)
-		m.pendingCaptures.Delete(id)
 		m.releaseKey(key)
 	}()
-}
-
-// concludeCapture finishes a completed job's capture bookkeeping: attempt the
-// eager conversation-id capture for a clean exit, mark this process's capture
-// attempt concluded, clear the pending marker, and release the job's gate key,
-// in that exact order. Conclude-before-delete is load bearing: it is what makes
-// !CapturePending imply captureConcluded for in-process waiters (WaitTerminal's
-// grace exit depends on it). Shared by both completion goroutines so a third
-// completion path cannot silently reorder it.
-func (m *Manager) concludeCapture(meta *jobstore.Meta, key string) {
-	if code, ok := m.store.ExitCode(meta.ID); ok && code == 0 {
-		m.captureFreshConversationID(meta)
-	}
-	m.markCaptureConcluded(meta.ID)
-	m.pendingCaptures.Delete(meta.ID)
-	m.releaseKey(key)
 }
 
 // loadedJob is one job's meta from a single meta.json read, the shared input the
@@ -650,7 +640,6 @@ func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time) bool {
 					log.Printf("GC: remove orphan job dir %s: %v", l.id, rerr)
 					return false
 				}
-				m.untrackCapture(l.id)
 				return true
 			}
 			log.Printf("GC: orphan job dir %s (no meta.json) kept until older than the TTL", l.id)
@@ -677,26 +666,19 @@ func (m *Manager) gcEvaluate(l loadedJob, cutoff time.Time) bool {
 		// checks above (the same race Status guards against); re-read once. If it
 		// is now terminal the job just finished, so its result is freshly written
 		// and unread; keep it this sweep and collect it on the next one (where the
-		// first read sees the sentinel). This covers runs with no pending capture
-		// (e.g. a continued conversation), which the CapturePending guard below
-		// does not.
+		// first read sees the sentinel).
+		//
+		// A terminal job needs no equivalent guard. The supervisor writes
+		// result.json before the exit-code sentinel, so once the sentinel exists
+		// nothing is still writing the dir and it is safe to remove.
 		if _, t := m.store.ExitCode(l.id); t {
 			return false
 		}
-	} else if m.CapturePending(l.id) {
-		// Terminal, but the manager's post-cmd.Wait completion goroutine is still
-		// capturing the conversation id into this dir (the supervisor writes the
-		// sentinel before it exits, so an in-flight capture always sees the
-		// sentinel already present at the first read). Removing the dir now would
-		// make SetConversationID fail with ENOENT and lose the captured id, so
-		// keep the job until the capture settles; the next sweep collects it.
-		return false
 	}
 	if err := m.store.Remove(l.id); err != nil {
 		log.Printf("GC: remove expired job %s: %v", l.id, err)
 		return false
 	}
-	m.untrackCapture(l.id)
 	return true
 }
 
@@ -765,29 +747,18 @@ func (m *Manager) runPeriodicGC(ctx context.Context, interval time.Duration) {
 
 // reqFromMeta reconstructs the parts of a StartRequest that determine a job's
 // gate key from its persisted meta. continue_latest is resolved into
-// ConversationID at start time, so ConversationID + Cwd reproduce the same key
+// ConversationID at start time, so the conversation id alone reproduces the key
 // the original run held.
 //
-// The cwd is re-normalized (best effort) so a job persisted by an older binary,
-// before StartJob canonicalized cwd, restores under the same key a new
-// same-directory run now computes. Without this, across the upgrade a restored
-// legacy job (raw cwd) and a new run (normalized cwd) would hold different keys,
-// fail to serialize, and risk concurrent O_TRUNC writes to the same agy cache
-// entry. For jobs started by the current binary meta.Cwd is already normalized,
-// so this is idempotent.
+// It used to re-normalize meta.Cwd as well, because the key was once derived
+// from the directory and a legacy job's raw cwd would otherwise restore under a
+// different key than a new same-directory run computed. Fresh runs stopped being
+// keyed by directory when the conversation id started coming from agy's own
+// stream, so keyFor reads nothing but ConversationID and the Abs plus
+// EvalSymlinks (plus an os.Getwd for a relative cwd) ran once per job in the
+// startup scan for a value nothing consumed.
 func reqFromMeta(meta jobstore.Meta) StartRequest {
-	cwd := meta.Cwd
-	if norm, err := normalizeCwd(cwd); err == nil {
-		cwd = norm
-	} else {
-		// Restore stays resilient (unlike StartJob, which fails closed), so a job
-		// whose cwd cannot be normalized keeps its raw cwd for the gate key. Log it:
-		// under this rare path (a legacy relative cwd plus an os.Getwd failure) the
-		// restored key may not match a new same-directory run's normalized key, the
-		// one inconsistency that can still split serialization for that job.
-		log.Printf("normalize cwd %q for restored job %s: %v; using raw cwd for gate key", cwd, meta.ID, err)
-	}
-	return StartRequest{ConversationID: meta.ConversationID, Cwd: cwd}
+	return StartRequest{ConversationID: meta.ConversationID}
 }
 
 // RestoreGate re-acquires gate slots and keys for jobs whose detached supervisor
@@ -841,11 +812,6 @@ func (m *Manager) restoreEvaluate(l loadedJob) {
 	// means another restored job already holds this key, so it is already watched.
 	key := keyFor(reqFromMeta(l.meta))
 	if m.forceAdmit(key) {
-		if l.meta.ConversationID == "" && !l.meta.CaptureDisabled {
-			// Mirror StartJob: arm the capture so pollers can tell this
-			// restored fresh run's id is still being settled.
-			m.pendingCaptures.Store(l.meta.ID, struct{}{})
-		}
 		m.watchRestored(l.meta, key)
 	}
 }
@@ -874,12 +840,9 @@ func (m *Manager) watchRestored(meta jobstore.Meta, key string) {
 				}
 			}
 		}
-		// Mirror the StartJob completion path: a restored fresh run that exited 0
-		// still needs its conversation id captured, and like there the capture must
-		// happen while the gate key is held, so a new same-cwd run cannot overwrite
-		// the cache entry first. concludeCapture does the capture, conclusion, and
-		// release as one unit shared with StartJob.
-		m.concludeCapture(&meta, key)
+		// The supervisor records the conversation id itself, so a restored job
+		// needs nothing but its gate key released once the supervisor is gone.
+		m.releaseKey(key)
 	}()
 }
 
@@ -891,10 +854,20 @@ const (
 	modelFlag                      = "--model"
 	addDirFlag                     = "--add-dir"
 	conversationFlag               = "--conversation"
+	outputFormatFlag               = "--output-format"
+	// streamJSONFormat is the only format agy-mcp drives. It is what makes the
+	// conversation id observable mid-run (the init event carries it) and what
+	// leaves an interrupted run with recoverable text; the single-object `json`
+	// format emits nothing until the run completes, so neither would work.
+	streamJSONFormat = "stream-json"
 )
 
 func buildAgyArgs(req StartRequest) []string {
-	args := []string{dangerouslySkipPermissionsFlag, printTimeoutFlag, req.Timeout.String()}
+	args := []string{
+		dangerouslySkipPermissionsFlag,
+		printTimeoutFlag, req.Timeout.String(),
+		outputFormatFlag, streamJSONFormat,
+	}
 	if req.Model != "" {
 		args = append(args, modelFlag, req.Model)
 	}

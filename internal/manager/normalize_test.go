@@ -5,14 +5,15 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // TestNormalizeCwdCollapsesEquivalentSpellings is the core regression guard for
 // issue #24: a trailing slash, a relative path, and a symlinked alias of one
 // directory must all canonicalize to the same absolute, symlink-resolved path,
-// so they produce one gate key (same-dir fresh runs serialize) and hit the same
-// agy conversation-cache entry.
+// so they hit the same agy conversation-cache entry and hand the supervisor the
+// same cmd.Dir. They no longer have to agree on a gate key; fresh runs stopped
+// serializing by directory when keyFor narrowed to the conversation id.
 func TestNormalizeCwdCollapsesEquivalentSpellings(t *testing.T) {
 	realDir := t.TempDir()
 	canonical, err := filepath.EvalSymlinks(realDir)
@@ -56,21 +57,12 @@ func TestNormalizeCwdCollapsesEquivalentSpellings(t *testing.T) {
 	})
 }
 
-// TestReqFromMetaNormalizesLegacyCwd guards the upgrade window: a job persisted
-// by an older binary may have a raw, un-normalized meta.Cwd. RestoreGate must
-// fold it onto the same normalized gate key a new same-dir run computes, or the
-// two would not serialize and could issue concurrent O_TRUNC writes to the same
-// agy cache entry. Regression test for issue #24.
-func TestReqFromMetaNormalizesLegacyCwd(t *testing.T) {
-	dir := t.TempDir()
-	canonical, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	req := reqFromMeta(jobstore.Meta{Cwd: dir + "/"})
-	want := "cwd:" + canonical
-	if got := keyFor(req); got != want {
-		t.Errorf("restored gate key = %q, want %q (legacy cwd not normalized)", got, want)
+// A restored job that was continuing a conversation still keys on it, which is
+// the serialization that remains.
+func TestReqFromMetaKeysOnConversation(t *testing.T) {
+	req := reqFromMeta(jobstore.Meta{Cwd: t.TempDir(), ConversationID: "cid-9"})
+	if got, want := keyFor(req), "conv:cid-9"; got != want {
+		t.Errorf("restored gate key = %q, want %q", got, want)
 	}
 }
 
@@ -84,14 +76,6 @@ func TestNormalizeCwdPreservesEmpty(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("normalizeCwd(empty) = %q, want empty", got)
-	}
-}
-
-// TestReqFromMetaPreservesEmptyCwd verifies a legacy job persisted with no cwd
-// restores under the no-key behavior, not under the manager's working directory.
-func TestReqFromMetaPreservesEmptyCwd(t *testing.T) {
-	if k := keyFor(reqFromMeta(jobstore.Meta{Cwd: ""})); k != "" {
-		t.Errorf("restored gate key for empty cwd = %q, want empty", k)
 	}
 }
 

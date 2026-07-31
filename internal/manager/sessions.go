@@ -8,19 +8,22 @@ import (
 )
 
 // Session pairs a workspace path with its most recent agy conversation UUID.
+//
+// The jsonschema tags reach clients through list_sessions' output schema, which
+// nests this type under "sessions"; see TestToolDefinitionsDescribeThemselves.
 type Session struct {
-	Workspace      string `json:"workspace"`
-	ConversationID string `json:"conversation_id"`
+	Workspace      string `json:"workspace" jsonschema:"absolute path of the workspace directory this conversation belongs to; pass it as cwd to continue the thread there"`
+	ConversationID string `json:"conversation_id" jsonschema:"most recent conversation id agy recorded for this workspace; pass it as conversation_id to agy_run or agy_run_sync"`
 }
 
 // agyCachePath returns the path to last_conversations.json, honoring HOME. An
-// empty return (the home dir is unresolvable) degrades every consumer to "no
-// sessions" and disables conversation-id capture, so log it rather than failing
+// empty return (the home dir is unresolvable) disables both features that read the
+// cache, continue_latest and session listing, so log it rather than failing
 // silently; the cause is almost always a missing HOME in a restricted environment.
 func agyCachePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Printf("cannot resolve home dir for agy conversation cache; session listing and conversation-id capture disabled: %v", err)
+		log.Printf("cannot resolve home dir for agy conversation cache; continue_latest and session listing disabled: %v", err)
 		return ""
 	}
 	return filepath.Join(home, ".gemini", "antigravity-cli", "cache", "last_conversations.json")
@@ -28,7 +31,7 @@ func agyCachePath() string {
 
 // ListSessions returns known conversations, optionally filtered to one dir. It
 // reads m.cacheFile so it shares the manager's single source of truth for the agy
-// cache path (and is injectable in tests) like the capture/resolve paths.
+// cache path (and is injectable in tests), as resolveLatest does.
 func (m *Manager) ListSessions(dir string) ([]Session, error) {
 	return readSessions(m.cacheFile, dir)
 }

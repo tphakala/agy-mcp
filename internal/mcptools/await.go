@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 // parseWait validates a caller-supplied inline wait, applying the shared
@@ -17,7 +17,14 @@ func parseWait(s string) (time.Duration, error) {
 		return defaultSyncWait, nil
 	}
 	d, err := time.ParseDuration(s)
-	if err != nil || d <= 0 {
+	if err != nil {
+		// Keep the parse error for the reason toStartRequest keeps its own: it
+		// names what is actually wrong with the input, which the hint below cannot
+		// express. The two validators take the same shape deliberately, so a
+		// caller gets the same quality of answer for wait as for timeout.
+		return 0, fmt.Errorf("invalid wait %q: %w", s, err)
+	}
+	if d <= 0 {
 		return 0, fmt.Errorf("invalid wait %q: want a positive Go duration like 90s", s)
 	}
 	return min(d, maxSyncWait), nil
@@ -44,10 +51,16 @@ func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manage
 		// each send to one poll tick so a client that stopped draining the stream
 		// cannot park the wait loop past its cap.
 		nctx, ncancel := context.WithTimeout(ctx, manager.WaitPollInterval)
+		// Name the step agy is on when the stream has reported one, so the message
+		// says what the run is doing rather than only how long it has been at it.
+		msg := fmt.Sprintf("job %s running (%s)", jobID, sec)
+		if st.StepType != "" {
+			msg += ": " + st.StepType
+		}
 		_ = req.Session.NotifyProgress(nctx, &mcp.ProgressNotificationParams{
 			ProgressToken: token,
 			Progress:      st.Elapsed.Seconds(),
-			Message:       fmt.Sprintf("job %s running (%s)", jobID, sec),
+			Message:       msg,
 		})
 		ncancel()
 	}

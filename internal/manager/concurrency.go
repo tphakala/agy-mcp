@@ -5,9 +5,9 @@ import (
 	"sync"
 )
 
-// gate enforces a global concurrency cap and per-key (conversation/cwd)
-// serialization so concurrent agy sessions cannot trigger the known session-lock
-// hang. It is in-process only; crossLock (keylock.go) extends the same per-key
+// gate enforces a global concurrency cap and per-conversation serialization so
+// concurrent agy sessions on one conversation cannot trigger the known
+// session-lock hang. It is in-process only; crossLock (keylock.go) extends the same per-key
 // serialization across sibling agy-mcp processes that share one state dir. The
 // Manager pairs them in admit/releaseKey/forceAdmit (admit.go). The global cap
 // stays per-process: in stdio mode each client session runs its own process and
@@ -34,7 +34,7 @@ type acquireOutcome int
 
 const (
 	acquireOK      acquireOutcome = iota // slot reserved
-	acquireKeyBusy                       // another job already holds this conversation/cwd key
+	acquireKeyBusy                       // another job already holds this conversation key
 	acquireAtCap                         // the global concurrency cap is reached
 )
 
@@ -101,22 +101,19 @@ func (g *gate) release(key string) {
 
 // keyFor returns the serialization key for a request.
 //
-// A run with a resolved conversation id serializes on that conversation. Any
-// other run with a cwd (a fresh run, or a continue_latest that found no prior
-// conversation) serializes on the cwd: agy creates a new conversation for it,
-// and the snapshot-diff UUID capture must hold the cwd key while it reads the
-// shared conversation cache, otherwise two new conversations created in the same
-// directory could misattribute their captured UUIDs.
+// A run with a resolved conversation id serializes on that conversation, because
+// two agy runs touching one conversation can trigger the session-lock hang. That
+// is a constraint of agy itself and is unrelated to how agy-mcp learns a run's
+// conversation id.
 //
-// StartJob always populates req.Cwd, so the "" branch is effectively a defensive
-// default; two distinct conversations in the same cwd still get distinct conv
-// keys and run concurrently.
+// A fresh run (no conversation id) serializes on nothing and returns "". It used
+// to key on the cwd, but only so the old snapshot-diff capture could read agy's
+// shared conversation cache unambiguously; agy now reports the id in its own
+// init event, per process, so there is nothing left to serialize. Fresh runs in
+// one directory therefore proceed concurrently, bounded only by the global cap.
 func keyFor(req StartRequest) string {
 	if req.ConversationID != "" {
 		return "conv:" + req.ConversationID
-	}
-	if req.Cwd != "" {
-		return "cwd:" + req.Cwd
 	}
 	return ""
 }

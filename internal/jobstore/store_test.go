@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,47 +174,6 @@ func TestUpdateMetaRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSetConversationID(t *testing.T) {
-	const first = "conv-1"
-	s := New(t.TempDir())
-	if _, err := s.Create(Meta{ID: "j", PID: 4242, AgyPath: "/usr/bin/agy"}); err != nil {
-		t.Fatal(err)
-	}
-	// Set on an unset job: persists the id and returns it, preserving other fields.
-	got, err := s.SetConversationID("j", first)
-	if err != nil {
-		t.Fatalf("SetConversationID: %v", err)
-	}
-	if got != first {
-		t.Fatalf("returned id = %q, want %q", got, first)
-	}
-	reloaded, err := s.Load("j")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reloaded.ConversationID != first {
-		t.Fatalf("persisted id = %q, want %q", reloaded.ConversationID, first)
-	}
-	if reloaded.PID != 4242 || reloaded.AgyPath != "/usr/bin/agy" {
-		t.Fatalf("other fields clobbered: %+v", reloaded)
-	}
-	// Setting again is a no-op: returns the existing id, does not overwrite.
-	got, err = s.SetConversationID("j", "conv-2")
-	if err != nil {
-		t.Fatalf("second SetConversationID: %v", err)
-	}
-	if got != first {
-		t.Fatalf("second set returned %q, want existing %q", got, first)
-	}
-	reloaded, err = s.Load("j")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reloaded.ConversationID != first {
-		t.Fatalf("existing id was overwritten: %q", reloaded.ConversationID)
-	}
-}
-
 func TestExitCodeSentinel(t *testing.T) {
 	s := New(t.TempDir())
 	if _, err := s.Create(Meta{ID: "j"}); err != nil {
@@ -228,6 +188,52 @@ func TestExitCodeSentinel(t *testing.T) {
 	code, ok := s.ExitCode("j")
 	if !ok || code != 0 {
 		t.Fatalf("ExitCode = %d,%v", code, ok)
+	}
+}
+
+// TestWriteCancelDirCreatesAnEmptySentinelWhereTheSupervisorLooks pins the
+// cancel sentinel's contract, which is unusual in that the file's existence is
+// the entire message: the manager writes it (Windows only, where there is no
+// signal to send) and the supervisor's poll does nothing but Stat CancelPath.
+//
+// Both properties asserted here are load-bearing. Writing it where CancelPath
+// reads is what makes the two processes agree, and a second Cancel of the same
+// job has to stay a success, because the manager's Cancel is reachable more than
+// once for one job and a caller reads an error as "the cancel did not happen".
+func TestWriteCancelDirCreatesAnEmptySentinelWhereTheSupervisorLooks(t *testing.T) {
+	s := New(t.TempDir())
+	dir, err := s.Create(Meta{ID: "j"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(CancelPath(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Stat before the write = %v, want the sentinel absent", err)
+	}
+	if err := WriteCancelDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(CancelPath(dir))
+	if err != nil {
+		t.Fatalf("sentinel not written where CancelPath reads: %v", err)
+	}
+	if len(b) != 0 {
+		t.Errorf("sentinel content = %q, want empty: existence is the whole signal", b)
+	}
+	// Replacing an existing sentinel must not fail, so a repeated cancel is not
+	// reported as an error.
+	if err := WriteCancelDir(dir); err != nil {
+		t.Errorf("second WriteCancelDir = %v, want nil", err)
+	}
+	// The temp file the atomic write goes through must not survive it, or the
+	// job dir accumulates one per cancel.
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file %q after the atomic write", e.Name())
+		}
 	}
 }
 

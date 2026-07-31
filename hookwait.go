@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/hookinput"
-	"github.com/tphakala/agy-mcp/internal/manager"
-	"github.com/tphakala/agy-mcp/internal/mcptools"
+	"github.com/tphakala/agy-mcp/v2/internal/hookinput"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/mcptools"
 )
 
 // hookWaitMain implements "agy-mcp hook-wait [-timeout 1h]": read a Claude

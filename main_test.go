@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 func jsonMarshalForTest(v any) ([]byte, error) { return json.MarshalIndent(v, "", "  ") }
@@ -34,7 +34,15 @@ var builtBin string
 // are per-test and unavailable here (this is package-level, with no *testing.T),
 // so TestMain owns the cleanup instead.
 var buildBinary = sync.OnceValues(func() (string, error) {
-	f, err := os.CreateTemp("", "agy-mcp-*")
+	// Windows resolves an executable through PATHEXT, so an extensionless file is
+	// not runnable there no matter that it is a valid PE binary: exec.Command
+	// reports "executable file not found in %PATH%" for it. CreateTemp substitutes
+	// the last "*", so the suffix survives.
+	pattern := "agy-mcp-*"
+	if runtime.GOOS == "windows" {
+		pattern = "agy-mcp-*.exe"
+	}
+	f, err := os.CreateTemp("", pattern)
 	if err != nil {
 		return "", err
 	}
@@ -44,6 +52,18 @@ var buildBinary = sync.OnceValues(func() (string, error) {
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build agy-mcp: %w\n%s", err, out)
 	}
+	// Exec the fresh binary once and discard the result, so the operating system
+	// pays its first-exec cost here rather than inside a test waiting on the
+	// child's startup. On macOS that cost is code-signature validation of a newly
+	// written binary, measured at ~360ms cold against ~10ms warm. No test depends
+	// on this for correctness any more: the interrupt tests used to race a 300ms
+	// timer against the child installing its signal handler, and now block on the
+	// readiness handshake instead (see waitReadyFileEnv). What it still buys is
+	// keeping that cold-start cost out of every readiness budget in the package.
+	//
+	// `wait-job` with no arguments is the cheapest complete run available: it
+	// prints usage and exits 2 without touching the state dir or execing agy.
+	_ = exec.Command(bin, "wait-job").Run()
 	return bin, nil
 })
 

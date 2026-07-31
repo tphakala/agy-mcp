@@ -1,4 +1,4 @@
-module github.com/tphakala/agy-mcp
+module github.com/tphakala/agy-mcp/v2
 
 go 1.26
 

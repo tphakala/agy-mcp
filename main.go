@@ -13,10 +13,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/manager"
-	"github.com/tphakala/agy-mcp/internal/mcptools"
-	"github.com/tphakala/agy-mcp/internal/supervisor"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/mcptools"
+	"github.com/tphakala/agy-mcp/v2/internal/supervisor"
 )
 
 func main() {
@@ -79,6 +79,13 @@ func serve() error {
 			cfg.HTTPToken = *httpToken
 		}
 	})
+	if cfg.AgyPath == "" {
+		// Resolve deferred the lookup rather than refusing to start, so say once what
+		// that means. Without this the server looks healthy and every run fails, which
+		// is a worse diagnostic than the startup refusal this replaced. log goes to
+		// stderr; stdout is the JSON-RPC stream in stdio mode and must stay clean.
+		log.Print("agy not found on PATH: the server will serve tool discovery, but agy_run, agy_run_sync, and list_models fail until agy is installed or AGY_MCP_AGY_PATH is set")
+	}
 	mgr := manager.New(cfg)
 	// Run startup garbage collection and concurrency-gate restoration in one
 	// job-store scan (RestoreAndCollect), instead of two back-to-back scans that

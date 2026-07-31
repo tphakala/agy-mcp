@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +21,15 @@ type Config struct {
 	JobTTL         time.Duration // age after which finished jobs are GC'd
 	HTTPToken      string        // optional bearer token for HTTP mode; empty = unauthenticated
 
+	// ConversationIDWait bounds how long StartJob blocks waiting for agy to name the
+	// conversation it created, so a fresh run can report a real conversation id
+	// instead of an empty one. It is the largest of the bounded waits StartJob
+	// performs before returning (the agy version gate is the other, and is
+	// cached after the first success), so it is a field rather than a constant:
+	// a test with a fake supervisor that never writes a progress file would
+	// otherwise pay the full budget on every start. Zero disables the wait.
+	ConversationIDWait time.Duration
+
 	// ConversationCacheFile overrides where agy's conversation cache
 	// (last_conversations.json) is read from. Empty means agy's default
 	// location under the user's home. Primarily a test seam.
@@ -31,11 +41,20 @@ type Config struct {
 // source of those defaults, so the two resolvers cannot drift apart.
 func baseConfig() Config {
 	return Config{
-		DefaultTimeout: 30 * time.Minute,
-		MaxConcurrency: 4,
-		JobTTL:         24 * time.Hour,
+		DefaultTimeout:     30 * time.Minute,
+		MaxConcurrency:     4,
+		JobTTL:             24 * time.Hour,
+		ConversationIDWait: DefaultConversationIDWait,
 	}
 }
+
+// DefaultConversationIDWait is how long StartJob waits for agy's init event to name the
+// conversation. agy emits it before any model work but after its own startup,
+// which includes launching whatever MCP servers it is configured with, so the
+// budget is generous relative to the roughly one second observed against a warm
+// 1.1.8. Expiry is not a failure: agy_status reports the id once the event
+// lands.
+const DefaultConversationIDWait = 2 * time.Second
 
 // Resolve builds a Config from environment variables and defaults.
 func Resolve() (Config, error) {
@@ -43,32 +62,27 @@ func Resolve() (Config, error) {
 	c.DefaultModel = os.Getenv("AGY_MCP_DEFAULT_MODEL")
 	c.HTTPToken = os.Getenv("AGY_MCP_HTTP_TOKEN")
 
+	// The two lookup branches fail differently, on purpose.
+	//
+	// An explicit AGY_MCP_AGY_PATH is a claim about one specific binary, so a typo,
+	// a non-executable file, or a bad PATH-relative name fails fast at startup
+	// rather than surfacing on the first job.
+	//
+	// A bare PATH miss is not an error at all. initialize, tools/list, and
+	// list_sessions never exec agy, so refusing to start would deny a client the
+	// whole introspection surface over a binary it may not be about to use, and
+	// would make the server unrunnable in a container that has no agy at all.
+	// AgyPath is left empty and AgyBinary retries the lookup at exec time, where a
+	// genuinely missing agy becomes a clear per-call error instead.
 	if p := os.Getenv("AGY_MCP_AGY_PATH"); p != "" {
-		// Resolve the override with LookPath, symmetric with the PATH branch below, so
-		// a typo, a non-executable file, or a bad PATH-relative name fails fast at
-		// startup instead of only at exec time on the first job. LookPath also handles
-		// a bare name (PATH lookup).
-		resolved, err := exec.LookPath(p)
+		resolved, err := lookupAgy(p)
 		if err != nil {
 			return Config{}, fmt.Errorf("AGY_MCP_AGY_PATH %q: %w", p, err)
 		}
 		c.AgyPath = resolved
-	} else {
-		p, err := exec.LookPath("agy")
-		if err != nil {
-			return Config{}, fmt.Errorf("agy not found on PATH; set AGY_MCP_AGY_PATH: %w", err)
-		}
-		c.AgyPath = p
+	} else if resolved, err := lookupAgy("agy"); err == nil {
+		c.AgyPath = resolved
 	}
-	// agy runs under the supervisor with cmd.Dir set to the job's cwd, so AgyPath
-	// must be absolute or it would resolve against the wrong directory; LookPath can
-	// return a relative path (a relative override, or a relative PATH entry). Report
-	// the pre-Abs value on failure since Abs returns "" then.
-	abs, err := filepath.Abs(c.AgyPath)
-	if err != nil {
-		return Config{}, fmt.Errorf("resolve agy path %q: %w", c.AgyPath, err)
-	}
-	c.AgyPath = abs
 
 	self, err := resolveSupervisorExe()
 	if err != nil {
@@ -83,6 +97,67 @@ func Resolve() (Config, error) {
 	c.StateDir = stateRoot
 
 	return c, nil
+}
+
+// AgyBinary returns the absolute path to the agy binary. Every site that execs
+// agy must go through it rather than reading AgyPath directly.
+//
+// AgyPath is empty when agy was not on PATH at startup, because Resolve defers
+// that lookup instead of refusing to start (see Resolve). The lookup is retried
+// here, at the moment agy is actually needed, so the error lands on the tool
+// call that needs it. A side benefit: an agy installed after the server started
+// is picked up without a restart.
+//
+// A path already resolved at startup is returned unchanged. Re-running LookPath
+// per job would let a mid-session PATH change swap the binary under a running
+// server, which is exactly the ambiguity the startup resolution removes.
+func (c Config) AgyBinary() (string, error) {
+	if c.AgyPath != "" {
+		return c.AgyPath, nil
+	}
+	p, err := lookupAgy("agy")
+	if err != nil {
+		return "", pathLookupGuidance(err)
+	}
+	return p, nil
+}
+
+// lookupAgy resolves an agy name or path to an absolute executable path. It is
+// shared by Resolve and AgyBinary so the two can never disagree about what
+// counts as a usable binary. Absolutizing is not optional: agy runs under the
+// supervisor with cmd.Dir set to the job's cwd, so a relative result (a relative
+// override, or a relative PATH entry) would resolve against the wrong directory.
+// Report the pre-Abs value on failure since Abs returns "" then.
+//
+// The LookPath error is returned unwrapped. Each caller knows what the name it
+// passed meant and adds guidance to match: an explicit override that fails is a
+// different problem from a bare PATH miss, and telling someone who just set
+// AGY_MCP_AGY_PATH to set AGY_MCP_AGY_PATH points them away from the real fault.
+func lookupAgy(name string) (string, error) {
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve agy path %q: %w", p, err)
+	}
+	return abs, nil
+}
+
+// pathLookupGuidance annotates a failed bare-name PATH lookup with the fix.
+//
+// exec.ErrDot is called out separately because it is not a missing binary at
+// all: agy was found, through a relative PATH entry, and Go refuses to run it
+// because the result would depend on the caller's working directory. That is
+// precisely the situation a job hits, since each one runs with cmd.Dir set to
+// its own cwd, so reporting it as "not found" would send the reader hunting for
+// an installation that is already there.
+func pathLookupGuidance(err error) error {
+	if errors.Is(err, exec.ErrDot) {
+		return fmt.Errorf("agy is on PATH only through a relative entry, which cannot be used because each job runs in its own working directory; set AGY_MCP_AGY_PATH to an absolute path: %w", err)
+	}
+	return fmt.Errorf("agy not found on PATH; set AGY_MCP_AGY_PATH: %w", err)
 }
 
 // resolveStateDir returns the job-state root: AGY_MCP_STATE_DIR (made absolute)
@@ -149,5 +224,13 @@ func ResolveWait() (Config, error) {
 	// consume them today.
 	c.DefaultModel = os.Getenv("AGY_MCP_DEFAULT_MODEL")
 	c.HTTPToken = os.Getenv("AGY_MCP_HTTP_TOKEN")
+	// One AGY_MCP_ variable is read nowhere in this package at all:
+	// AGY_MCP_WAIT_READY_FILE, which the wait subcommands read in package main (see
+	// waitReadyFileEnv). It is consumed at the instant their signal handler is
+	// installed, which is past the point a resolved Config is threaded to, so
+	// routing it through here would buy uniformity at the cost of carrying the
+	// value through two more signatures. Noted so an audit of the env surface from
+	// this file is not misled. (AGY_MCP_AGY_PATH is also absent here, but for the
+	// reason this function's own doc gives: the wait paths never exec agy.)
 	return c, nil
 }

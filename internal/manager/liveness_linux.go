@@ -9,7 +9,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // startTimeMandatory reports whether StartJob must fail when it cannot record a

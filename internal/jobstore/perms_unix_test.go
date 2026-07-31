@@ -49,6 +49,17 @@ func TestCreateAndWriteExitCodeUsePrivatePerms(t *testing.T) {
 	} else if got := ei.Mode().Perm(); got != 0o600 {
 		t.Errorf("exit_code perm = %o, want 600", got)
 	}
+	// The cancel sentinel holds nothing sensitive, but it is a job-dir file and
+	// the contract is uniform: every writer goes through writeFileAtomic, so a
+	// change that loosened the mode there would have to loosen this too.
+	if err := WriteCancelDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if ci, err := os.Stat(filepath.Join(dir, "cancel")); err != nil {
+		t.Fatal(err)
+	} else if got := ci.Mode().Perm(); got != 0o600 {
+		t.Errorf("cancel perm = %o, want 600", got)
+	}
 }
 
 func TestUpdateMetaPreservesPrivatePerms(t *testing.T) {

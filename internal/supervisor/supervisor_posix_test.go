@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // These tests drive Run, which only supervises on Linux (process groups, signal
@@ -32,7 +32,7 @@ func TestSupervisorEscalatesToSIGKILL(t *testing.T) {
 	})
 
 	start := time.Now()
-	if err := run(dir, 200*time.Millisecond); err != nil {
+	if err := run(dir, 200*time.Millisecond, drainGrace); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	// With the injected 200ms grace this ends in well under a second; the 10s

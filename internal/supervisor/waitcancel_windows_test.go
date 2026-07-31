@@ -1,11 +1,10 @@
 package supervisor
 
 import (
-	"os"
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 func TestWaitForCancelFiresOnSentinel(t *testing.T) {
@@ -19,7 +18,9 @@ func TestWaitForCancelFiresOnSentinel(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	if err := os.WriteFile(jobstore.CancelPath(dir), nil, 0o600); err != nil {
+	// Through the canonical writer the manager uses, so this test cannot drift
+	// from the shape requestCancel actually produces.
+	if err := jobstore.WriteCancelDir(dir); err != nil {
 		t.Fatal(err)
 	}
 	select {

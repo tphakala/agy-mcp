@@ -5,8 +5,8 @@ package manager
 import (
 	"syscall"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
-	"github.com/tphakala/agy-mcp/internal/proc"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/proc"
 )
 
 // requestCancel forwards SIGTERM to the supervisor, which its signal handler turns

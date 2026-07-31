@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // setFakeHome points the home-directory lookup at a fresh temp dir on both Unix
@@ -21,17 +21,23 @@ func setFakeHome(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 }
 
-// writeTerminalJob creates <stateDir>/jobs/<id> holding a done job: meta.json
-// (CaptureDisabled: true so the wait manager never reads the host's real agy
-// conversation cache), an out file "RESULT", and an exit_code sentinel "0". It
-// writes only files, so it and the tests that use it run on Windows too.
+// writeTerminalJob creates <stateDir>/jobs/<id> holding a done job: meta.json,
+// an out file "RESULT", and an exit_code sentinel "0". The args carry
+// --output-format stream-json, as every job this build starts does, but there is
+// no result.json, so the job reads as done with a partial result. That is all
+// these tests need (they assert on the state, not the payload). It writes only
+// files, so it and the tests that use it run on Windows too.
 func writeTerminalJob(t *testing.T, stateDir, id string) {
 	t.Helper()
 	dir := filepath.Join(stateDir, "jobs", id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	meta := jobstore.Meta{ID: id, StartedAt: time.Now(), CaptureDisabled: true}
+	meta := jobstore.Meta{
+		ID:        id,
+		StartedAt: time.Now(),
+		Args:      []string{"--output-format", "stream-json"},
+	}
 	b, err := jsonMarshalForTest(meta)
 	if err != nil {
 		t.Fatal(err)

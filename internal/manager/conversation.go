@@ -51,32 +51,16 @@ func resolveLatest(cacheFile, cwd string) (string, bool) {
 	return id, ok && id != ""
 }
 
-// snapshotCwd records the cwd's UUID before a run. ok=false means the snapshot
-// could not be taken (torn or corrupt cache even after a retry); the caller
-// must disable capture for the run rather than guess, because an empty-by-error
-// snapshot would make a pre-existing conversation look newly created.
-func snapshotCwd(cacheFile, cwd string) (string, bool) {
-	cache, err := loadCacheRetry(cacheFile)
-	if err != nil {
-		return "", false
-	}
-	return cache[cwd], true
-}
-
-// captureNewUUID returns the cwd's UUID after a run, but only if it changed
-// from the pre-run snapshot. A failed run leaves the cache untouched, and a
-// torn read yields no capture, so a single call never misattributes an old
-// conversation to this run. The completion-goroutine call site retries in a
-// loop; the lazy-capture path is best-effort single-shot (re-tried across Status
-// polls), so no internal retry is needed here.
-func captureNewUUID(cacheFile, cwd, before string) (string, bool) {
-	cache, err := loadCache(cacheFile)
-	if err != nil {
-		return "", false
-	}
-	after := cache[cwd]
-	if after != "" && after != before {
-		return after, true
-	}
-	return "", false
-}
+// Note on scope: agy's conversation cache is no longer used to discover the id
+// of a run agy-mcp started. The supervisor reads that from agy's own
+// stream-json init event. The cache remains a read source for exactly two
+// features that ask about conversations agy-mcp did not start: continue_latest
+// (resolveLatest, above) and list_sessions (readSessions, in sessions.go).
+//
+// Watch item, narrowed to those two: both depend on agy continuing to maintain
+// last_conversations.json as a cwd->uuid map. agy has been migrating its
+// conversation store toward SQLite (1.0.4 made .db "the CLI's conversation
+// format"; 1.0.8 added .db/.db-wal scanning to /resume). The JSON file is still
+// written as of 1.1.8. If a future agy drops it, continue_latest silently
+// starts a fresh conversation and list_sessions returns nothing; jobs
+// themselves are unaffected.

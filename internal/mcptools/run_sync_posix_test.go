@@ -5,7 +5,6 @@ package mcptools
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,53 +13,31 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tphakala/agy-mcp/internal/config"
-	"github.com/tphakala/agy-mcp/internal/manager"
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
-// connect wires a NewServer(mgr) to a fresh client over in-memory transports
-// and returns the client session.
-func connect(t *testing.T, mgr *manager.Manager, opts *mcp.ClientOptions) *mcp.ClientSession {
-	t.Helper()
-	srv := NewServer(mgr)
-	ct, st := mcp.NewInMemoryTransports()
-	if _, err := srv.Connect(t.Context(), st, nil); err != nil {
-		t.Fatalf("server connect: %v", err)
-	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, opts)
-	cs, err := client.Connect(t.Context(), ct, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
-	return cs
-}
-
-// testConversationID is the id the fake supervisor's cache write attributes to
-// fresh runs started by newTestManager.
+// testConversationID is the id the fake agy reports in its stream for runs
+// started by newTestManager.
 const testConversationID = "abcdabcd-1234-5678-9abc-def012345678"
 
-// newTestManager builds a manager around a fake agy and fake supervisor. The
-// fake supervisor writes a conversation cache entry for the test's cwd after
-// the exit sentinel, so fresh runs capture an id the way real runs do, against
-// a test-owned cache file rather than the real agy cache.
+// newTestManager builds a manager around a fake agy and a fake supervisor that
+// writes the same job-dir files the real one derives from agy's stream. The
+// conversation cache is a test-owned empty file: it is no longer where a run's
+// id comes from, only where continue_latest and list_sessions look, so pointing
+// it away from the real agy cache is all that is needed.
 func newTestManager(t *testing.T, fake testutil.FakeAgy) (mgr *manager.Manager, stateDir string) {
 	t.Helper()
-	agy := testutil.WriteFakeAgy(t, fake)
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
+	if fake.ConversationID == "" && !fake.NoConversationID {
+		fake.ConversationID = testConversationID
 	}
+	agy := testutil.WriteFakeAgy(t, fake)
 	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
 	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
-		AgyPath:   agy,
-		CachePath: cachePath,
-		CacheJSON: fmt.Sprintf(`{%q:%q}`, cwd, testConversationID),
-	})
+	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy, Agy: &fake})
 	stateDir = t.TempDir()
 	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: stateDir,
 		DefaultTimeout: time.Minute, MaxConcurrency: 4,
@@ -300,36 +277,12 @@ func waitForRunningJob(t *testing.T, mgr *manager.Manager, stateDir string, time
 	return ""
 }
 
-// A fresh run whose conversation cache lands only after the exit sentinel (the
-// real-world ordering: agy's cache daemon flushes after the process exits) must
-// still return its conversation id from agy_run_sync. Returning done with no id
-// loses the id for good, because a sync caller has no reason to poll again.
-func TestAgyRunSyncReturnsLateCapturedConversationID(t *testing.T) {
-	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cachePath := filepath.Join(t.TempDir(), "last_conversations.json")
-	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// A fresh run returns its conversation id from agy_run_sync, sourced from agy's
+// own stream. A sync caller has no reason to poll again, so an id missing here
+// would be lost for good.
+func TestAgyRunSyncReturnsConversationID(t *testing.T) {
 	const uuid = "12121212-3434-5656-7878-909090909090"
-	// CacheDelay (700ms) must stay below the manager's default captureBudget (2s)
-	// so the completion goroutine is still retrying the capture when the cache
-	// lands; otherwise the id would be lost and this test would pass for the wrong
-	// reason. The mcptools package cannot set the unexported captureBudget, so this
-	// dependency is documented rather than pinned.
-	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
-		AgyPath:    agy,
-		CachePath:  cachePath,
-		CacheJSON:  fmt.Sprintf(`{%q:%q}`, cwd, uuid),
-		CacheDelay: 700 * time.Millisecond,
-	})
-	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: t.TempDir(),
-		DefaultTimeout: time.Minute, MaxConcurrency: 4,
-		ConversationCacheFile: cachePath}
-	mgr := manager.New(c)
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0, ConversationID: uuid})
 	cs := connect(t, mgr, nil)
 
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
@@ -344,7 +297,45 @@ func TestAgyRunSyncReturnsLateCapturedConversationID(t *testing.T) {
 		t.Fatalf("state = %v, want done", sc["state"])
 	}
 	if sc["conversation_id"] != uuid {
-		t.Fatalf("conversation_id = %v, want %q (the id must not be lost to cache-flush lag)",
-			sc["conversation_id"], uuid)
+		t.Fatalf("conversation_id = %v, want %q", sc["conversation_id"], uuid)
+	}
+	// Token accounting rides along with the terminal result.
+	usage, ok := sc["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage = %v, want the accounting object", sc["usage"])
+	}
+	if usage["total_tokens"] != float64(15) {
+		t.Fatalf("usage.total_tokens = %v, want 15", usage["total_tokens"])
+	}
+}
+
+// The usage object is copied field by field into a separate wire struct, so a
+// transposed pair compiles and passes every test that only checks a total.
+// FakeAgy emits distinct values precisely so this can catch that.
+func TestAgyRunSyncReportsFullUsage(t *testing.T) {
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "agy_run_sync",
+		Arguments: map[string]any{"prompt": "review", "wait": "30s"},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
+	}
+	sc := structMap(t, res.StructuredContent)
+	usage, ok := sc["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage = %v, want the accounting object", sc["usage"])
+	}
+	for field, want := range map[string]float64{
+		"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+	} {
+		if usage[field] != want {
+			t.Errorf("usage[%q] = %v, want %v", field, usage[field], want)
+		}
+	}
+	if sc["num_turns"] != float64(1) {
+		t.Errorf("num_turns = %v, want 1", sc["num_turns"])
 	}
 }

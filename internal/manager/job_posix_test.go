@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tphakala/agy-mcp/internal/testutil"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
-	// withCacheFile injects a test-owned cache file so the fresh run's id capture
-	// does not read the developer's real agy cache or leak a capture goroutine
-	// racing cleanup.
+	// withCacheFile injects a test-owned cache file so nothing here can read the
+	// developer's real agy cache. This run resolves no conversation (no
+	// continue_latest), so the file is never actually read; the injection is
+	// insurance against a future change here, not a dependency of this test.
 	m := newManager(t, managerOpts{
 		agyPath:        "/usr/bin/agy",
 		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
@@ -49,7 +50,7 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	}
 
 	// The fake supervisor writes out/exit_code; wait briefly for it.
-	testutil.WaitFor(t, 2*time.Second, func() bool {
+	testutil.WaitFor(t, 15*time.Second, func() bool {
 		_, ok := m.store.ExitCode(job.ID)
 		return ok
 	}, "supervisor did not write exit_code")
@@ -130,9 +131,8 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	// withCacheFile injects a temp cache file so the run does not read the real
-	// ~/.gemini cache; captureBudget 0 shortens the post-exit capture so no
-	// capture goroutine outlives the test.
+	// withCacheFile injects a temp cache file so continue_latest does not read
+	// the real ~/.gemini cache.
 	m := newManager(t, managerOpts{
 		agyPath:        "/usr/bin/agy",
 		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
@@ -141,7 +141,6 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 		maxConcurrency: 4,
 		withCacheFile:  true,
 	})
-	m.captureBudget = 0
 
 	job, err := m.StartJob(StartRequest{Prompt: "x", Cwd: dir + "/"})
 	if err != nil {
@@ -170,12 +169,13 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 	}
 }
 
-// TestStartJobSerializesEquivalentCwdSpellings proves the headline behavior of
-// issue #24: two fresh runs whose cwd is spelled differently (here a trailing
-// slash) collapse to one normalized gate key, so the second is refused while the
-// first still holds it. Without normalization the two keys differ and the runs
-// would not serialize, re-exposing the agy session-lock hang the gate prevents.
-func TestStartJobSerializesEquivalentCwdSpellings(t *testing.T) {
+// TestStartJobRunsFreshSameCwdRunsConcurrently pins the behaviour change that
+// came with reading the conversation id from agy's own stream: fresh runs no
+// longer key the gate on their cwd, so two of them in one directory (here spelled
+// differently, to also cover normalization) both start instead of the second
+// being refused. Only a resolved conversation id serializes now, because that is
+// the constraint agy itself imposes.
+func TestStartJobRunsFreshSameCwdRunsConcurrently(t *testing.T) {
 	dir := t.TempDir()
 	// A sleeping fake agy keeps the first supervisor alive, so its gate key stays
 	// held while the second run is attempted.
@@ -203,12 +203,48 @@ func TestStartJobSerializesEquivalentCwdSpellings(t *testing.T) {
 		}
 	})
 
-	// The same directory spelled with a trailing slash normalizes to the same
-	// gate key, so the gate must refuse it while job1 holds the key. The cap (4)
-	// is not the limiter here; the per-cwd key is.
-	_, err = m.StartJob(StartRequest{Prompt: "second", Cwd: dir + "/"})
-	if err == nil || !strings.Contains(err.Error(), "conflicting") {
-		t.Fatalf("second run error = %v, want a gate conflict (equivalent cwd spellings not serialized)", err)
+	job2, err := m.StartJob(StartRequest{Prompt: "second", Cwd: dir + "/"})
+	if err != nil {
+		t.Fatalf("second fresh run in the same cwd must start, got: %v", err)
+	}
+	if job2.ID == job1.ID {
+		t.Fatal("the two runs must be distinct jobs")
+	}
+	t.Cleanup(func() {
+		if meta, lerr := m.store.Load(job2.ID); lerr == nil && meta.PID > 0 {
+			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
+		}
+	})
+}
+
+// TestStartJobSerializesSameConversation pins what the gate still enforces: two
+// runs continuing one conversation cannot overlap, because concurrent agy
+// sessions on the same conversation trigger its session-lock hang.
+func TestStartJobSerializesSameConversation(t *testing.T) {
+	dir := t.TempDir()
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "x", Sleep: 30 * time.Second})
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+
+	const conv = "shared-conversation-id"
+	job1, err := m.StartJob(StartRequest{Prompt: "first", Cwd: dir, ConversationID: conv})
+	if err != nil {
+		t.Fatalf("first StartJob: %v", err)
+	}
+	t.Cleanup(func() {
+		if meta, lerr := m.store.Load(job1.ID); lerr == nil && meta.PID > 0 {
+			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
+		}
+	})
+
+	_, err = m.StartJob(StartRequest{Prompt: "second", Cwd: dir, ConversationID: conv})
+	if err == nil || !strings.Contains(err.Error(), "already running on conversation") {
+		t.Fatalf("second run error = %v, want a refusal naming the shared conversation", err)
 	}
 }
 
