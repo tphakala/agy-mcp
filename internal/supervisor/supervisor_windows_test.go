@@ -148,7 +148,9 @@ func TestRunCancelViaSentinel(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if err := os.WriteFile(jobstore.CancelPath(dir), nil, 0o600); err != nil {
+	// Through the canonical writer the manager uses, so this test cannot drift
+	// from the shape requestCancel actually produces.
+	if err := jobstore.WriteCancelDir(dir); err != nil {
 		t.Fatal(err)
 	}
 

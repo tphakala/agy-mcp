@@ -114,7 +114,7 @@ func WriteProgressDir(dir string, p Progress) error {
 // absent or undecodable: progress is a hint, never a correctness gate, so a
 // caller treats a failed read as "nothing known yet" rather than an error.
 func ReadProgressDir(dir string) (Progress, bool) {
-	b, err := os.ReadFile(ProgressPath(dir))
+	b, err := readReplaced(ProgressPath(dir))
 	if err != nil {
 		return Progress{}, false
 	}
@@ -142,7 +142,7 @@ func WriteResultDir(dir string, b []byte) error {
 // written" would silently downgrade a complete answer to a partial one and tell
 // the caller their result may be truncated when it is on disk and whole.
 func ReadResultDir(dir string) ([]byte, error) {
-	b, err := os.ReadFile(ResultPath(dir))
+	b, err := readReplaced(ResultPath(dir))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -163,7 +163,7 @@ func CancelPath(dir string) string { return filepath.Join(dir, CancelFile) }
 // lets it share Load's real read+unmarshal instead of re-implementing it.
 func LoadDir(dir string) (Meta, error) {
 	var m Meta
-	b, err := os.ReadFile(MetaPath(dir))
+	b, err := readReplaced(MetaPath(dir))
 	if err != nil {
 		return m, err
 	}
@@ -188,17 +188,36 @@ func WriteExitCodeDir(dir string, code int) error {
 	return writeFileAtomic(dir, ExitCodeFile, []byte(strconv.Itoa(code)))
 }
 
+// WriteCancelDir creates a job's cancel sentinel, the manager's Windows-only
+// route for asking a supervisor to stop (unix delivers SIGTERM instead, so this
+// has no caller there). Existence is the whole signal, so the file is empty.
+//
+// It goes through writeFileAtomic rather than hand-rolling a temp and a rename,
+// so the job dir has one atomic writer instead of two. Note that the contention
+// retry writeFileAtomic brings with it is not what motivates this: nothing ever
+// opens the sentinel, since the supervisor's poll only Stats it, so this
+// destination is the one that cannot be held by a reader.
+func WriteCancelDir(dir string) error {
+	return writeFileAtomic(dir, CancelFile, nil)
+}
+
 // writeFileAtomic writes b to dir/name via a uniquely-named temp file and a
 // rename, so a reader never observes a partially written file and a crash
 // mid-write leaves either the previous contents or none, never a torn mix. It
 // is the single implementation behind every job-directory write (meta, exit
-// code, progress, result), so none of them can drift into a non-atomic
-// shortcut.
+// code, progress, result, cancel), so none of them can drift into a non-atomic
+// shortcut. out and err are the only job-dir files it does not publish; the
+// supervisor appends to those as agy streams, so they are never replaced.
+//
+// The rename retries a destination another process holds open; see
+// retryContended for why that is reachable on Windows and nowhere else.
 //
 // 0600 throughout: these files record prompts, agy output and job metadata,
 // which often embed source code, so they must not be readable by other users on
-// a multi-user host. os.CreateTemp already creates 0600, so the explicit Chmod
-// only guards a future change to its default.
+// a multi-user host. os.CreateTemp opens at 0600 already (os/tempfile.go:49,
+// go1.26.5), but it does so BEFORE umask, so the explicit Chmod is what
+// restores the mode under a umask that would mask an owner bit, as well as
+// guarding a future change to that default.
 func writeFileAtomic(dir, name string, b []byte) error {
 	tmp, err := os.CreateTemp(dir, name+"-*.tmp")
 	if err != nil {
@@ -226,7 +245,7 @@ func writeFileAtomic(dir, name string, b []byte) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, filepath.Join(dir, name)); err != nil {
+	if err := renameReplace(tmpName, filepath.Join(dir, name)); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
@@ -391,7 +410,7 @@ func (s *Store) ExitCode(id string) (int, bool) {
 	if !validJobID(id) {
 		return 0, false
 	}
-	b, err := os.ReadFile(ExitCodePath(s.jobDir(id)))
+	b, err := readReplaced(ExitCodePath(s.jobDir(id)))
 	if err != nil {
 		return 0, false
 	}
