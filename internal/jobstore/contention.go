@@ -56,10 +56,11 @@ const (
 // rather than the standard library, so it is precedent, not an API to reach for.
 //
 // The budget bounds one operation, so a caller in a loop multiplies it. The
-// largest multiplier is RestoreAndCollect, which reads meta.json and the
-// exit-code sentinel for every job dir at startup, blocks on it and fails
-// closed. The usual reason a job dir reads short there is a missing file, which
-// is never retried, so this costs nothing in the ordinary case.
+// largest multiplier is the startup scan, which reads meta.json for every job
+// dir and the exit-code sentinel for those whose meta parsed. A contended read
+// there is logged and skipped rather than fatal; only the directory scan itself
+// fails startup closed. And the usual reason a job dir reads short is a missing
+// file, which is never retried, so this costs nothing in the ordinary case.
 //
 // Considered and not taken: os.Root.Rename reaches a different rename entirely,
 // NtSetInformationFile with FILE_RENAME_POSIX_SEMANTICS

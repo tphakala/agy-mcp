@@ -191,9 +191,11 @@ func TestRetryContendedOutlastsAnExclusiveHolder(t *testing.T) {
 	}
 }
 
-// openExclusive opens path with no sharing at all, so every other open of it
-// fails with ERROR_SHARING_VIOLATION until the returned func runs. It is the
-// deterministic way to hold a job-dir file against a reader.
+// openExclusive opens path with no sharing at all, so any other open asking for
+// read, write or delete access fails with ERROR_SHARING_VIOLATION until the
+// returned func runs. It is the deterministic way to hold a job-dir file against
+// a reader. An attribute-only query such as os.Stat is exempt from the
+// share-mode check and still succeeds; nothing here depends on it failing.
 func openExclusive(t *testing.T, path string) func() {
 	t.Helper()
 	p16, err := windows.UTF16PtrFromString(path)
@@ -227,9 +229,10 @@ func openExclusive(t *testing.T, path string) func() {
 func TestJobDirReadersSpendTheBudgetOnAContendedFile(t *testing.T) {
 	const id = "j"
 	for _, tc := range []struct {
-		name  string
-		file  string
-		stage func(t *testing.T, dir string)
+		name string
+		file string
+		// stage puts the file in place; nil when Store.Create already wrote it.
+		stage func(dir string) error
 		// read reports whether the reader returned an answer. Every one of these
 		// reports failure differently, which is itself the reason to drive them
 		// through their real signatures rather than readReplaced directly.
@@ -238,25 +241,24 @@ func TestJobDirReadersSpendTheBudgetOnAContendedFile(t *testing.T) {
 		{
 			name:  "ReadProgressDir",
 			file:  ProgressFile,
-			stage: func(t *testing.T, dir string) { mustStage(t, WriteProgressDir(dir, Progress{StepIndex: 1})) },
+			stage: func(dir string) error { return WriteProgressDir(dir, Progress{StepIndex: 1}) },
 			read:  func(_ *Store, dir string) bool { _, ok := ReadProgressDir(dir); return ok },
 		},
 		{
 			name:  "ReadResultDir",
 			file:  ResultFile,
-			stage: func(t *testing.T, dir string) { mustStage(t, WriteResultDir(dir, []byte(`{"status":"ok"}`))) },
+			stage: func(dir string) error { return WriteResultDir(dir, []byte(`{"status":"ok"}`)) },
 			read:  func(_ *Store, dir string) bool { b, err := ReadResultDir(dir); return err == nil && b != nil },
 		},
 		{
-			name:  "LoadDir",
-			file:  MetaFile,
-			stage: func(t *testing.T, dir string) {}, // Store.Create already wrote meta.json
-			read:  func(_ *Store, dir string) bool { _, err := LoadDir(dir); return err == nil },
+			name: "LoadDir",
+			file: MetaFile,
+			read: func(_ *Store, dir string) bool { _, err := LoadDir(dir); return err == nil },
 		},
 		{
 			name:  "Store.ExitCode",
 			file:  ExitCodeFile,
-			stage: func(t *testing.T, dir string) { mustStage(t, WriteExitCodeDir(dir, 0)) },
+			stage: func(dir string) error { return WriteExitCodeDir(dir, 0) },
 			read:  func(s *Store, _ string) bool { _, ok := s.ExitCode(id); return ok },
 		},
 	} {
@@ -266,7 +268,11 @@ func TestJobDirReadersSpendTheBudgetOnAContendedFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			tc.stage(t, dir)
+			if tc.stage != nil {
+				if err := tc.stage(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			release := openExclusive(t, filepath.Join(dir, tc.file))
 			defer release()
@@ -284,14 +290,6 @@ func TestJobDirReadersSpendTheBudgetOnAContendedFile(t *testing.T) {
 					"os.ReadFile directly rather than readReplaced", tc.name, tc.file, elapsed, floor)
 			}
 		})
-	}
-}
-
-// mustStage fails the test if a fixture write failed.
-func mustStage(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
