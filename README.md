@@ -122,6 +122,11 @@ created for it. agy names the conversation in the `init` event of its stream, wh
 about a second after the process starts, so `agy_run` waits briefly (up to 2s) for it and
 returns a real `conversation_id`. If the wait expires the field comes back empty and
 `agy_status` supplies it moments later; either way the thread can be continued.
+`agy_run_sync` does not pay that wait: it takes its `conversation_id` from the status it
+is already polling. That is also what makes its `wait` cap honest, because the
+conversation-id wait used to run before the inline wait's deadline was set, so a short
+`wait` could be overrun by up to the 2s budget. The trade is that a `wait` shorter than
+agy's init latency now returns an empty `conversation_id`, which `agy_status` supplies.
 
 **Fresh runs are not serialized.** Any number of them can run in one directory at the same
 time, bounded only by the global concurrency cap. Earlier versions refused a second fresh run

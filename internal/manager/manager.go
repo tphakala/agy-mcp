@@ -44,9 +44,9 @@ type Manager struct {
 	readAgyVersion func(context.Context, string) (string, error)
 
 	// Timing fields (not package globals) so tests stay isolated and can run in
-	// parallel. conversationIDWait bounds StartJob's wait for agy's init event;
-	// restoredPollInterval paces the liveness watcher for jobs whose supervisor
-	// outlived a manager restart.
+	// parallel. conversationIDWait bounds AwaitConversationID's wait for agy's
+	// init event; restoredPollInterval paces the liveness watcher for jobs whose
+	// supervisor outlived a manager restart.
 	conversationIDWait   time.Duration
 	restoredPollInterval time.Duration
 
@@ -211,24 +211,43 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 // progress file. Its budget is config.ConversationIDWait.
 const conversationIDPoll = 50 * time.Millisecond
 
-// awaitConversationID polls a freshly spawned job's progress file until the
-// supervisor records the conversation id agy reported, the job turns out to be
-// over, or the budget expires. It returns "" when no id arrived, which is not an
-// error: the id is still delivered by the next Status read.
+// AwaitConversationID reports the conversation a run belongs to. A run that
+// already names one (a continuation) returns it at once; a fresh one polls the
+// job's progress file until the supervisor records the id agy reported, the job
+// turns out to be over, or the budget expires. It returns "" when no id arrived,
+// which is not an error: the id is still delivered by the next Status read.
 //
-// The budget is the only place agy_run is not return-immediately, so it exits at
+// It is deliberately not part of StartJob. Only agy_run needs the id in its own
+// response, because it returns before the run produces anything else; agy_run_sync
+// takes it off the Status it already polls. While StartJob did the wait, agy_run_sync
+// paid it before its own inline-wait deadline was set (run_sync.go computes that
+// deadline from the time StartJob returns), so a call that outran the deadline overran
+// its documented wait cap by roughly the budget. A call whose run ends inside the wait
+// saw no saving at all, because the wait overlapped the run rather than preceding it.
+//
+// The budget is why agy_run is not return-immediately (the agy version gate is the
+// other bounded wait, and only until it succeeds once), so it exits at
 // the first opportunity rather than always sleeping it out. A terminal job is
 // one such opportunity: the supervisor writes the progress file while decoding
 // the stream and the exit-code sentinel only at the very end, so a visible
 // sentinel with no recorded id means none is coming (the run died before agy's
 // init event, or never started at all).
-func (m *Manager) awaitConversationID(id, dir string) string {
+func (m *Manager) AwaitConversationID(job Job) string {
+	if job.ConversationID != "" {
+		return job.ConversationID
+	}
+	// A job id this manager did not issue has no conversation to wait for, which is
+	// the same answer an expired budget gives.
+	dir, err := m.store.Dir(job.ID)
+	if err != nil {
+		return ""
+	}
 	deadline := time.Now().Add(m.conversationIDWait)
 	for {
 		if p, ok := jobstore.ReadProgressDir(dir); ok && p.ConversationID != "" {
 			return p.ConversationID
 		}
-		if _, terminal := m.store.ExitCode(id); terminal {
+		if _, terminal := m.store.ExitCode(job.ID); terminal {
 			// Re-read before giving up. The supervisor writes the progress file
 			// before the sentinel, so a job that finished between the two reads
 			// above has its id on disk even though the first read missed it;
@@ -249,7 +268,7 @@ func (m *Manager) awaitConversationID(id, dir string) string {
 //
 // The gate key alone cannot answer this. A fresh run keys on nothing (agy has
 // not named its conversation yet at admission time), but the supervisor records
-// that name in progress.json within about a second, and StartJob hands it to the
+// that name in progress.json within about a second, and agy_run reports it to the
 // caller. Without this scan a caller could take a still-running fresh run's id,
 // pass it straight back as conversation_id, and be admitted under a conv key
 // nobody holds, putting two agy sessions on one conversation: exactly the
@@ -515,16 +534,11 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		m.releaseKey(key)
 	}()
 
-	// A run that already knows its conversation reports it immediately. A fresh
-	// one waits briefly for agy's init event to name the conversation it created,
-	// so the caller can continue the thread without first polling for an id. The
-	// wait is bounded and its expiry is not an error: agy_status reports the id
-	// as soon as the event lands.
-	convID := req.ConversationID
-	if convID == "" {
-		convID = m.awaitConversationID(id, dir)
-	}
-	return Job{ID: id, ConversationID: convID, State: StateRunning}, nil
+	// The conversation id is not resolved here. A continuation already carries it;
+	// a fresh run is named by agy's init event a moment later, and waiting for that
+	// is AwaitConversationID's job, paid only by the caller that reports the id in
+	// its own response.
+	return Job{ID: id, ConversationID: req.ConversationID, State: StateRunning}, nil
 }
 
 // abortSpawn tears down a supervisor that was started but cannot be recorded as

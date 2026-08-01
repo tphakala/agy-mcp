@@ -46,7 +46,7 @@ const (
 //     direction: LoadDir's error aborts the job before it starts.
 //   - progress.json. consumeStream republishes it on each observable step
 //     change, while Status reads it on every poll of a running job and
-//     awaitConversationID reads it every 50ms.
+//     AwaitConversationID reads it every 50ms.
 //
 // The Go command's own tree hardens both sides of this same hazard for the same
 // reason: cmd/internal/robustio wraps Rename ("on Windows retries errors that

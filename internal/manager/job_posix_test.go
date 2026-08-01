@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -195,13 +194,7 @@ func TestStartJobRunsFreshSameCwdRunsConcurrently(t *testing.T) {
 	// Reap the whole supervisor group (bash + the sleeping fake agy) promptly,
 	// regardless of how the test exits; the fake supervisor does not forward
 	// signals, so Cancel alone would leave the sleep running.
-	t.Cleanup(func() {
-		// Guard the PID: syscall.Kill(-0, ...) would signal the test runner's own
-		// process group, and a negative target needs a real group leader.
-		if meta, lerr := m.store.Load(job1.ID); lerr == nil && meta.PID > 0 {
-			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
-		}
-	})
+	killJob(t, m, job1.ID)
 
 	job2, err := m.StartJob(StartRequest{Prompt: "second", Cwd: dir + "/"})
 	if err != nil {
@@ -210,11 +203,7 @@ func TestStartJobRunsFreshSameCwdRunsConcurrently(t *testing.T) {
 	if job2.ID == job1.ID {
 		t.Fatal("the two runs must be distinct jobs")
 	}
-	t.Cleanup(func() {
-		if meta, lerr := m.store.Load(job2.ID); lerr == nil && meta.PID > 0 {
-			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
-		}
-	})
+	killJob(t, m, job2.ID)
 }
 
 // TestStartJobSerializesSameConversation pins what the gate still enforces: two
@@ -236,11 +225,7 @@ func TestStartJobSerializesSameConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first StartJob: %v", err)
 	}
-	t.Cleanup(func() {
-		if meta, lerr := m.store.Load(job1.ID); lerr == nil && meta.PID > 0 {
-			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
-		}
-	})
+	killJob(t, m, job1.ID)
 
 	_, err = m.StartJob(StartRequest{Prompt: "second", Cwd: dir, ConversationID: conv})
 	if err == nil || !strings.Contains(err.Error(), "already running on conversation") {

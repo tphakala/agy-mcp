@@ -53,6 +53,39 @@ func TestListSessionsOverMCP(t *testing.T) {
 	}
 }
 
+// agy_run is the one tool that spends the conversation-id budget: it returns
+// before the run has produced anything a caller could read the id from, so
+// without the wait a fresh run's conversation_id would come back empty and the
+// caller would have to poll for it. This is the only test that pins that, and the
+// shared helper leaves the budget at zero, so dropping the call would otherwise
+// go unnoticed.
+func TestAgyRunReportsFreshConversationIDWithinBudget(t *testing.T) {
+	const uuid = "13131313-2424-3535-4646-575757575757"
+	// Sleeps past the assertion, so the id has to come from the progress file of a
+	// job that is still running, not from a finished one's result.
+	mgr, stateDir := newTestManagerWithIDWait(t, testutil.FakeAgy{
+		Stdout: "LATE OK", Exit: 0, Sleep: 20 * time.Second, ConversationID: uuid,
+	}, 30*time.Second)
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "agy_run",
+		Arguments: map[string]any{"prompt": "review"},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("agy_run: err=%v res=%+v", err, res)
+	}
+	sc := structMap(t, res.StructuredContent)
+	jobID, _ := sc["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("empty job id")
+	}
+	killJobGroup(t, stateDir, jobID)
+	if sc["conversation_id"] != uuid {
+		t.Fatalf("conversation_id = %v, want %q from the id the supervisor recorded", sc["conversation_id"], uuid)
+	}
+}
+
 func TestAgyRunAndStatusOverMCP(t *testing.T) {
 	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "REVIEW OK", Exit: 0})
 	cs := connect(t, mgr, nil)

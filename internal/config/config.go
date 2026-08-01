@@ -21,13 +21,11 @@ type Config struct {
 	JobTTL         time.Duration // age after which finished jobs are GC'd
 	HTTPToken      string        // optional bearer token for HTTP mode; empty = unauthenticated
 
-	// ConversationIDWait bounds how long StartJob blocks waiting for agy to name the
-	// conversation it created, so a fresh run can report a real conversation id
-	// instead of an empty one. It is the largest of the bounded waits StartJob
-	// performs before returning (the agy version gate is the other, and is
-	// cached after the first success), so it is a field rather than a constant:
-	// a test with a fake supervisor that never writes a progress file would
-	// otherwise pay the full budget on every start. Zero disables the wait.
+	// ConversationIDWait bounds how long Manager.AwaitConversationID blocks waiting
+	// for agy to name the conversation it created, so a fresh agy_run can report a
+	// real conversation id instead of an empty one. It is a field rather than a
+	// constant so that a test whose fake supervisor records no conversation id
+	// does not pay the full budget on every agy_run. Zero disables the wait.
 	ConversationIDWait time.Duration
 
 	// ConversationCacheFile overrides where agy's conversation cache
@@ -48,7 +46,7 @@ func baseConfig() Config {
 	}
 }
 
-// DefaultConversationIDWait is how long StartJob waits for agy's init event to name the
+// DefaultConversationIDWait is how long agy_run waits for agy's init event to name the
 // conversation. agy emits it before any model work but after its own startup,
 // which includes launching whatever MCP servers it is configured with, so the
 // budget is generous relative to the roughly one second observed against a warm

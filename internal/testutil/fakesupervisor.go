@@ -17,8 +17,8 @@ import (
 // directory as $2, writes the job's out (and err/exit_code) files there, and,
 // on Linux only, sets its comm to the script basename so the liveness comm
 // fallback sees the same value the real supervisor would report. On macOS,
-// identity is pinned by process start time instead, so the fake — a real
-// spawned process — needs no comm trick there.
+// identity is pinned by process start time instead, so the fake (a real spawned
+// process) needs no comm trick there.
 type FakeSupervisor struct {
 	// AgyPath, when set, makes the script run that (fake) agy binary with
 	// `-p x`, capturing stderr to <dir>/err and recording agy's real exit code.

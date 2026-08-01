@@ -9,11 +9,13 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 	"github.com/tphakala/agy-mcp/v2/internal/manager"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
@@ -27,7 +29,19 @@ const testConversationID = "abcdabcd-1234-5678-9abc-def012345678"
 // conversation cache is a test-owned empty file: it is no longer where a run's
 // id comes from, only where continue_latest and list_sessions look, so pointing
 // it away from the real agy cache is all that is needed.
+//
+// The conversation-id budget is left at zero, which no test needs to opt out of
+// unless it is about the budget itself: only agy_run spends it, and no test here
+// asserts on a fresh run's conversation_id at a moment when the supervisor may
+// not have staged it yet.
 func newTestManager(t *testing.T, fake testutil.FakeAgy) (mgr *manager.Manager, stateDir string) {
+	t.Helper()
+	return newTestManagerWithIDWait(t, fake, 0)
+}
+
+// newTestManagerWithIDWait is newTestManager with a real conversation-id budget,
+// for the tests that pin which tool pays it.
+func newTestManagerWithIDWait(t *testing.T, fake testutil.FakeAgy, idWait time.Duration) (mgr *manager.Manager, stateDir string) {
 	t.Helper()
 	if fake.ConversationID == "" && !fake.NoConversationID {
 		fake.ConversationID = testConversationID
@@ -41,6 +55,7 @@ func newTestManager(t *testing.T, fake testutil.FakeAgy) (mgr *manager.Manager, 
 	stateDir = t.TempDir()
 	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: stateDir,
 		DefaultTimeout: time.Minute, MaxConcurrency: 4,
+		ConversationIDWait:    idWait,
 		ConversationCacheFile: cachePath}
 	return manager.New(c), stateDir
 }
@@ -306,6 +321,81 @@ func TestAgyRunSyncReturnsConversationID(t *testing.T) {
 	}
 	if usage["total_tokens"] != float64(15) {
 		t.Fatalf("usage.total_tokens = %v, want 15", usage["total_tokens"])
+	}
+}
+
+// killJobGroup arranges for a still-running job's process group to be SIGKILLed
+// when the test ends, so a fake agy does not outlive its test and keep writing
+// into a TempDir state dir that is being removed.
+//
+// Cancelling the job does not achieve this, which is why this kills the group
+// directly: agy_cancel signals the supervisor pid alone (proc.Signal is explicitly
+// "a single pid, not its group"), and the fake supervisor traps nothing, so it
+// dies at once and orphans the fake agy it was running in the foreground. The
+// manager package's killJob exists for the same reason. Registering a Cleanup
+// rather than calling this at the end of a test body also means it runs on the
+// t.Fatalf paths, which is where a leaked job is most likely.
+func killJobGroup(t *testing.T, stateDir, jobID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		// No readable meta means no pid to signal: the job either never recorded
+		// one or is already gone. ESRCH on an exited group is the ordinary case,
+		// so the Kill error is discarded.
+		meta, err := jobstore.LoadDir(filepath.Join(stateDir, "jobs", jobID))
+		if err != nil || meta.PID <= 0 {
+			return
+		}
+		_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
+	})
+}
+
+// agy_run_sync must not pay the conversation-id budget. It discards the value:
+// its own conversation_id comes off the Status it polls anyway, which
+// TestAgyRunSyncReturnsConversationID pins. While the wait lived in StartJob,
+// agy_run_sync paid it before its own inline-wait deadline was even set, so a
+// call that outran the deadline overran its documented wait cap by the budget.
+func TestAgyRunSyncDoesNotPayTheConversationIDBudget(t *testing.T) {
+	// Names no conversation, so no id can end the wait early, and outlives the
+	// 100ms cap by far, so the call is decided by the cap rather than by the run
+	// finishing. The run does end before the 30s budget would, through the
+	// terminal-job exit; what this measures is that the budget is not on the path
+	// at all, not that it runs to its full length.
+	mgr, stateDir := newTestManagerWithIDWait(t, testutil.FakeAgy{
+		Stdout: "LATE OK", Exit: 0, Sleep: 20 * time.Second, NoConversationID: true,
+	}, 30*time.Second)
+	cs := connect(t, mgr, nil)
+
+	start := time.Now()
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "agy_run_sync",
+		Arguments: map[string]any{"prompt": "review", "wait": "100ms"},
+	})
+	elapsed := time.Since(start)
+	if err != nil || res.IsError {
+		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
+	}
+	sc := structMap(t, res.StructuredContent)
+	jobID, _ := sc["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("empty job id")
+	}
+	killJobGroup(t, stateDir, jobID)
+	// Checked first, because it is the property under test and its message names
+	// the cause. A wait left on this path also drags the run past the cap, which
+	// trips the state assertion below with a less useful diagnosis.
+	// Generous against a stalled runner, and still far below what this call takes
+	// with the wait restored: measured at 20.5s, where the run's own end releases
+	// it through the terminal-job exit before the 30s budget could.
+	if elapsed > 5*time.Second {
+		t.Fatalf("agy_run_sync took %s for a 100ms wait; it is paying the conversation-id budget", elapsed)
+	}
+	// Pin the overrun shape too, so the elapsed bound cannot be satisfied by a
+	// handler that never waited, never started the job, or ignored the cap.
+	if sc["state"] != manager.StateRunning {
+		t.Fatalf("state = %v, want running: the 100ms cap must expire on a 20s run", sc["state"])
+	}
+	if note, _ := sc["note"].(string); note == "" {
+		t.Fatal("expected an overrun note alongside the running state")
 	}
 }
 

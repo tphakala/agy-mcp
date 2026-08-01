@@ -58,10 +58,13 @@ func newManager(t *testing.T, opts managerOpts) *Manager {
 		version = agyver.Required.String()
 	}
 	m.readAgyVersion = testutil.FakeVersion(version)
-	// Keep the fresh-run conversation-id wait short: these tests use fake
-	// supervisors, whose progress file records no conversation id unless a fake
-	// agy supplies one, so the real 2s budget would be spent in full on every
-	// StartJob.
+	// Pin the conversation-id wait at zero. It already is: this Config is a
+	// literal, and config.DefaultConversationIDWait is applied only by
+	// config.baseConfig, which Resolve and ResolveWait call and this helper does
+	// not. Writing it down keeps a future switch to a resolved config here from
+	// silently handing every test a real budget, against fake supervisors whose
+	// progress file records no conversation id unless a fake agy supplies one. A
+	// test that exercises the wait sets its own budget.
 	m.conversationIDWait = 0
 	return m
 }

@@ -57,7 +57,10 @@ func TestWaitTerminalReturnsDoneJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	testutil.WaitFor(t, 3*time.Second, func() bool {
+	// 5s, the package's usual bound for this shape. It waits on a spawned supervisor
+	// and a forked fake agy, so the deadline is bounded by machine load rather than
+	// by anything under test, and at 3s it flaked on a loaded full-suite run.
+	testutil.WaitFor(t, 5*time.Second, func() bool {
 		st, err := m.Status(job.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -230,17 +233,9 @@ func TestStatusReportsConversationIDWhileRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	// Cancel signals the supervisor pid only, and the fake supervisor does not
-	// forward signals, so the sleeping fake agy would outlive the test and race
-	// t.TempDir teardown. Kill the whole group, as the sibling fixture in
-	// job_posix_test.go does.
-	t.Cleanup(func() {
-		if meta, lerr := m.store.Load(job.ID); lerr == nil && meta.PID > 0 {
-			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
-		}
-	})
+	killJob(t, m, job.ID)
 
-	testutil.WaitFor(t, 3*time.Second, func() bool {
+	testutil.WaitFor(t, 5*time.Second, func() bool {
 		st, err := m.Status(job.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -302,44 +297,174 @@ func TestStatusFailsOnInBandError(t *testing.T) {
 	}
 }
 
-// StartJob returning a fresh run's conversation id is the headline behaviour of
-// the change, and every other test forces its budget to zero, so gutting
-// awaitConversationID to return "" left the suite green. Drive it with a real
-// budget instead.
-func TestStartJobReturnsFreshConversationIDWithinBudget(t *testing.T) {
-	fake := testutil.FakeAgy{Stdout: "OK", Sleep: 30 * time.Second, ConversationID: "77777777-6666-5555-4444-333322221111"}
+// killJob arranges for a still-running job's process group to be SIGKILLed when
+// the test ends, so a fake agy does not outlive its test and keep writing into a
+// TempDir state dir that is being removed. Cancel is not an alternative: it
+// signals the supervisor pid alone and the fake supervisor forwards nothing, so
+// the fake agy it runs in the foreground survives.
+//
+// The PID guard is load-bearing rather than defensive: syscall.Kill(-0, ...)
+// would signal the test runner's own process group. The Kill error is discarded
+// because ESRCH, for a group that has already exited, is the ordinary case; the
+// pid is read from disk, so a recycled one is possible in principle and unguarded
+// here, which is tolerable only because this is test-only cleanup.
+//
+// Like the inline cleanups it replaced, it signals and returns without waiting for
+// the group to die, which is enough for the purpose.
+func killJob(t *testing.T, m *Manager, id string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if meta, err := m.store.Load(id); err == nil && meta.PID > 0 {
+			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
+		}
+	})
+}
+
+// StartJob must not resolve a conversation id. It used to, and agy_run_sync
+// discarded the result. Resolving it is AwaitConversationID's job now.
+//
+// The fixture is what makes this falsifiable: the fake supervisor stages an id in
+// progress.json before agy starts, so a StartJob that still waited would find one
+// and hand it back, and the empty value is the proof the wait is gone. An
+// id-less fixture would report empty either way.
+// TestAgyRunSyncDoesNotPayTheConversationIDBudget covers the latency half.
+func TestStartJobDoesNotResolveAConversationID(t *testing.T) {
+	fake := testutil.FakeAgy{Stdout: "OK", Sleep: 30 * time.Second, ConversationID: "88888888-7777-6666-5555-444433332222"}
 	m := waitManager(t, fake)
-	m.conversationIDWait = 5 * time.Second // the production behaviour, not the zeroed test default
+	m.conversationIDWait = 30 * time.Second // a wait left in StartJob would have room to find the id
 
 	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	t.Cleanup(func() {
-		if meta, lerr := m.store.Load(job.ID); lerr == nil && meta.PID > 0 {
-			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
-		}
-	})
-	if job.ConversationID != fake.ConvID() {
-		t.Fatalf("StartJob conversation_id = %q, want %q from agy's init event", job.ConversationID, fake.ConvID())
+	killJob(t, m, job.ID)
+	if job.ConversationID != "" {
+		t.Fatalf("StartJob conversation_id = %q, want empty: a fresh run is named by AwaitConversationID, not here", job.ConversationID)
+	}
+}
+
+// The budget has to actually expire. Moving the wait out of StartJob cost this
+// branch the coverage it had by accident, since every fresh-run test used to
+// traverse it; without this test, neutering the deadline check leaves both
+// packages green. What it would break is agy_run, whose whole contract is to
+// return promptly: a wait that cannot expire blocks it for the length of the run.
+func TestAwaitConversationIDGivesUpWhenTheBudgetExpires(t *testing.T) {
+	// Never names a conversation and outlives the budget many times over, so
+	// neither early exit can fire and only the deadline can end the wait.
+	fake := testutil.FakeAgy{Stdout: "OK", Sleep: 30 * time.Second, NoConversationID: true}
+	m := waitManager(t, fake)
+	const budget = 300 * time.Millisecond
+	m.conversationIDWait = budget
+
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	killJob(t, m, job.ID)
+	start := time.Now()
+	got := m.AwaitConversationID(job)
+	elapsed := time.Since(start)
+	if got != "" {
+		t.Fatalf("AwaitConversationID = %q, want empty: this run never names a conversation", got)
+	}
+	// Both bounds are load-bearing, and neither alone pins the deadline.
+	//
+	// The lower one separates "the budget ran out" from "an early exit fired",
+	// since only the former reaches the deadline at all.
+	//
+	// The upper one is what catches a deadline that never fires. Without it the
+	// wait simply runs on until the fake agy exits and the terminal-job branch
+	// ends it, returning the same empty id after ~30s, which clears the lower
+	// bound trivially and passes. Measured that way: 30.55s.
+	if elapsed < budget {
+		t.Fatalf("AwaitConversationID returned in %s, inside the %s budget: an early exit fired, so the deadline was never reached", elapsed, budget)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("AwaitConversationID took %s against a %s budget: the deadline never fired and some later exit ended the wait", elapsed, budget)
+	}
+}
+
+// A job id the store refuses resolves to no conversation, rather than spending
+// the budget polling the empty path Dir returns alongside its error. This is the
+// only test that reaches that branch: the continuation test passes an id this
+// manager never issued too, but short-circuits on the id it carries before Dir
+// is ever called.
+func TestAwaitConversationIDRejectsAnUnusableJobID(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	m.conversationIDWait = 30 * time.Second
+
+	start := time.Now()
+	got := m.AwaitConversationID(Job{ID: "../escape"})
+	elapsed := time.Since(start)
+	if got != "" {
+		t.Fatalf("AwaitConversationID = %q, want empty for a job id the store rejects", got)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("AwaitConversationID polled for %s on a job id the store rejects", elapsed)
+	}
+}
+
+// AwaitConversationID returning a fresh run's conversation id is the headline
+// behaviour of the stream-json change, and the shared test manager leaves its
+// budget at zero, so gutting it to return "" left the suite green. Drive it with
+// a real budget instead.
+func TestAwaitConversationIDReturnsFreshIDWithinBudget(t *testing.T) {
+	fake := testutil.FakeAgy{Stdout: "OK", Sleep: 30 * time.Second, ConversationID: "77777777-6666-5555-4444-333322221111"}
+	m := waitManager(t, fake)
+	m.conversationIDWait = 5 * time.Second // a real budget, not the zero the shared helper leaves
+
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	killJob(t, m, job.ID)
+	if got := m.AwaitConversationID(job); got != fake.ConvID() {
+		t.Fatalf("AwaitConversationID = %q, want %q from agy's init event", got, fake.ConvID())
 	}
 }
 
 // A run that is already over when the wait starts must return at once rather
 // than sleeping out the whole budget for an id that is never coming.
-func TestStartJobConversationWaitStopsAtTerminalJob(t *testing.T) {
-	// No Agy config, so the fake supervisor writes no progress file at all, and
-	// it exits immediately.
+func TestAwaitConversationIDStopsAtTerminalJob(t *testing.T) {
+	// No Agy config, so the only progress file the fake supervisor stages is the
+	// marker, which carries no conversation id, and it exits immediately.
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "x", Exit: 0})
 	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"})
 	m := newManager(t, managerOpts{agyPath: agy, supervisorExe: sup, defaultTimeout: time.Minute, maxConcurrency: 4, withCacheFile: true})
 	m.conversationIDWait = 30 * time.Second // long enough that sleeping it out would fail the test
 
-	start := time.Now()
-	if _, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()}); err != nil {
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Fatalf("StartJob took %s; a terminal job must end the conversation-id wait early", elapsed)
+	start := time.Now()
+	got := m.AwaitConversationID(job)
+	elapsed := time.Since(start)
+	if got != "" {
+		t.Fatalf("AwaitConversationID = %q, want empty: this run reports no id", got)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("AwaitConversationID took %s; a terminal job must end the wait early", elapsed)
+	}
+}
+
+// A continuation already carries the id, so the wait must never start: polling
+// for a value that is already in hand would spend the budget on a job dir that
+// may not even be readable yet.
+func TestAwaitConversationIDShortCircuitsAContinuation(t *testing.T) {
+	// No agy and no supervisor: this test starts no job, it only asks about one.
+	m := newManager(t, managerOpts{})
+	m.conversationIDWait = 30 * time.Second
+
+	const convID = "11111111-2222-3333-4444-555555555555"
+	start := time.Now()
+	// No such job dir, so a wait that did start would poll out its whole budget.
+	got := m.AwaitConversationID(Job{ID: "no-such-job", ConversationID: convID})
+	elapsed := time.Since(start)
+	if got != convID {
+		t.Fatalf("AwaitConversationID = %q, want %q handed straight back", got, convID)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("AwaitConversationID took %s for an id it was given", elapsed)
 	}
 }
