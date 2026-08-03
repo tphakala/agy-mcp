@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // crossLock provides per-key cross-process advisory locking via flock(2), so the
@@ -81,7 +83,13 @@ func (c *crossLock) tryLock(key string) (bool, error) {
 	if _, held := c.fds[key]; held {
 		return false, fmt.Errorf("crosslock: key %q already held by this process", key)
 	}
-	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+	// MkdirAllDurable, not a bare os.MkdirAll: when this is the first path to create
+	// the shared state root (a keyed job before any Create, admit runs before Create),
+	// it fsyncs the root's own directory entry so a crash cannot lose it (issue #119).
+	// It shares the job store's durable-create logic; on a directory-fsync-hostile
+	// filesystem the fsyncs are logged and swallowed, so it still succeeds like a
+	// bare MkdirAll.
+	if err := jobstore.MkdirAllDurable(c.dir, 0o700); err != nil {
 		return false, fmt.Errorf("create locks dir: %w", err)
 	}
 	f, err := os.OpenFile(c.lockPath(key), os.O_RDWR|os.O_CREATE, 0o600)

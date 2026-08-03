@@ -311,18 +311,22 @@ func missingAncestors(dir string) []string {
 	return missing
 }
 
-// mkdirAllDurable creates dir and any missing ancestors with perm, then fsyncs the
-// parent of each directory it had to create so the CREATION of the job dir (its
-// entry in the parent) survives a crash, not just the files later written into it.
-// Plain os.MkdirAll leaves those new directory entries only in the parent's page
-// cache, so a power loss right after Create can lose the whole job dir, taking the
-// just-written meta.json with it (issue #118).
+// MkdirAllDurable creates dir and any missing ancestors with perm, then fsyncs the
+// parent of each directory it had to create so the CREATION of dir (its entry in
+// its parent) survives a crash, not just the files later written into it. Plain
+// os.MkdirAll leaves those new directory entries only in the parent's page cache,
+// so a power loss right after it can lose the whole newly created tree: a job dir
+// and its meta.json (issue #118), or the shared state root (issue #119).
+//
+// Both the job store (Store.Create) and the manager's cross-process lock dir create
+// directories through this, so whichever of them first creates the shared state
+// root does so durably, not just the deeper dir it was aiming at.
 //
 // The parent fsyncs are best-effort, in the same spirit as writeFileAtomicDurable's
 // own dir fsync: a directory-fsync-hostile filesystem logs and continues rather
-// than failing job creation. On mainstream local filesystems every fsync succeeds
-// and the dir creation is crash-durable.
-func mkdirAllDurable(dir string, perm os.FileMode) error {
+// than failing the create. On mainstream local filesystems every fsync succeeds and
+// the dir creation is crash-durable.
+func MkdirAllDurable(dir string, perm os.FileMode) error {
 	// Capture which ancestors are missing before creating them; MkdirAll does not
 	// report what it made. missing is deepest first, so slices.Backward fsyncs the
 	// parents from the root down: each new dir's entry is made durable in its parent
@@ -397,10 +401,10 @@ func (s *Store) Create(m Meta) (string, error) {
 	dir := s.jobDir(m.ID)
 	// 0700: job dirs hold prompts and full agy output (which often embed source
 	// code), so they must not be readable by other users on a multi-user host.
-	// mkdirAllDurable (not a bare os.MkdirAll) fsyncs each newly created ancestor's
+	// MkdirAllDurable (not a bare os.MkdirAll) fsyncs each newly created ancestor's
 	// parent so the CREATION of the job dir survives a crash, matching the file-write
 	// durability writeMetaAtomic gives meta.json below (issue #118).
-	if err := mkdirAllDurable(dir, 0o700); err != nil {
+	if err := MkdirAllDurable(dir, 0o700); err != nil {
 		return "", err
 	}
 	// Write meta.json with the same temp+rename pattern UpdateMeta uses, so a crash

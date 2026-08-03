@@ -129,3 +129,22 @@ func TestCrossLockFailsClosedOnUncreatableDir(t *testing.T) {
 		t.Fatalf("tryLock on an uncreatable locks dir = (%v, %v), want (false, error)", ok, err)
 	}
 }
+
+// TestCrossLockTryLockBuildsMissingStateRoot exercises tryLock when the state root
+// does not exist yet and is nested a couple of levels deep, so its MkdirAllDurable
+// call (issue #119) has to create <root>, <root>/locks and run the durable path
+// over more than one new ancestor before the flock. This is functional regression
+// coverage for the deeply-missing-root case the cross-lock success tests do not hit
+// (they root at an existing t.TempDir()); the parent fsyncs are not observable, so
+// it asserts only that the lock is acquired and its file exists.
+func TestCrossLockTryLockBuildsMissingStateRoot(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state", "nested") // does not exist yet
+	c := newCrossLock(stateDir)
+	ok, err := c.tryLock("conv:x")
+	if err != nil || !ok {
+		t.Fatalf("tryLock through missing state root = (%v, %v), want (true, nil)", ok, err)
+	}
+	if _, err := os.Stat(c.lockPath("conv:x")); err != nil {
+		t.Fatalf("lock file missing after tryLock: %v", err)
+	}
+}

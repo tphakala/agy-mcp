@@ -291,7 +291,7 @@ func TestListAndRemove(t *testing.T) {
 }
 
 // TestMissingAncestorsStopsAtFirstExisting pins missingAncestors, the pre-scan
-// mkdirAllDurable relies on to learn which parent dirs need an fsync after
+// MkdirAllDurable relies on to learn which parent dirs need an fsync after
 // MkdirAll (MkdirAll does not report what it created). The walk must list every
 // not-yet-existing ancestor, deepest first, and stop at the first one that
 // already exists so an fsync never runs against a dir Create did not make.
@@ -315,7 +315,7 @@ func TestMissingAncestorsStopsAtFirstExisting(t *testing.T) {
 
 // TestCreateBuildsAndLoadsThroughMissingStateRoot exercises Create's durable-dir
 // path when several ancestors are missing: a state root nested two levels deep,
-// so mkdirAllDurable must create <root>, <root>/jobs and the job dir, then run its
+// so MkdirAllDurable must create <root>, <root>/jobs and the job dir, then run its
 // parent-fsync loop over more than one new dir. The parent fsyncs themselves are
 // not observable from a test (fsync has no user-visible effect absent a crash), so
 // this asserts only the functional contract the durable path must preserve: a
@@ -333,5 +333,31 @@ func TestCreateBuildsAndLoadsThroughMissingStateRoot(t *testing.T) {
 	}
 	if _, err := s.Load("job1"); err != nil {
 		t.Fatalf("Load after Create: %v", err)
+	}
+}
+
+// TestMkdirAllDurableCreatesMissingTree pins the exported durable-mkdir helper,
+// now shared by Store.Create and the manager's cross-process lock dir (issue #119):
+// it must build a fully missing directory tree and return nil, and be idempotent on
+// a path that already exists (a second call returns nil). The parent fsyncs are
+// not observable from a test (they have no effect absent a crash), so this pins the
+// functional contract only; missingAncestors' own test pins which parents get synced.
+func TestMkdirAllDurableCreatesMissingTree(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "a", "b", "c")
+	if err := MkdirAllDurable(target, 0o700); err != nil {
+		t.Fatalf("MkdirAllDurable(missing tree): %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("target not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("target = %v, want a directory", info.Mode())
+	}
+	// Idempotent: a second call on an already-existing path returns nil (a smoke check
+	// of the exported contract; the fsync-skip itself is not test-observable).
+	if err := MkdirAllDurable(target, 0o700); err != nil {
+		t.Fatalf("MkdirAllDurable(existing): %v", err)
 	}
 }
