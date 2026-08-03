@@ -61,23 +61,33 @@ func TestConsumeStreamHappyPath(t *testing.T) {
 	}
 }
 
-// Only agent_response deltas make up the response. Tool calls and checkpoints
-// carry progress but must not be mixed into the answer.
+// Only agent_response deltas make up the response. A step of any other type
+// carries progress but must not be mixed into the answer.
 func TestConsumeStreamOnlyAppendsAgentResponse(t *testing.T) {
+	// The excluded step is placed LAST so progress records it: its text must be
+	// dropped BECAUSE its type was decoded and recognised as non-agent_response,
+	// not because the line failed to decode.
 	stream := `{"event":"init","conversation_id":"c-1"}
-{"event":"step_update","step_update":{"step_index":0,"step_type":"tool_call","text_delta":"SHOULD NOT APPEAR"}}
-{"event":"step_update","step_update":{"step_index":1,"step_type":"agent_response","text_delta":"kept"}}
-{"event":"step_update","step_update":{"step_index":2,"step_type":"checkpoint","text_delta":"NOR THIS"}}
+{"event":"step_update","step_update":{"step_index":0,"step_type":"agent_response","text_delta":"kept"}}
+{"event":"step_update","step_update":{"step_index":1,"step_type":"tool_call","text_delta":"SHOULD NOT APPEAR"}}
 `
-	_, out, oc := consume(t, stream)
+	dir, out, oc := consume(t, stream)
 	if got := out.String(); got != "kept" {
 		t.Fatalf("out = %q, want only the agent_response text", got)
 	}
-	// Positive control. Without it a typo in either "must not appear" line makes
-	// this pass for the wrong reason: an undecodable line is skipped, so its text
-	// never reaches out and the absence assertions hold vacuously.
+	// Positive control. Without it a typo in the excluded line makes this pass for
+	// the wrong reason: an undecodable line is skipped, so its text never reaches
+	// out and the absence check holds vacuously.
 	if oc.malformed != 0 {
-		t.Fatalf("malformed = %d, want 0; a skipped line would satisfy the absence checks without proving anything", oc.malformed)
+		t.Fatalf("malformed = %d, want 0; a skipped line would satisfy the absence check without proving anything", oc.malformed)
+	}
+	// Step-recognition control. The trailing tool_call is the last step, so it is
+	// what progress holds. Renaming its step_type key leaves the line decodable
+	// with an empty StepType, which still excludes its text but empties this
+	// assertion, so the exclusion is proven to follow from a recognised type
+	// rather than from a decode failure the count above already rules out.
+	if p := readProgress(t, dir); p.StepType != "tool_call" {
+		t.Fatalf("progress.StepType = %q, want tool_call; the excluded step must have decoded and been recognised", p.StepType)
 	}
 }
 

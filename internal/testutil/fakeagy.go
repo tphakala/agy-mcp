@@ -102,6 +102,27 @@ func (cfg FakeAgy) ConvID() string {
 	return defaultFakeConversationID
 }
 
+// result renders the terminal result this run produces, applying the status
+// defaulting that the stream's result event and result.json share. streamLines
+// embeds it in the result event and ResultJSON marshals it directly, so routing
+// both through here keeps them from drifting: fakesupervisor.go stages ResultJSON
+// as the payload the real supervisor would derive from streamLines' result event,
+// and nothing else enforces that the two agree.
+func (cfg FakeAgy) result() streamjson.Result {
+	status := cfg.Status
+	if status == "" {
+		status = streamjson.StatusSuccess
+	}
+	return streamjson.Result{
+		ConversationID: cfg.ConvID(),
+		Status:         status,
+		Response:       cfg.Stdout,
+		Error:          cfg.ResultError,
+		NumTurns:       1,
+		Usage:          &streamjson.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}
+}
+
 // streamLines renders the configured run as agy's stream-json output, which
 // WriteFakeAgy stages as the script's stdout payload. It is unexported because the
 // only consumer is in this file. One candidate does exist if anyone wants it back:
@@ -109,10 +130,6 @@ func (cfg FakeAgy) ConvID() string {
 func (cfg FakeAgy) streamLines(t *testing.T) string {
 	t.Helper()
 	convID := cfg.ConvID()
-	status := cfg.Status
-	if status == "" {
-		status = streamjson.StatusSuccess
-	}
 
 	events := []streamjson.Event{{
 		Kind:           streamjson.EventInit,
@@ -129,17 +146,8 @@ func (cfg FakeAgy) streamLines(t *testing.T) string {
 		},
 	}}
 	if !cfg.OmitResult {
-		events = append(events, streamjson.Event{
-			Kind: streamjson.EventResult,
-			Result: &streamjson.Result{
-				ConversationID: convID,
-				Status:         status,
-				Response:       cfg.Stdout,
-				Error:          cfg.ResultError,
-				NumTurns:       1,
-				Usage:          &streamjson.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
-			},
-		})
+		res := cfg.result()
+		events = append(events, streamjson.Event{Kind: streamjson.EventResult, Result: &res})
 	}
 
 	var sb strings.Builder
@@ -158,18 +166,7 @@ func (cfg FakeAgy) streamLines(t *testing.T) string {
 // derive from this run's stream and write to the job's result.json.
 func (cfg FakeAgy) ResultJSON(t *testing.T) string {
 	t.Helper()
-	status := cfg.Status
-	if status == "" {
-		status = streamjson.StatusSuccess
-	}
-	b, err := json.Marshal(streamjson.Result{
-		ConversationID: cfg.ConvID(),
-		Status:         status,
-		Response:       cfg.Stdout,
-		Error:          cfg.ResultError,
-		NumTurns:       1,
-		Usage:          &streamjson.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
-	})
+	b, err := json.Marshal(cfg.result())
 	if err != nil {
 		t.Fatalf("marshal fake agy result: %v", err)
 	}

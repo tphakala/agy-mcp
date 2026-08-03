@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,12 +12,14 @@ import (
 	"time"
 
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/streamjson"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
-// These tests drive Run, which only supervises on Linux (process groups, signal
-// forwarding). They are _linux-gated; the pure tests (resolveExitCode,
-// effectiveTimeout) stay in supervisor_test.go so they run everywhere.
+// These tests drive Run, which supervises on Linux and macOS (process groups,
+// signal forwarding); the file is gated linux || darwin. The pure tests
+// (resolveExitCode, effectiveTimeout) stay in supervisor_test.go so they run
+// everywhere.
 
 // TestSupervisorEscalatesToSIGKILL: when agy ignores SIGTERM, the supervisor
 // must escalate to SIGKILL after the grace window. A tiny injected grace
@@ -64,5 +67,57 @@ func TestSupervisorSpawnFailureWrites127(t *testing.T) {
 	code, _ := os.ReadFile(jobstore.ExitCodePath(dir))
 	if got := strings.TrimSpace(string(code)); got != strconv.Itoa(jobstore.ExitSpawnFail) {
 		t.Fatalf("exit_code = %q, want %d (spawn failure)", got, jobstore.ExitSpawnFail)
+	}
+}
+
+// TestSupervisorRecordsSkippedLinesInErrFile drives a malformed agy stream
+// through the real supervisor and asserts that the "skipped N unreadable
+// line(s)" note persist emits reaches the job's err file, and that the valid
+// result after the malformed line still survives. Everywhere else that note is
+// asserted only against an in-memory buffer, so this is the one end-to-end check
+// that stream corruption is actually surfaced on disk.
+func TestSupervisorRecordsSkippedLinesInErrFile(t *testing.T) {
+	dir := t.TempDir()
+	// A fake agy that emits one undecodable line followed by a valid terminal
+	// result. WriteFakeAgy only renders well-formed streams, so this run is staged
+	// by hand: the script ignores its own args and prints a fixed stream, which the
+	// supervisor execs and decodes from its stdout.
+	agy := filepath.Join(t.TempDir(), "malformed-agy")
+	script := "#!/usr/bin/env bash\n" +
+		"printf '%s\\n' 'this is not a json event'\n" +
+		`printf '%s\n' '{"event":"result","result":{"conversation_id":"c-1","status":"SUCCESS","response":"ok"}}'` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(agy, []byte(script), 0o755); err != nil {
+		t.Fatalf("write malformed agy: %v", err)
+	}
+	writeMeta(t, dir, jobstore.Meta{
+		ID: "j", AgyPath: agy, Args: []string{"-p", "x"},
+		StartedAt: time.Now(), Timeout: time.Minute,
+	})
+
+	if err := run(dir, 200*time.Millisecond, drainGrace); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	errBytes, rerr := os.ReadFile(jobstore.ErrPath(dir))
+	if rerr != nil {
+		t.Fatalf("read err file: %v", rerr)
+	}
+	if !strings.Contains(string(errBytes), "skipped 1 unreadable line") {
+		t.Fatalf("err file = %q, want it to report the one skipped line", errBytes)
+	}
+
+	// The valid result after the malformed line must still have been decoded and
+	// written: corruption early in the stream must not discard the answer.
+	res, rerr := jobstore.ReadResultDir(dir)
+	if rerr != nil || res == nil {
+		t.Fatalf("result payload missing after a malformed line: err=%v", rerr)
+	}
+	var r streamjson.Result
+	if err := json.Unmarshal(res, &r); err != nil {
+		t.Fatalf("result payload: %v", err)
+	}
+	if r.Response != "ok" {
+		t.Fatalf("result response = %q, want ok", r.Response)
 	}
 }
