@@ -263,7 +263,7 @@ func writeFileAtomic(dir, name string, b []byte) error {
 
 // writeFileAtomicDurable publishes b with writeFileAtomic and then fsyncs the
 // directory, so the rename survives a crash and not just the file's data. It is
-// for the write-once files whose loss would misreport a job afterwards: meta.json
+// for the low-frequency files whose loss would misreport a job afterwards: meta.json
 // (its absence orphans the dir), result.json (its absence downgrades a complete
 // answer to partial), and the exit_code sentinel (whose absence misreports a
 // finished job's outcome).
