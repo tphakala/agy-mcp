@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -129,7 +130,7 @@ func ReadProgressDir(dir string) (Progress, bool) {
 // are the marshalled stream-json result event; jobstore owns the file, not its
 // schema, so the payload passes through opaque.
 func WriteResultDir(dir string, b []byte) error {
-	return writeFileAtomic(dir, ResultFile, b)
+	return writeFileAtomicDurable(dir, ResultFile, b)
 }
 
 // ReadResultDir returns a job's terminal result payload. A missing file yields
@@ -185,7 +186,7 @@ func LoadDir(dir string) (Meta, error) {
 // contract: the sentinel is not sensitive, but a uniform owner-only mode is
 // simpler to reason about.
 func WriteExitCodeDir(dir string, code int) error {
-	return writeFileAtomic(dir, ExitCodeFile, []byte(strconv.Itoa(code)))
+	return writeFileAtomicDurable(dir, ExitCodeFile, []byte(strconv.Itoa(code)))
 }
 
 // WriteCancelDir creates a job's cancel sentinel, the manager's Windows-only
@@ -211,6 +212,14 @@ func WriteCancelDir(dir string) error {
 //
 // The rename retries a destination another process holds open; see
 // retryContended for why that is reachable on Windows and nowhere else.
+//
+// The rename itself is NOT crash-durable: tmp.Sync flushes the file's data, but
+// a crash right after the rename can still lose the new directory entry. The
+// write-once files whose loss would misreport a job close that gap with
+// writeFileAtomicDurable; the per-step progress file and the cancel sentinel stay
+// here (a directory fsync on the progress hot path would cost more than a hint
+// whose loss reads as "nothing known yet", and a lost cancel is a recoverable
+// control signal).
 //
 // 0600 throughout: these files record prompts, agy output and job metadata,
 // which often embed source code, so they must not be readable by other users on
@@ -248,6 +257,32 @@ func writeFileAtomic(dir, name string, b []byte) error {
 	if err := renameReplace(tmpName, filepath.Join(dir, name)); err != nil {
 		_ = os.Remove(tmpName)
 		return err
+	}
+	return nil
+}
+
+// writeFileAtomicDurable publishes b with writeFileAtomic and then fsyncs the
+// directory, so the rename survives a crash and not just the file's data. It is
+// for the write-once files whose loss would misreport a job afterwards: meta.json
+// (its absence orphans the dir), result.json (its absence downgrades a complete
+// answer to partial), and the exit_code sentinel (whose absence misreports a
+// finished job's outcome).
+//
+// The directory fsync is BEST EFFORT. The file is already published by the time
+// it runs, so a failure must not fail the write: a filesystem that cannot fsync a
+// directory (some FUSE / network mounts return EINVAL) would otherwise turn a
+// successful write into an error, and Create/UpdateMeta would then wipe a fresh
+// job dir or tear down a running supervisor over a durability miss on a file that
+// is already on disk. Losing the fsync only forfeits crash durability, so it is
+// logged (a real I/O error stays visible) and swallowed; the write still
+// succeeds. On mainstream local filesystems the fsync succeeds and durability is
+// achieved.
+func writeFileAtomicDurable(dir, name string, b []byte) error {
+	if err := writeFileAtomic(dir, name, b); err != nil {
+		return err
+	}
+	if err := fsyncDir(dir); err != nil {
+		log.Printf("jobstore: directory fsync for %q failed; %s is atomic but not crash-durable: %v", dir, name, err)
 	}
 	return nil
 }
@@ -351,7 +386,7 @@ func writeMetaAtomic(dir string, m Meta) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(dir, MetaFile, b)
+	return writeFileAtomicDurable(dir, MetaFile, b)
 }
 
 // Remove deletes a job's directory and everything in it.

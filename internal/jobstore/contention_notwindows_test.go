@@ -102,3 +102,23 @@ func TestWriteFileAtomicReplacesAnOpenFile(t *testing.T) {
 		t.Errorf("reader opened before the replace saw %+v, want the snapshot it opened (1, before)", held)
 	}
 }
+
+// TestFsyncDir exercises fsyncDir's two outcomes off Windows: a real directory
+// syncs without error, and a path that cannot be opened as a directory returns
+// the open error rather than calling Sync on a nil handle. The durability it buys
+// (the rename surviving a crash) cannot be observed without crash injection,
+// which Go tests do not do; the durable writers reach fsyncDir end-to-end through
+// writeFileAtomicDurable, so the rest of the suite passing is what pins that it
+// succeeds on a real job dir.
+func TestFsyncDir(t *testing.T) {
+	if err := fsyncDir(t.TempDir()); err != nil {
+		t.Fatalf("fsyncDir on a real directory: %v", err)
+	}
+	// A missing path cannot be opened, so the open error is returned; without that
+	// check the code would call Sync on a nil handle and get "invalid argument"
+	// instead of fs.ErrNotExist.
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if err := fsyncDir(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("fsyncDir on a missing path = %v, want fs.ErrNotExist", err)
+	}
+}

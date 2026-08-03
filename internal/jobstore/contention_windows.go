@@ -34,3 +34,13 @@ import (
 func contended(err error) bool {
 	return errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_ACCESS_DENIED)
 }
+
+// fsyncDir is a no-op on Windows: there is no supported way to flush a directory
+// handle (FlushFileBuffers requires a file handle and rejects a directory), so
+// this platform cannot make the rename crash-durable the way the POSIX fsync
+// does. NTFS journaling keeps the directory metadata CONSISTENT across a crash
+// (the entry is never torn), which is not the same as flushing a just-made
+// rename, so writeFileAtomicDurable simply forfeits the extra durability here,
+// exactly as its best-effort fsync does on a POSIX filesystem that cannot fsync a
+// directory.
+func fsyncDir(string) error { return nil }
