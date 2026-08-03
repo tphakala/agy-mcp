@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -287,6 +288,60 @@ func writeFileAtomicDurable(dir, name string, b []byte) error {
 	return nil
 }
 
+// missingAncestors returns the ancestor directories of dir that do not exist yet,
+// deepest first (dir itself, then its parent, and so on), stopping at the first
+// ancestor that already exists. This is the set os.MkdirAll(dir) will have to
+// create, computed BEFORE the call because MkdirAll does not report which dirs it
+// made. A Stat that fails for a reason other than "does not exist" stops the walk:
+// MkdirAll will surface that error, and guessing which ancestors it created past an
+// unreadable one risks an fsync on a path this process never made.
+func missingAncestors(dir string) []string {
+	var missing []string
+	for p := filepath.Clean(dir); ; {
+		if _, err := os.Stat(p); err == nil || !errors.Is(err, fs.ErrNotExist) {
+			break // p already exists, or we cannot tell; stop climbing
+		}
+		missing = append(missing, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break // reached the filesystem root
+		}
+		p = parent
+	}
+	return missing
+}
+
+// mkdirAllDurable creates dir and any missing ancestors with perm, then fsyncs the
+// parent of each directory it had to create so the CREATION of the job dir (its
+// entry in the parent) survives a crash, not just the files later written into it.
+// Plain os.MkdirAll leaves those new directory entries only in the parent's page
+// cache, so a power loss right after Create can lose the whole job dir, taking the
+// just-written meta.json with it (issue #118).
+//
+// The parent fsyncs are best-effort, in the same spirit as writeFileAtomicDurable's
+// own dir fsync: a directory-fsync-hostile filesystem logs and continues rather
+// than failing job creation. On mainstream local filesystems every fsync succeeds
+// and the dir creation is crash-durable.
+func mkdirAllDurable(dir string, perm os.FileMode) error {
+	// Capture which ancestors are missing before creating them; MkdirAll does not
+	// report what it made. missing is deepest first, so slices.Backward fsyncs the
+	// parents from the root down: each new dir's entry is made durable in its parent
+	// before the loop reaches the dir nested inside it. So a crash leaves a durable
+	// run from an existing ancestor down, never a flushed inner dir whose entry in
+	// its parent is not yet on disk.
+	missing := missingAncestors(dir)
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return err
+	}
+	for _, d := range slices.Backward(missing) {
+		parent := filepath.Dir(d)
+		if err := fsyncDir(parent); err != nil {
+			log.Printf("jobstore: parent-dir fsync for %q failed; creation of %q is not crash-durable: %v", parent, d, err)
+		}
+	}
+	return nil
+}
+
 // ErrInvalidID is returned when a job id is not a safe path segment.
 var ErrInvalidID = errors.New("invalid job id")
 
@@ -342,7 +397,10 @@ func (s *Store) Create(m Meta) (string, error) {
 	dir := s.jobDir(m.ID)
 	// 0700: job dirs hold prompts and full agy output (which often embed source
 	// code), so they must not be readable by other users on a multi-user host.
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// mkdirAllDurable (not a bare os.MkdirAll) fsyncs each newly created ancestor's
+	// parent so the CREATION of the job dir survives a crash, matching the file-write
+	// durability writeMetaAtomic gives meta.json below (issue #118).
+	if err := mkdirAllDurable(dir, 0o700); err != nil {
 		return "", err
 	}
 	// Write meta.json with the same temp+rename pattern UpdateMeta uses, so a crash

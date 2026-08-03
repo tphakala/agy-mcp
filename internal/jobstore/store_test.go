@@ -289,3 +289,49 @@ func TestListAndRemove(t *testing.T) {
 		t.Fatalf("after Remove, List = %v", ids)
 	}
 }
+
+// TestMissingAncestorsStopsAtFirstExisting pins missingAncestors, the pre-scan
+// mkdirAllDurable relies on to learn which parent dirs need an fsync after
+// MkdirAll (MkdirAll does not report what it created). The walk must list every
+// not-yet-existing ancestor, deepest first, and stop at the first one that
+// already exists so an fsync never runs against a dir Create did not make.
+func TestMissingAncestorsStopsAtFirstExisting(t *testing.T) {
+	base := t.TempDir() // already exists
+	target := filepath.Join(base, "a", "b", "c")
+	got := missingAncestors(target)
+	want := []string{
+		target,
+		filepath.Join(base, "a", "b"),
+		filepath.Join(base, "a"),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("missingAncestors(%q) = %v, want %v", target, got, want)
+	}
+	// An already-existing directory has no missing ancestors, so nothing is synced.
+	if got := missingAncestors(base); len(got) != 0 {
+		t.Fatalf("missingAncestors(existing) = %v, want empty", got)
+	}
+}
+
+// TestCreateBuildsAndLoadsThroughMissingStateRoot exercises Create's durable-dir
+// path when several ancestors are missing: a state root nested two levels deep,
+// so mkdirAllDurable must create <root>, <root>/jobs and the job dir, then run its
+// parent-fsync loop over more than one new dir. The parent fsyncs themselves are
+// not observable from a test (fsync has no user-visible effect absent a crash), so
+// this asserts only the functional contract the durable path must preserve: a
+// loadable job dir with meta.json. missingAncestors' own test pins which parents
+// get synced.
+func TestCreateBuildsAndLoadsThroughMissingStateRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state", "nested") // does not exist yet
+	s := New(root)
+	dir, err := s.Create(Meta{ID: "job1", BootID: "b"})
+	if err != nil {
+		t.Fatalf("Create through missing state root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, MetaFile)); err != nil {
+		t.Fatalf("meta.json missing after Create: %v", err)
+	}
+	if _, err := s.Load("job1"); err != nil {
+		t.Fatalf("Load after Create: %v", err)
+	}
+}
