@@ -144,6 +144,7 @@ func TestCrossLockTryLockBuildsMissingStateRoot(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("tryLock through missing state root = (%v, %v), want (true, nil)", ok, err)
 	}
+	defer c.unlock("conv:x") // release the held fd, so the test leaves no lock behind
 	if _, err := os.Stat(c.lockPath("conv:x")); err != nil {
 		t.Fatalf("lock file missing after tryLock: %v", err)
 	}
