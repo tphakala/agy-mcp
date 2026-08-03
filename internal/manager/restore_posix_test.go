@@ -80,10 +80,17 @@ func TestRestoreGateBlocksConflictingRun(t *testing.T) {
 	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd, ConversationID: liveConvID("live-1")}); err == nil {
 		t.Fatal("a run continuing the same conversation should be blocked by the restored live job's key")
 	}
-	// A fresh run in that same directory is not blocked: fresh runs no longer key
-	// on the cwd.
-	if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err != nil {
-		t.Fatalf("a fresh same-cwd run must not be blocked by a restored job: %v", err)
+	// Two fresh runs in that same directory must BOTH admit: fresh runs no longer
+	// key on the cwd, so nothing serializes them against the restored job or
+	// against each other. A single fresh run admitting proved nothing here, since a
+	// fresh run keys on "" and can never collide with the restored conv: key;
+	// running two in one directory is what pins that they are not serialized. If
+	// keyFor were changed back to keying fresh runs on the cwd, the second run
+	// would be refused with acquireKeyBusy and this loop would fail.
+	for i := range 2 {
+		if _, err := m.StartJob(StartRequest{Prompt: "x", Cwd: cwd}); err != nil {
+			t.Fatalf("fresh same-cwd run %d must not be blocked by a restored job or a sibling fresh run: %v", i+1, err)
+		}
 	}
 }
 

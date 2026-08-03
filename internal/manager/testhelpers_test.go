@@ -21,7 +21,6 @@ type managerOpts struct {
 	defaultModel   string
 	jobTTL         time.Duration
 	withCacheFile  bool   // true -> m.cacheFile = a fresh t.TempDir()/last_conversations.json
-	agyVersion     string // "" -> a version that satisfies the gate; see newManager
 }
 
 // newManager builds a *Manager for tests, consolidating the suite's several
@@ -52,12 +51,9 @@ func newManager(t *testing.T, opts managerOpts) *Manager {
 	// Stub the version probe. The agyPath in these tests is usually a stand-in
 	// that cannot be executed at all, so without this every StartJob would fail
 	// in the gate rather than exercising what the test is about. A test that
-	// wants to exercise the gate itself sets agyVersion.
-	version := opts.agyVersion
-	if version == "" {
-		version = agyver.Required.String()
-	}
-	m.readAgyVersion = testutil.FakeVersion(version)
+	// exercises the gate itself stubs m.readAgyVersion directly (see
+	// versionManager in version_test.go).
+	m.readAgyVersion = testutil.FakeVersion(agyver.Required.String())
 	// Pin the conversation-id wait at zero. It already is: this Config is a
 	// literal, and config.DefaultConversationIDWait is applied only by
 	// config.baseConfig, which Resolve and ResolveWait call and this helper does
