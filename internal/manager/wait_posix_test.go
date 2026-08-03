@@ -362,7 +362,7 @@ func TestAwaitConversationIDGivesUpWhenTheBudgetExpires(t *testing.T) {
 	}
 	killJob(t, m, job.ID)
 	start := time.Now()
-	got := m.AwaitConversationID(job)
+	got := m.AwaitConversationID(t.Context(), job)
 	elapsed := time.Since(start)
 	if got != "" {
 		t.Fatalf("AwaitConversationID = %q, want empty: this run never names a conversation", got)
@@ -394,7 +394,7 @@ func TestAwaitConversationIDRejectsAnUnusableJobID(t *testing.T) {
 	m.conversationIDWait = 30 * time.Second
 
 	start := time.Now()
-	got := m.AwaitConversationID(Job{ID: "../escape"})
+	got := m.AwaitConversationID(t.Context(), Job{ID: "../escape"})
 	elapsed := time.Since(start)
 	if got != "" {
 		t.Fatalf("AwaitConversationID = %q, want empty for a job id the store rejects", got)
@@ -418,7 +418,7 @@ func TestAwaitConversationIDReturnsFreshIDWithinBudget(t *testing.T) {
 		t.Fatalf("StartJob: %v", err)
 	}
 	killJob(t, m, job.ID)
-	if got := m.AwaitConversationID(job); got != fake.ConvID() {
+	if got := m.AwaitConversationID(t.Context(), job); got != fake.ConvID() {
 		t.Fatalf("AwaitConversationID = %q, want %q from agy's init event", got, fake.ConvID())
 	}
 }
@@ -438,7 +438,7 @@ func TestAwaitConversationIDStopsAtTerminalJob(t *testing.T) {
 		t.Fatalf("StartJob: %v", err)
 	}
 	start := time.Now()
-	got := m.AwaitConversationID(job)
+	got := m.AwaitConversationID(t.Context(), job)
 	elapsed := time.Since(start)
 	if got != "" {
 		t.Fatalf("AwaitConversationID = %q, want empty: this run reports no id", got)
@@ -459,12 +459,45 @@ func TestAwaitConversationIDShortCircuitsAContinuation(t *testing.T) {
 	const convID = "11111111-2222-3333-4444-555555555555"
 	start := time.Now()
 	// No such job dir, so a wait that did start would poll out its whole budget.
-	got := m.AwaitConversationID(Job{ID: "no-such-job", ConversationID: convID})
+	got := m.AwaitConversationID(t.Context(), Job{ID: "no-such-job", ConversationID: convID})
 	elapsed := time.Since(start)
 	if got != convID {
 		t.Fatalf("AwaitConversationID = %q, want %q handed straight back", got, convID)
 	}
 	if elapsed > 5*time.Second {
 		t.Fatalf("AwaitConversationID took %s for an id it was given", elapsed)
+	}
+}
+
+// A cancelled caller context must end the wait at once rather than polling out
+// the budget. The agy_run handler holds a live context; when the client abandons
+// the call there is no reason to keep parking it, and the id it would have
+// reported is delivered by the next agy_status read instead, so an early "" loses
+// nothing. Without the ctx.Done() case this run would poll the full budget.
+func TestAwaitConversationIDStopsOnContextCancellation(t *testing.T) {
+	// Never names a conversation and outlives the budget many times over, so
+	// neither the id-found nor the terminal branch can fire; only cancellation can
+	// end the wait.
+	fake := testutil.FakeAgy{Stdout: "OK", Sleep: 30 * time.Second, NoConversationID: true}
+	m := waitManager(t, fake)
+	m.conversationIDWait = 30 * time.Second // long enough that sleeping it out would fail the test
+
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	killJob(t, m, job.ID)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // already cancelled: the wait must return at its first poll boundary
+
+	start := time.Now()
+	got := m.AwaitConversationID(ctx, job)
+	elapsed := time.Since(start)
+	if got != "" {
+		t.Fatalf("AwaitConversationID = %q, want empty when the caller's context is cancelled", got)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("AwaitConversationID took %s against a %s budget: cancellation did not end the wait", elapsed, m.conversationIDWait)
 	}
 }

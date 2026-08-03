@@ -214,8 +214,9 @@ const conversationIDPoll = 50 * time.Millisecond
 // AwaitConversationID reports the conversation a run belongs to. A run that
 // already names one (a continuation) returns it at once; a fresh one polls the
 // job's progress file until the supervisor records the id agy reported, the job
-// turns out to be over, or the budget expires. It returns "" when no id arrived,
-// which is not an error: the id is still delivered by the next Status read.
+// turns out to be over, the caller cancels ctx, or the budget expires. It returns
+// "" when no id arrived, which is not an error: the id is still delivered by the
+// next Status read.
 //
 // It is deliberately not part of StartJob. Only agy_run needs the id in its own
 // response, because it returns before the run produces anything else; agy_run_sync
@@ -232,7 +233,7 @@ const conversationIDPoll = 50 * time.Millisecond
 // the stream and the exit-code sentinel only at the very end, so a visible
 // sentinel with no recorded id means none is coming (the run died before agy's
 // init event, or never started at all).
-func (m *Manager) AwaitConversationID(job Job) string {
+func (m *Manager) AwaitConversationID(ctx context.Context, job Job) string {
 	if job.ConversationID != "" {
 		return job.ConversationID
 	}
@@ -260,7 +261,16 @@ func (m *Manager) AwaitConversationID(job Job) string {
 		if !time.Now().Before(deadline) {
 			return ""
 		}
-		time.Sleep(conversationIDPoll)
+		select {
+		case <-ctx.Done():
+			// The caller (the agy_run handler) has gone away, so stop polling rather
+			// than parking it for the rest of the budget. The id is not lost: it stays
+			// on disk in the progress file, so any later agy_status on this job returns
+			// it once agy names the conversation, the same recovery an expired budget
+			// relies on.
+			return ""
+		case <-time.After(conversationIDPoll):
+		}
 	}
 }
 

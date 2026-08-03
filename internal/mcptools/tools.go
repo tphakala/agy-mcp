@@ -281,7 +281,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		// report a run's conversation fill it from a Status read, which costs nothing
 		// extra because they were reading the status anyway. (list_sessions reports
 		// conversation ids too, but those come from agy's own cache, not from a run.)
-		return nil, runOutput{JobID: job.ID, ConversationID: mgr.AwaitConversationID(job), State: job.State}, nil
+		return nil, runOutput{JobID: job.ID, ConversationID: mgr.AwaitConversationID(ctx, job), State: job.State}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
