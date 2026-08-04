@@ -316,10 +316,11 @@ func TestParseResolvesNoisyOutput(t *testing.T) {
 	}
 }
 
-// The number is only half of it: every case above that resolves to a pre-1.1.8
-// version is a gate bypass if the parser picks the wrong candidate, so assert
-// the consequence too. The inputs are DERIVED from parseCases rather than
-// copied, so a case added there is covered here automatically.
+// The number is only half of it: every case above that resolves to a sub-floor
+// version (below Required) is a gate bypass if the parser picks the wrong
+// candidate, so assert the consequence too. The inputs are DERIVED from
+// parseCases rather than copied, so a case added there is covered here
+// automatically.
 func TestParseNeverPromotesPastTheFloor(t *testing.T) {
 	t.Parallel()
 	checked := 0
@@ -423,17 +424,22 @@ func FuzzParseRoundTrip(f *testing.F) {
 
 func TestAtLeast(t *testing.T) {
 	t.Parallel()
+	// AtLeast is pure version ordering, so pin a fixed reference rather than the
+	// production floor (Required): this test must not move when the floor moves.
+	// The floor boundary itself stays covered by the manager version tests and by
+	// TestParseNeverPromotesPastTheFloor.
+	ref := Version{1, 1, 8}
 	cases := []struct {
 		v, min Version
 		want   bool
 	}{
-		{Version{1, 1, 8}, Required, true},  // exactly the minimum
-		{Version{1, 1, 9}, Required, true},  // patch ahead
-		{Version{1, 2, 0}, Required, true},  // minor ahead
-		{Version{2, 0, 0}, Required, true},  // major ahead
-		{Version{1, 1, 7}, Required, false}, // the release just before
-		{Version{1, 0, 99}, Required, false},
-		{Version{0, 9, 9}, Required, false},
+		{Version{1, 1, 8}, ref, true},  // exactly the reference
+		{Version{1, 1, 9}, ref, true},  // patch ahead
+		{Version{1, 2, 0}, ref, true},  // minor ahead
+		{Version{2, 0, 0}, ref, true},  // major ahead
+		{Version{1, 1, 7}, ref, false}, // the release just before
+		{Version{1, 0, 99}, ref, false},
+		{Version{0, 9, 9}, ref, false},
 	}
 	for _, tc := range cases {
 		if got := tc.v.AtLeast(tc.min); got != tc.want {
@@ -447,7 +453,7 @@ func TestString(t *testing.T) {
 	if got := (Version{1, 1, 8}).String(); got != "1.1.8" {
 		t.Fatalf("String() = %q, want 1.1.8", got)
 	}
-	if got := Required.String(); got != "1.1.8" {
+	if got := Required.String(); got != "1.1.10" {
 		t.Fatalf("Required = %q; update this test deliberately when the floor moves", got)
 	}
 }

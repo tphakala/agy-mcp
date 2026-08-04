@@ -10,11 +10,15 @@ import (
 	"strings"
 )
 
-// Required is the oldest agy that agy-mcp can drive. 1.1.8 added
-// --output-format (text, json, stream-json) to print mode; the whole job
-// pipeline reads the stream-json event stream, so an older agy cannot be used
-// at all rather than degraded.
-var Required = Version{Major: 1, Minor: 1, Patch: 8}
+// Required is the oldest agy that agy-mcp can drive. Two facts set the floor.
+// 1.1.8 added --output-format (text, json, stream-json) to print mode, and the
+// whole job pipeline reads the stream-json event stream, so an older agy cannot
+// be used at all rather than degraded. 1.1.10 is then the first release where
+// the run-shaping flags agy-mcp forwards in headless -p (--model, and --effort
+// once it is wired) actually take effect; on 1.1.8/1.1.9 they were silently
+// ignored, so a lower floor would let a passing gate hide a no-op flag. Both
+// facts are from agy's own changelog, verified against the installed 1.1.10.
+var Required = Version{Major: 1, Minor: 1, Patch: 10}
 
 // Version is a parsed agy version.
 type Version struct {

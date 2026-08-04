@@ -83,7 +83,7 @@ func TestAgyBinaryCheckedRetriesAfterRefusal(t *testing.T) {
 	if _, err := m.agyBinaryChecked(t.Context()); err == nil {
 		t.Fatal("precondition: the old version must be refused")
 	}
-	version.Store("1.1.8") // the user upgrades agy mid-session
+	version.Store(agyver.Required.String()) // the user upgrades agy mid-session
 	if _, err := m.agyBinaryChecked(t.Context()); err != nil {
 		t.Fatalf("an upgraded agy must be accepted without a restart: %v", err)
 	}

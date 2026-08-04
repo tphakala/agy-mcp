@@ -27,7 +27,7 @@ func TestReadAgyVersionToleratesWaitDelay(t *testing.T) {
 	// it afterwards rather than leaving a 30-second sleep behind on every run.
 	pidFile := filepath.Join(dir, "sleeper.pid")
 	// Print the version, leave a descendant holding stdout, exit cleanly.
-	body := "#!/bin/sh\necho 1.1.8\nsleep 30 &\necho $! > \"" + pidFile + "\"\nexit 0\n"
+	body := "#!/bin/sh\necho " + agyver.Required.String() + "\nsleep 30 &\necho $! > \"" + pidFile + "\"\nexit 0\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +55,6 @@ func TestReadAgyVersionToleratesWaitDelay(t *testing.T) {
 		t.Fatalf("parse %q: %v", raw, perr)
 	}
 	if !v.AtLeast(agyver.Required) {
-		t.Fatalf("version = %v, want the printed 1.1.8", v)
+		t.Fatalf("version = %v, want the printed %s", v, agyver.Required)
 	}
 }

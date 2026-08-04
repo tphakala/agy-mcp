@@ -9,7 +9,7 @@
 
 An MCP (Model Context Protocol) server that wraps the [Antigravity CLI](https://antigravity.google) (`agy`), so any MCP client (Claude Code, Cursor, Cline, and others) can run `agy` prompts, peer reviews, and follow-up turns as native tools.
 
-> Status: feature complete (stdio and HTTP transports, async and sync job lifecycle, model and session discovery, cross-platform builds) and verified against a live agy (1.1.10; the floor is still 1.1.8).
+> Status: feature complete (stdio and HTTP transports, async and sync job lifecycle, model and session discovery, cross-platform builds) and verified against a live agy (1.1.10), which is also the floor.
 
 ## Why
 
@@ -49,9 +49,9 @@ Two transports run the same core:
 
 ## Requirements
 
-- **agy 1.1.8 or newer**, on `PATH` or configured explicitly via `AGY_MCP_AGY_PATH`. This is a hard floor, not a recommendation: 1.1.8 added `--output-format` to print mode, and agy-mcp drives every job through the `stream-json` format it introduced. Older builds are refused rather than degraded.
+- **agy 1.1.10 or newer**, on `PATH` or configured explicitly via `AGY_MCP_AGY_PATH`. This is a hard floor, not a recommendation. Two things set it: 1.1.8 added `--output-format` to print mode and agy-mcp drives every job through the `stream-json` format it introduced, and 1.1.10 is the first release where the run-shaping flags agy-mcp forwards in headless `-p` (`--model`, and `--effort` once wired) are honored rather than silently ignored (both per agy's changelog). Older builds are refused rather than degraded.
 
-  The version is checked once per process, the first time a tool actually needs agy, and the verdict is cached. A binary that is too old is reported as `agy 1.1.8 or newer is required ...; found 1.1.7 at /usr/local/bin/agy`. A failed check is deliberately not cached, so upgrading agy is picked up without restarting the server.
+  The version is checked once per process, the first time a tool actually needs agy, and the verdict is cached. A binary that is too old is reported as `agy 1.1.10 or newer is required ...; found 1.1.7 at /usr/local/bin/agy`. A failed check is deliberately not cached, so upgrading agy is picked up without restarting the server.
 
   A missing `agy` does not stop the server from starting. `initialize`, `tools/list`, and `list_sessions` never exec it, so the lookup is deferred: the server starts, logs a warning to stderr, serves discovery normally, and the tools that do need the binary (`agy_run`, `agy_run_sync`, `list_models`) fail per call with `agy not found on PATH; set AGY_MCP_AGY_PATH`. An `agy` installed later is picked up without restarting the server. An explicit `AGY_MCP_AGY_PATH` is treated differently: it is a claim about one specific binary, so a typo or a non-executable target still fails fast at startup.
 - Go 1.26+ to build.
@@ -63,7 +63,7 @@ Two transports run the same core:
 
 > Note: every job spawns a fresh `agy` process, which on startup launches whatever MCP servers are configured in agy's own `mcp_config.json`. Peer-review and automation runs usually do not need those servers, and a slow or hanging one adds latency to every job. agy 1.0.7+ bounds this with a per-server launch `timeout` (set `-1` to disable it). If startup is slow, give the unneeded servers a `timeout` in agy's `mcp_config.json`, or point agy at a trimmed config.
 >
-> Note (continuation): a follow-up turn runs `agy --conversation <id> -p <prompt>`, and the job result is the `response` field of agy's terminal `result` event. Verified against 1.1.8: a resumed run returns only the new turn and echoes the same conversation id, with `num_turns` incremented.
+> Note (continuation): a follow-up turn runs `agy --conversation <id> -p <prompt>`, and the job result is the `response` field of agy's terminal `result` event. Verified against 1.1.10: a resumed run returns only the new turn and echoes the same conversation id, with `num_turns` incremented.
 >
 > Note (auth): agy-mcp passes its own process environment through to every spawned `agy`, so agy's normal OAuth credentials are used by default. For headless or daemon deployments (HTTP mode, cron) where no browser is available, set `USE_ADC=1` in the server's environment to have agy authenticate via Google Application Default Credentials instead of the interactive sign-in flow (agy 1.0.11+). No agy-mcp flag or code change is needed; unset it to fall back to the other sign-in methods.
 
@@ -217,7 +217,7 @@ agy-mcp -http 127.0.0.1:8765 -http-token "$(openssl rand -hex 32)"
 
 ## Upgrading from v1
 
-v2 requires agy 1.1.8 and drives it through `--output-format stream-json`. The upgrade is safe to do in place, but two things are worth knowing.
+v2 requires agy 1.1.10 and drives it through `--output-format stream-json`. The upgrade is safe to do in place, but two things are worth knowing.
 
 **Stop the server before replacing the binary.** The supervisor is the same `agy-mcp` binary re-executed as `agy-mcp run-job <dir>`, so replacing it under a live v1 server pairs an old manager with a new supervisor. The supervisor detects that case and asks agy for the event stream anyway, so no result is lost, but a v1 manager and a v2 process sharing one `AGY_MCP_STATE_DIR` briefly disagree about cross-process locking, and a v1 run's conversation id can be misattributed in that window.
 
@@ -226,7 +226,7 @@ v2 requires agy 1.1.8 and drives it through `--output-format stream-json`. The u
 - A v1 fresh run may report no `conversation_id`. v1 recovered it by diffing agy's conversation cache, and v2 has no such path. Recover the thread with `list_sessions` if you need it.
 - Cancelled and interrupted v1 jobs behave as before; only the id is affected.
 
-**Behaviour changes to check your client against:** `agy_run` now blocks up to 2s waiting for agy to name the conversation, instead of returning instantly; fresh runs in the same directory no longer conflict, so anything that relied on that conflict error as a mutex now gets real concurrency (and agy runs with `--dangerously-skip-permissions`, so concurrent runs edit one working tree); and `list_models` is now refused on an agy older than 1.1.8, even though `agy models` itself would work there.
+**Behaviour changes to check your client against:** `agy_run` now blocks up to 2s waiting for agy to name the conversation, instead of returning instantly; fresh runs in the same directory no longer conflict, so anything that relied on that conflict error as a mutex now gets real concurrency (and agy runs with `--dangerously-skip-permissions`, so concurrent runs edit one working tree); and `list_models` is now refused on an agy older than 1.1.10, even though `agy models` itself would work there.
 
 ## Configuration
 

@@ -155,8 +155,8 @@ func (m *Manager) agyBinaryChecked(ctx context.Context) (string, error) {
 	}
 	if !v.AtLeast(agyver.Required) {
 		return "", fmt.Errorf(
-			"agy %s or newer is required (agy-mcp drives agy through --output-format stream-json, added in %s); found %s at %s",
-			agyver.Required, agyver.Required, v, agy)
+			"agy %s or newer is required (agy-mcp drives agy through --output-format stream-json); found %s at %s",
+			agyver.Required, v, agy)
 	}
 	m.verifiedAgy = agy
 	return agy, nil
