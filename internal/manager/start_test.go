@@ -10,12 +10,16 @@ import (
 )
 
 // TestBuildAgyArgs pins the agy command line: the fixed flags, then --model,
-// repeated --add-dir, --conversation, --json-schema, and finally -p with the
-// prompt, with the optional flags omitted when their fields are empty.
+// --mode, --agent, --sandbox, repeated --add-dir, --conversation, --json-schema,
+// and finally -p with the prompt, with the optional flags omitted when their
+// fields are empty (and --sandbox omitted when false).
 func TestBuildAgyArgs(t *testing.T) {
 	got := buildAgyArgs(StartRequest{
 		Prompt:         "review this",
 		Model:          "Gemini 3.1 Pro (High)",
+		Mode:           "plan",
+		Agent:          "reviewer",
+		Sandbox:        true,
 		Dirs:           []string{"/a", "/b"},
 		ConversationID: "cid-123",
 		JSONSchema:     `{"type":"object"}`,
@@ -26,6 +30,9 @@ func TestBuildAgyArgs(t *testing.T) {
 		"--print-timeout", "20m0s",
 		"--output-format", "stream-json",
 		"--model", "Gemini 3.1 Pro (High)",
+		"--mode", "plan",
+		"--agent", "reviewer",
+		"--sandbox",
 		"--add-dir", "/a", "--add-dir", "/b",
 		"--conversation", "cid-123",
 		"--json-schema", `{"type":"object"}`,

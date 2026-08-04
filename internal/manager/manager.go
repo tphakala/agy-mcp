@@ -94,6 +94,9 @@ func New(c config.Config) *Manager {
 type StartRequest struct {
 	Prompt         string
 	Model          string   // optional; falls back to cfg.DefaultModel
+	Mode           string   // optional; --mode <accept-edits|plan>, agy's agent execution mode
+	Agent          string   // optional; --agent <name>, selects a specific agy agent
+	Sandbox        bool     // optional; --sandbox, runs agy with terminal restrictions
 	Dirs           []string // repeated --add-dir
 	ConversationID string   // optional; --conversation <id>
 	JSONSchema     string   // optional; --json-schema <inline schema or path>, constrains the final stream-json result
@@ -877,6 +880,9 @@ const (
 	dangerouslySkipPermissionsFlag = "--dangerously-skip-permissions"
 	printTimeoutFlag               = "--print-timeout"
 	modelFlag                      = "--model"
+	modeFlag                       = "--mode"
+	agentFlag                      = "--agent"
+	sandboxFlag                    = "--sandbox"
 	addDirFlag                     = "--add-dir"
 	conversationFlag               = "--conversation"
 	jsonSchemaFlag                 = "--json-schema"
@@ -896,6 +902,15 @@ func buildAgyArgs(req StartRequest) []string {
 	}
 	if req.Model != "" {
 		args = append(args, modelFlag, req.Model)
+	}
+	if req.Mode != "" {
+		args = append(args, modeFlag, req.Mode)
+	}
+	if req.Agent != "" {
+		args = append(args, agentFlag, req.Agent)
+	}
+	if req.Sandbox {
+		args = append(args, sandboxFlag)
 	}
 	for _, d := range req.Dirs {
 		args = append(args, addDirFlag, d)

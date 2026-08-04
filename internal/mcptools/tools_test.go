@@ -136,3 +136,63 @@ func TestToStartRequestPassesJSONSchema(t *testing.T) {
 		t.Fatalf("JSONSchema = %q, want it threaded through unchanged as %q", req.JSONSchema, schema)
 	}
 }
+
+// TestToStartRequestPassesRunOptions: the mode/agent/sandbox inputs are threaded
+// into the start request so buildAgyArgs can forward them to agy. A dropped field
+// here would silently ignore a caller's run-shaping request.
+func TestToStartRequestPassesRunOptions(t *testing.T) {
+	t.Parallel()
+	req, err := runInput{Prompt: "x", Mode: "plan", Agent: "reviewer", Sandbox: true}.toStartRequest()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Mode != "plan" {
+		t.Errorf("Mode = %q, want plan", req.Mode)
+	}
+	if req.Agent != "reviewer" {
+		t.Errorf("Agent = %q, want reviewer", req.Agent)
+	}
+	if !req.Sandbox {
+		t.Errorf("Sandbox = %v, want true", req.Sandbox)
+	}
+}
+
+// TestToStartRequestValidatesMode: mode is an agy enum (accept-edits, plan), so a
+// bad value must fail fast at the tool boundary with a message that quotes the bad
+// value and names the accepted values, rather than reaching agy. An empty mode is
+// valid and means "omit the flag". Validation is exact, so a wrong case is rejected.
+func TestToStartRequestValidatesMode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, mode string
+		wantErr    bool
+	}{
+		{name: "empty is ok", mode: "", wantErr: false},
+		{name: "accept-edits ok", mode: "accept-edits", wantErr: false},
+		{name: "plan ok", mode: "plan", wantErr: false},
+		{name: "unknown rejected", mode: "planning", wantErr: true},
+		{name: "wrong case rejected", mode: "Plan", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := runInput{Prompt: "x", Mode: tc.mode}.toStartRequest()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("mode %q was accepted, want a rejection", tc.mode)
+				}
+				if !strings.Contains(err.Error(), tc.mode) ||
+					!strings.Contains(err.Error(), "accept-edits") ||
+					!strings.Contains(err.Error(), "plan") {
+					t.Fatalf("err = %v, want it to quote %q and name the accepted values", err, tc.mode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("mode %q was rejected, want accepted: %v", tc.mode, err)
+			}
+			if req.Mode != tc.mode {
+				t.Fatalf("Mode = %q, want %q", req.Mode, tc.mode)
+			}
+		})
+	}
+}

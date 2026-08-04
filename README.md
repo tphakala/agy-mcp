@@ -93,8 +93,8 @@ Or add to your MCP client config:
 
 ## Tools
 
-- `agy_run(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?)` -> `{ job_id, conversation_id?, state }`
-- `agy_run_sync(prompt, model?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
+- `agy_run(prompt, model?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?)` -> `{ job_id, conversation_id?, state }`
+- `agy_run_sync(prompt, model?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
 - `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage? }`
 - `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`
@@ -112,10 +112,11 @@ them without consulting this file. The constraints worth knowing up front: `conv
 and `continue_latest` are mutually exclusive (setting `continue_latest` true alongside a
 `conversation_id` is an error); `timeout` is a Go duration and a value above 24h is rejected
 outright, and on expiry the
-`agy` process tree is killed and the job ends in state `failed`; `wait` defaults to 2m and is
-silently clamped to 10m, and it bounds only the inline wait, never the job itself. `agy_cancel`
-is asynchronous, so it usually returns `running` and the job settles to `cancelled` a moment
-later.
+`agy` process tree is killed and the job ends in state `failed`; `mode`, when set, must be
+`accept-edits` or `plan`, and any other value is rejected before the run starts; `wait` defaults
+to 2m and is silently clamped to 10m, and it bounds only the inline wait, never the job itself.
+`agy_cancel` is asynchronous, so it usually returns `running` and the job settles to `cancelled`
+a moment later.
 
 A fresh `agy_run` (no `conversation_id`, no `continue_latest`) reports the conversation agy
 created for it. agy names the conversation in the `init` event of its stream, which arrives
