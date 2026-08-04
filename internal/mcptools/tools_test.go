@@ -137,14 +137,17 @@ func TestToStartRequestPassesJSONSchema(t *testing.T) {
 	}
 }
 
-// TestToStartRequestPassesRunOptions: the mode/agent/sandbox inputs are threaded
-// into the start request so buildAgyArgs can forward them to agy. A dropped field
-// here would silently ignore a caller's run-shaping request.
+// TestToStartRequestPassesRunOptions: the effort/mode/agent/sandbox inputs are
+// threaded into the start request so buildAgyArgs can forward them to agy. A
+// dropped field here would silently ignore a caller's run-shaping request.
 func TestToStartRequestPassesRunOptions(t *testing.T) {
 	t.Parallel()
-	req, err := runInput{Prompt: "x", Mode: "plan", Agent: "reviewer", Sandbox: true}.toStartRequest()
+	req, err := runInput{Prompt: "x", Effort: "high", Mode: "plan", Agent: "reviewer", Sandbox: true}.toStartRequest()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Effort != "high" {
+		t.Errorf("Effort = %q, want high", req.Effort)
 	}
 	if req.Mode != "plan" {
 		t.Errorf("Mode = %q, want plan", req.Mode)
@@ -192,6 +195,49 @@ func TestToStartRequestValidatesMode(t *testing.T) {
 			}
 			if req.Mode != tc.mode {
 				t.Fatalf("Mode = %q, want %q", req.Mode, tc.mode)
+			}
+		})
+	}
+}
+
+// TestToStartRequestValidatesEffort: effort is an agy enum (low, medium, high),
+// so a bad value must fail fast at the tool boundary with a message that quotes
+// the bad value and names the accepted values, rather than reaching agy. An empty
+// effort is valid and means "omit the flag". Validation is exact, so a wrong case
+// is rejected.
+func TestToStartRequestValidatesEffort(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, effort string
+		wantErr      bool
+	}{
+		{name: "empty is ok", effort: "", wantErr: false},
+		{name: "low ok", effort: "low", wantErr: false},
+		{name: "medium ok", effort: "medium", wantErr: false},
+		{name: "high ok", effort: "high", wantErr: false},
+		{name: "unknown rejected", effort: "maximum", wantErr: true},
+		{name: "wrong case rejected", effort: "High", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := runInput{Prompt: "x", Effort: tc.effort}.toStartRequest()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("effort %q was accepted, want a rejection", tc.effort)
+				}
+				if !strings.Contains(err.Error(), tc.effort) ||
+					!strings.Contains(err.Error(), "low") ||
+					!strings.Contains(err.Error(), "medium") ||
+					!strings.Contains(err.Error(), "high") {
+					t.Fatalf("err = %v, want it to quote %q and name the accepted values", err, tc.effort)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("effort %q was rejected, want accepted: %v", tc.effort, err)
+			}
+			if req.Effort != tc.effort {
+				t.Fatalf("Effort = %q, want %q", req.Effort, tc.effort)
 			}
 		})
 	}

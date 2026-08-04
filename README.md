@@ -49,7 +49,7 @@ Two transports run the same core:
 
 ## Requirements
 
-- **agy 1.1.10 or newer**, on `PATH` or configured explicitly via `AGY_MCP_AGY_PATH`. This is a hard floor, not a recommendation. Two things set it: 1.1.8 added `--output-format` to print mode and agy-mcp drives every job through the `stream-json` format it introduced, and 1.1.10 is the first release where the run-shaping flags agy-mcp forwards in headless `-p` (`--model`, and `--effort` once wired) are honored rather than silently ignored (both per agy's changelog). Older builds are refused rather than degraded.
+- **agy 1.1.10 or newer**, on `PATH` or configured explicitly via `AGY_MCP_AGY_PATH`. This is a hard floor, not a recommendation. Two things set it: 1.1.8 added `--output-format` to print mode and agy-mcp drives every job through the `stream-json` format it introduced, and 1.1.10 is the first release where the run-shaping flags agy-mcp forwards in headless `-p` (`--model` and `--effort`) are honored rather than silently ignored (both per agy's changelog). Older builds are refused rather than degraded.
 
   The version is checked once per process, the first time a tool actually needs agy, and the verdict is cached. A binary that is too old is reported as `agy 1.1.10 or newer is required ...; found 1.1.7 at /usr/local/bin/agy`. A failed check is deliberately not cached, so upgrading agy is picked up without restarting the server.
 
@@ -93,8 +93,8 @@ Or add to your MCP client config:
 
 ## Tools
 
-- `agy_run(prompt, model?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?)` -> `{ job_id, conversation_id?, state }`
-- `agy_run_sync(prompt, model?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
+- `agy_run(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?)` -> `{ job_id, conversation_id?, state }`
+- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
 - `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage? }`
 - `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`
@@ -112,8 +112,9 @@ them without consulting this file. The constraints worth knowing up front: `conv
 and `continue_latest` are mutually exclusive (setting `continue_latest` true alongside a
 `conversation_id` is an error); `timeout` is a Go duration and a value above 24h is rejected
 outright, and on expiry the
-`agy` process tree is killed and the job ends in state `failed`; `mode`, when set, must be
-`accept-edits` or `plan`, and any other value is rejected before the run starts; `wait` defaults
+`agy` process tree is killed and the job ends in state `failed`; `effort`, when set, must be
+`low`, `medium` or `high`, and `mode`, when set, must be `accept-edits` or `plan`, with any other
+value rejected before the run starts; `wait` defaults
 to 2m and is silently clamped to 10m, and it bounds only the inline wait, never the job itself.
 `agy_cancel` is asynchronous, so it usually returns `running` and the job settles to `cancelled`
 a moment later.

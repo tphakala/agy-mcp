@@ -21,6 +21,7 @@ import (
 type runInput struct {
 	Prompt         string   `json:"prompt" jsonschema:"the complete task for the delegated agent: what to do, the context needed to do it, and the output wanted back; the agent cannot see this conversation, so the prompt must stand alone"`
 	Model          string   `json:"model,omitempty" jsonschema:"agy model name; omit to use the server's default model, or agy's own default when the server sets none. Call list_models for the accepted values"`
+	Effort         string   `json:"effort,omitempty" jsonschema:"reasoning effort for this run (agy --effort): low, medium or high. Omit to use agy's default"`
 	Mode           string   `json:"mode,omitempty" jsonschema:"agy agent execution mode for this run (agy --mode): accept-edits or plan. Omit to use agy's default mode"`
 	Agent          string   `json:"agent,omitempty" jsonschema:"name of a specific agy agent to run for this session (agy --agent); omit to use agy's default agent"`
 	Sandbox        bool     `json:"sandbox,omitempty" jsonschema:"run the agent with agy's sandbox (terminal restrictions) enabled (agy --sandbox); off by default"`
@@ -43,6 +44,15 @@ const maxJobTimeout = 24 * time.Hour
 const (
 	agyModeAcceptEdits = "accept-edits"
 	agyModePlan        = "plan"
+)
+
+// agy --effort accepts exactly these reasoning-effort levels. toStartRequest
+// validates against them so a bad value fails at the tool boundary with a clear
+// message rather than reaching agy.
+const (
+	agyEffortLow    = "low"
+	agyEffortMedium = "medium"
+	agyEffortHigh   = "high"
 )
 
 // ToolAgyRunSync is the agy_run_sync tool name, exported so out-of-package
@@ -121,15 +131,19 @@ var (
 )
 
 // toStartRequest converts the wire input into a manager start request,
-// validating the mode and timeout.
+// validating the effort, mode and timeout.
 func (in runInput) toStartRequest() (manager.StartRequest, error) {
 	req := manager.StartRequest{
 		Prompt: in.Prompt, Model: in.Model, Dirs: in.Dirs,
 		ConversationID: in.ConversationID, ContinueLatest: in.ContinueLatest, Cwd: in.Cwd,
 		JSONSchema: in.JSONSchema,
+		Effort:     in.Effort,
 		Mode:       in.Mode,
 		Agent:      in.Agent,
 		Sandbox:    in.Sandbox,
+	}
+	if in.Effort != "" && in.Effort != agyEffortLow && in.Effort != agyEffortMedium && in.Effort != agyEffortHigh {
+		return manager.StartRequest{}, fmt.Errorf("invalid effort %q: want %s, %s or %s", in.Effort, agyEffortLow, agyEffortMedium, agyEffortHigh)
 	}
 	if in.Mode != "" && in.Mode != agyModeAcceptEdits && in.Mode != agyModePlan {
 		return manager.StartRequest{}, fmt.Errorf("invalid mode %q: want %s or %s", in.Mode, agyModeAcceptEdits, agyModePlan)
