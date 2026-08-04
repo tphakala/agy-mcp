@@ -889,6 +889,7 @@ const (
 	conversationFlag               = "--conversation"
 	jsonSchemaFlag                 = "--json-schema"
 	outputFormatFlag               = "--output-format"
+	disableSlashCommandsFlag       = "--disable-slash-commands"
 	// streamJSONFormat is the only format agy-mcp drives. It is what makes the
 	// conversation id observable mid-run (the init event carries it) and what
 	// leaves an interrupted run with recoverable text; the single-object `json`
@@ -901,6 +902,17 @@ func buildAgyArgs(req StartRequest) []string {
 		dangerouslySkipPermissionsFlag,
 		printTimeoutFlag, req.Timeout.String(),
 		outputFormatFlag, streamJSONFormat,
+		// Keep caller prompts literal. Per agy's changelog, 1.1.9 added slash-command
+		// and skill expansion to print mode together with --disable-slash-commands as
+		// its opt-out, so without this a prompt whose leading token starts with "/"
+		// (a path, a leading-slash sentence, or any caller text that happens to begin
+		// with "/") is reinterpreted as a skill or command. The flag is functional in
+		// headless -p, not merely accepted: the changelog introduces it as the opt-out
+		// for that exact print-mode feature, unlike --effort which was accepted but a
+		// no-op in -p until 1.1.10. Passing it on every run makes prompt semantics mean
+		// what the caller wrote, independent of the installed agy version. Always
+		// available because the agy floor (agyver.Required) is 1.1.10 (>= 1.1.9).
+		disableSlashCommandsFlag,
 	}
 	if req.Model != "" {
 		args = append(args, modelFlag, req.Model)

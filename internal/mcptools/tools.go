@@ -19,7 +19,7 @@ import (
 // exclusive, what a field defaults to, and what happens on expiry. Keeping that
 // here rather than in the tool description avoids restating the schema in prose.
 type runInput struct {
-	Prompt         string   `json:"prompt" jsonschema:"the complete task for the delegated agent: what to do, the context needed to do it, and the output wanted back; the agent cannot see this conversation, so the prompt must stand alone"`
+	Prompt         string   `json:"prompt" jsonschema:"the complete task for the delegated agent: what to do, the context needed to do it, and the output wanted back; the agent cannot see this conversation, so the prompt must stand alone. It is sent to agy literally, so a leading slash-command or skill name (a prompt starting with /) is treated as text, not expanded"`
 	Model          string   `json:"model,omitempty" jsonschema:"agy model name; omit to use the server's default model, or agy's own default when the server sets none. Call list_models for the accepted values"`
 	Effort         string   `json:"effort,omitempty" jsonschema:"reasoning effort for this run (agy --effort): low, medium or high. Omit to use agy's default"`
 	Mode           string   `json:"mode,omitempty" jsonschema:"agy agent execution mode for this run (agy --mode): accept-edits or plan. Omit to use agy's default mode"`

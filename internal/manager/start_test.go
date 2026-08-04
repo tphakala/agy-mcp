@@ -9,10 +9,11 @@ import (
 	"github.com/tphakala/agy-mcp/v2/internal/config"
 )
 
-// TestBuildAgyArgs pins the agy command line: the fixed flags, then --model,
-// --effort, --mode, --agent, --sandbox, repeated --add-dir, --conversation,
-// --json-schema, and finally -p with the prompt, with the optional flags omitted
-// when their fields are empty (and --sandbox omitted when false).
+// TestBuildAgyArgs pins the agy command line: the fixed flags (ending in
+// --disable-slash-commands so prompts stay literal), then --model, --effort,
+// --mode, --agent, --sandbox, repeated --add-dir, --conversation, --json-schema,
+// and finally -p with the prompt, with the optional flags omitted when their
+// fields are empty (and --sandbox omitted when false).
 func TestBuildAgyArgs(t *testing.T) {
 	got := buildAgyArgs(StartRequest{
 		Prompt:         "review this",
@@ -30,6 +31,7 @@ func TestBuildAgyArgs(t *testing.T) {
 		"--dangerously-skip-permissions",
 		"--print-timeout", "20m0s",
 		"--output-format", "stream-json",
+		"--disable-slash-commands",
 		"--model", "Gemini 3.1 Pro (High)",
 		"--effort", "high",
 		"--mode", "plan",
@@ -52,6 +54,7 @@ func TestBuildAgyArgs(t *testing.T) {
 		"--dangerously-skip-permissions",
 		"--print-timeout", "1m0s",
 		"--output-format", "stream-json",
+		"--disable-slash-commands",
 		"-p", "hi",
 	}
 	if !slices.Equal(got, want) {

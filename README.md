@@ -117,7 +117,9 @@ outright, and on expiry the
 value rejected before the run starts; `wait` defaults
 to 2m and is silently clamped to 10m, and it bounds only the inline wait, never the job itself.
 `agy_cancel` is asynchronous, so it usually returns `running` and the job settles to `cancelled`
-a moment later.
+a moment later. A `prompt` is sent to agy literally: a leading slash-command or skill name
+(a prompt beginning with `/`) is treated as text rather than expanded, so caller input means
+exactly what it says regardless of the installed agy version.
 
 A fresh `agy_run` (no `conversation_id`, no `continue_latest`) reports the conversation agy
 created for it. agy names the conversation in the `init` event of its stream, which arrives
