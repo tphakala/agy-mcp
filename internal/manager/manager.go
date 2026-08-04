@@ -96,6 +96,7 @@ type StartRequest struct {
 	Model          string   // optional; falls back to cfg.DefaultModel
 	Dirs           []string // repeated --add-dir
 	ConversationID string   // optional; --conversation <id>
+	JSONSchema     string   // optional; --json-schema <inline schema or path>, constrains the final stream-json result
 	ContinueLatest bool     // resolve cwd's latest conversation before the run
 	Cwd            string   // optional; defaults to process cwd
 	Timeout        time.Duration
@@ -878,6 +879,7 @@ const (
 	modelFlag                      = "--model"
 	addDirFlag                     = "--add-dir"
 	conversationFlag               = "--conversation"
+	jsonSchemaFlag                 = "--json-schema"
 	outputFormatFlag               = "--output-format"
 	// streamJSONFormat is the only format agy-mcp drives. It is what makes the
 	// conversation id observable mid-run (the init event carries it) and what
@@ -900,6 +902,9 @@ func buildAgyArgs(req StartRequest) []string {
 	}
 	if req.ConversationID != "" {
 		args = append(args, conversationFlag, req.ConversationID)
+	}
+	if req.JSONSchema != "" {
+		args = append(args, jsonSchemaFlag, req.JSONSchema)
 	}
 	args = append(args, "-p", req.Prompt)
 	return args

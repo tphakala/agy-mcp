@@ -26,6 +26,7 @@ type runInput struct {
 	ContinueLatest bool     `json:"continue_latest,omitempty" jsonschema:"continue the most recent conversation for cwd instead of starting fresh. Mutually exclusive with conversation_id: setting this true together with a conversation_id is an error, though leaving it false alongside one is fine"`
 	Cwd            string   `json:"cwd,omitempty" jsonschema:"absolute path of the directory the agent runs in and may edit files under; also scopes continue_latest. Fresh runs sharing a cwd run concurrently. A relative path is resolved against the server's working directory, which is not necessarily yours, so pass an absolute one. Symlinks are resolved. Defaults to the server's own working directory"`
 	Timeout        string   `json:"timeout,omitempty" jsonschema:"max wall-clock duration for the whole run (Go duration, e.g. 20m); a value over 24h is rejected. On expiry the agy process tree is killed and the job ends in state failed. Omit to use the server's default"`
+	JSONSchema     string   `json:"json_schema,omitempty" jsonschema:"optional JSON Schema to enforce on the run's structured result: pass either an inline schema string or a path to a schema file, and agy constrains the final result to it (in stream-json mode the schema applies to the terminal result event). Omit for an unconstrained free-text result. Useful when the result is consumed programmatically, e.g. extraction, classification, or structured summaries"`
 }
 
 // maxJobTimeout caps a client-supplied per-job timeout. It bounds both the agy
@@ -114,6 +115,7 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 	req := manager.StartRequest{
 		Prompt: in.Prompt, Model: in.Model, Dirs: in.Dirs,
 		ConversationID: in.ConversationID, ContinueLatest: in.ContinueLatest, Cwd: in.Cwd,
+		JSONSchema: in.JSONSchema,
 	}
 	if in.Timeout != "" {
 		d, err := time.ParseDuration(in.Timeout)

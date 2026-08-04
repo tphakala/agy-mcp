@@ -120,3 +120,19 @@ func TestToStartRequestAcceptsTimeoutAtLimit(t *testing.T) {
 		t.Fatalf("timeout at the limit should be accepted: req=%+v err=%v", req, err)
 	}
 }
+
+// TestToStartRequestPassesJSONSchema: the json_schema input is threaded verbatim
+// into the start request (agy-mcp does not parse or validate it, agy owns schema
+// semantics), so buildAgyArgs can forward it as --json-schema. A dropped field
+// here would silently ignore a caller's schema request.
+func TestToStartRequestPassesJSONSchema(t *testing.T) {
+	t.Parallel()
+	const schema = `{"type":"object","required":["verdict"]}`
+	req, err := runInput{Prompt: "x", JSONSchema: schema}.toStartRequest()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.JSONSchema != schema {
+		t.Fatalf("JSONSchema = %q, want it threaded through unchanged as %q", req.JSONSchema, schema)
+	}
+}
