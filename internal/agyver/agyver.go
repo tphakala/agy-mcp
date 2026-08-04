@@ -17,7 +17,7 @@ import (
 // the run-shaping flags agy-mcp forwards in headless -p (--model, and --effort
 // once it is wired) actually take effect; on 1.1.8/1.1.9 they were silently
 // ignored, so a lower floor would let a passing gate hide a no-op flag. Both
-// facts are from agy's own changelog, verified against the installed 1.1.10.
+// facts are from agy's own changelog (run `agy changelog` to confirm).
 var Required = Version{Major: 1, Minor: 1, Patch: 10}
 
 // Version is a parsed agy version.
