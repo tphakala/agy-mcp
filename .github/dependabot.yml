@@ -8,3 +8,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # First-party GitHub-owned actions (the actions/* and github/* orgs) are pinned
+    # to floating major tags such as actions/checkout@v7 and github/codeql-action@v4,
+    # which already resolve to the latest patch at runtime. Ignore their patch and
+    # minor bumps so Dependabot stops proposing redundant exact-version pins that
+    # would break the floating-major convention; a major bump still comes through.
+    # Third-party actions are SHA-pinned and are intentionally left to Dependabot.
+    ignore:
+      - dependency-name: "actions/*"
+        update-types: ["version-update:semver-patch", "version-update:semver-minor"]
+      - dependency-name: "github/*"
+        update-types: ["version-update:semver-patch", "version-update:semver-minor"]
