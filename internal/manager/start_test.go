@@ -17,7 +17,7 @@ import (
 func TestBuildAgyArgs(t *testing.T) {
 	got := buildAgyArgs(StartRequest{
 		Prompt:         "review this",
-		Model:          "Gemini 3.1 Pro (High)",
+		Model:          "gemini-3.1-pro-high",
 		Effort:         "high",
 		Mode:           "plan",
 		Agent:          "reviewer",
@@ -32,7 +32,7 @@ func TestBuildAgyArgs(t *testing.T) {
 		"--print-timeout", "20m0s",
 		"--output-format", "stream-json",
 		"--disable-slash-commands",
-		"--model", "Gemini 3.1 Pro (High)",
+		"--model", "gemini-3.1-pro-high",
 		"--effort", "high",
 		"--mode", "plan",
 		"--agent", "reviewer",
@@ -59,6 +59,18 @@ func TestBuildAgyArgs(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("buildAgyArgs minimal =\n  %q\nwant\n  %q", got, want)
+	}
+
+	// A model value carrying spaces must survive as ONE argument, immediately after
+	// --model. A bare display label is still a supported input (StartJob's modelID
+	// forwards one unchanged, and agy accepts it when no --effort accompanies it),
+	// and every other model fixture in this test is a space-free slug: a builder
+	// that truncated the value at whitespace satisfies every other assertion here
+	// and fails only this one.
+	const spaced = "Gemini 3.1 Pro (High)"
+	got = buildAgyArgs(StartRequest{Prompt: "hi", Model: spaced, Timeout: time.Minute})
+	if i := slices.Index(got, "--model"); i < 0 || i+1 >= len(got) || got[i+1] != spaced {
+		t.Fatalf("buildAgyArgs must pass a spaced model as one argument after --model, got %q", got)
 	}
 }
 

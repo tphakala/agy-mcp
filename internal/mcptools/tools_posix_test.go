@@ -17,19 +17,79 @@ import (
 // serve_http_test.go so `go test ./...` stays green on Windows too.
 
 // TestListModelsOverMCP exercises the list_models tool end to end: the handler
-// runs `agy models` (the fake agy prints two lines) and returns them on the
-// wire. This handler had no MCP-layer test.
+// runs `agy models` (the fake agy prints two "<id>\t<label>" rows, the shape agy
+// 1.1.11 prints) and returns them on the wire. This handler had no MCP-layer
+// test.
+//
+// The split matters, it is not cosmetic: `models` is what a caller passes as the
+// model parameter, so it must carry ids alone. Returning the whole row, or the
+// label, is issue #135, because a label makes agy refuse any run that also sets
+// effort.
 func TestListModelsOverMCP(t *testing.T) {
-	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: "Model A\nModel B"})
+	// The third row carries no label column, so this also pins what a label-less
+	// model looks like on the wire: an empty string, not a missing key.
+	mgr, _ := newTestManager(t, testutil.FakeAgy{
+		Stdout: "gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n" +
+			"claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n" +
+			"some-unlabelled-model",
+	})
 	cs := connect(t, mgr, nil)
 
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_models"})
 	if err != nil || res.IsError {
 		t.Fatalf("list_models: err=%v res=%+v", err, res)
 	}
-	models, _ := structMap(t, res.StructuredContent)["models"].([]any)
-	if len(models) != 2 || models[0] != "Model A" || models[1] != "Model B" {
-		t.Fatalf("models = %v, want [Model A, Model B]", models)
+	out := structMap(t, res.StructuredContent)
+	wantIDs := []string{"gemini-3.1-pro-high", "claude-sonnet-4-6", "some-unlabelled-model"}
+	wantLabels := []string{"Gemini 3.1 Pro (High)", "Claude Sonnet 4.6 (Thinking)", ""}
+
+	models, _ := out["models"].([]any)
+	if len(models) != len(wantIDs) {
+		t.Fatalf("models = %v, want %d ids", models, len(wantIDs))
+	}
+	details, _ := out["model_details"].([]any)
+	if len(details) != len(wantIDs) {
+		t.Fatalf("model_details = %v, want one entry per model", details)
+	}
+	// Assert every entry, not just the first: the schema promises model_details is
+	// "in the same order as models", and a mispairing that starts at entry 2 is
+	// exactly what a spot-check of entry 0 cannot see.
+	for i := range wantIDs {
+		if models[i] != wantIDs[i] {
+			t.Errorf("models[%d] = %v, want the id column alone (%q)", i, models[i], wantIDs[i])
+		}
+		d, _ := details[i].(map[string]any)
+		if d["id"] != wantIDs[i] || d["label"] != wantLabels[i] {
+			t.Errorf("model_details[%d] = %v, want id %q paired with label %q", i, d, wantIDs[i], wantLabels[i])
+		}
+	}
+}
+
+// TestListModelsEmptyCatalogReturnsArrays: with nothing to list, both fields must
+// be empty JSON arrays rather than null, so a client can index the result without
+// a null check. The handler builds both with make(), and nothing else pins that;
+// dropping either initialiser marshals the field as null and breaks such a client
+// silently.
+func TestListModelsEmptyCatalogReturnsArrays(t *testing.T) {
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: ""})
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_models"})
+	if err != nil || res.IsError {
+		t.Fatalf("list_models: err=%v res=%+v", err, res)
+	}
+	out := structMap(t, res.StructuredContent)
+	for _, field := range []string{"models", "model_details"} {
+		// A null decodes to nil any, which fails this assertion; an empty array
+		// decodes to an empty []any, which passes.
+		got, ok := out[field].([]any)
+		if !ok {
+			t.Errorf("%s = %v, want an empty array, not null", field, out[field])
+			continue
+		}
+		if len(got) != 0 {
+			t.Errorf("%s = %v, want empty for an empty catalog", field, got)
+		}
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 // here rather than in the tool description avoids restating the schema in prose.
 type runInput struct {
 	Prompt         string   `json:"prompt" jsonschema:"the complete task for the delegated agent: what to do, the context needed to do it, and the output wanted back; the agent cannot see this conversation, so the prompt must stand alone. It is sent to agy literally, so a leading slash-command or skill name (a prompt starting with /) is treated as text, not expanded"`
-	Model          string   `json:"model,omitempty" jsonschema:"agy model name; omit to use the server's default model, or agy's own default when the server sets none. Call list_models for the accepted values"`
+	Model          string   `json:"model,omitempty" jsonschema:"agy model id, e.g. gemini-3.1-pro-high; omit to use the server's default model, or agy's own default when the server sets none. Call list_models for the accepted values and pass one from its models field, not a display label from model_details, because agy rejects a display label whenever effort is also set. Not every id accepts every effort either, and some accept none, so omit effort unless you need a specific one"`
 	Effort         string   `json:"effort,omitempty" jsonschema:"reasoning effort for this run (agy --effort): low, medium or high. Omit to use agy's default"`
 	Mode           string   `json:"mode,omitempty" jsonschema:"agy agent execution mode for this run (agy --mode): accept-edits or plan. Omit to use agy's default mode"`
 	Agent          string   `json:"agent,omitempty" jsonschema:"name of a specific agy agent to run for this session (agy --agent); omit to use agy's default agent"`
@@ -241,8 +241,18 @@ type cancelOutput struct {
 
 type emptyInput struct{}
 
+// modelDetail pairs a model's id with the label agy prints for it, so a client
+// can show the readable name while still passing the id.
+type modelDetail struct {
+	ID string `json:"id" jsonschema:"the value to pass as the model parameter of agy_run and agy_run_sync"`
+	// No omitempty: the key stays present with an empty string when agy printed
+	// no label, so a client reads one shape rather than testing for absence.
+	Label string `json:"label" jsonschema:"human-readable name agy prints for this model, e.g. Gemini 3.1 Pro (High). For display only: agy rejects a label as the model parameter whenever effort is also set, so pass the id instead. Empty string when agy printed no label for the model"`
+}
+
 type modelsOutput struct {
-	Models []string `json:"models" jsonschema:"model names accepted by the model parameter of agy_run and agy_run_sync"`
+	Models       []string      `json:"models" jsonschema:"model ids accepted by the model parameter of agy_run and agy_run_sync, e.g. gemini-3.1-pro-high. These are the values to pass"`
+	ModelDetails []modelDetail `json:"model_details" jsonschema:"the same models paired with their display labels, in the same order as models. Use it to show a readable name; keep passing the id"`
 }
 
 type sessionsInput struct {
@@ -357,16 +367,23 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolListModels,
 		Title:       "List agy models",
 		Annotations: annReadExternal,
-		Description: "List the agy model names accepted by the model parameter of agy_run and agy_run_sync. Call it only when you intend to override the default; omitting model picks a default already, so most runs need no call here. Shells out to the agy CLI, so it fails if agy is missing from PATH or not authenticated.",
+		Description: "List the agy model ids accepted by the model parameter of agy_run and agy_run_sync. Pass a value from models; model_details carries the same entries with their display labels, which are for showing a readable name only. Call it only when you intend to override the default; omitting model picks a default already, so most runs need no call here. Shells out to the agy CLI, so it fails if agy is missing from PATH or not authenticated.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, modelsOutput, error) {
 		models, err := mgr.ListModels(ctx)
 		if err != nil {
 			return nil, modelsOutput{}, err
 		}
-		if models == nil {
-			models = []string{}
+		// Both fields are always arrays, never null: a client that indexes the
+		// result should see an empty list rather than have to special-case null.
+		out := modelsOutput{
+			Models:       make([]string, 0, len(models)),
+			ModelDetails: make([]modelDetail, 0, len(models)),
 		}
-		return nil, modelsOutput{Models: models}, nil
+		for _, mo := range models {
+			out.Models = append(out.Models, mo.ID)
+			out.ModelDetails = append(out.ModelDetails, modelDetail{ID: mo.ID, Label: mo.Label})
+		}
+		return nil, out, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{

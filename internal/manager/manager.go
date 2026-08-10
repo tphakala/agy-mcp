@@ -93,7 +93,7 @@ func New(c config.Config) *Manager {
 // StartRequest describes a run to start.
 type StartRequest struct {
 	Prompt         string
-	Model          string   // optional; falls back to cfg.DefaultModel
+	Model          string   // optional; falls back to cfg.DefaultModel, then reduced by modelID
 	Effort         string   // optional; --effort <low|medium|high>, reasoning effort for the session
 	Mode           string   // optional; --mode <accept-edits|plan>, agy's agent execution mode
 	Agent          string   // optional; --agent <name>, selects a specific agy agent
@@ -400,6 +400,10 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if req.Model == "" {
 		req.Model = m.cfg.DefaultModel
 	}
+	// Reduce a whole `agy models` row to its id (see modelID). Applied after the
+	// fallback above so it covers a configured AGY_MCP_DEFAULT_MODEL too, and
+	// before the args and meta below, which are the two readers of req.Model.
+	req.Model = modelID(req.Model)
 	if req.Timeout <= 0 {
 		req.Timeout = m.cfg.DefaultTimeout
 	}

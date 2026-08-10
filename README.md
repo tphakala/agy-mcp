@@ -27,10 +27,12 @@ Every job runs `agy --output-format stream-json`, and the supervisor decodes tha
 - `agy_run` / `agy_status` / `agy_cancel`: start an `agy` prompt, poll for completion, cancel if needed.
 - `agy_run_sync`: start a prompt and wait for it inline (bounded, with MCP progress notifications); returns the `job_id` to wait on or poll if it outlives the wait cap.
 - `agy_wait`: block until an already-started job finishes (bounded, with MCP progress notifications); one call replaces an `agy_status` poll loop.
-- `list_models`: enumerate available `agy` models.
+- `list_models`: enumerate available `agy` models, as the ids the `model` parameter accepts plus their display labels.
 - `list_sessions`: list known conversations so review threads can be continued.
 
 `agy_run` and `agy_run_sync` also take optional per-run controls, each forwarded to `agy` only when set: pick the `model`, reasoning `effort` (`low`/`medium`/`high`), execution `mode` (including a `plan`-only pass), a named `agent`, `sandbox` terminal restrictions, and a `json_schema` to constrain the result to structured output.
+
+Pass `model` as an **id** (`gemini-3.1-pro-high`), the form `list_models` returns in its `models` field, not as the display label `agy` prints beside it (`Gemini 3.1 Pro (High)`). `agy` takes either form on its own, but every display label in the `agy` 1.1.11 catalog was refused once `effort` was set too, at every effort. The same applies to `AGY_MCP_DEFAULT_MODEL`. Not every id accepts every effort either, and some accept none, so omit `effort` unless you need a specific one.
 
 Session continuation rides `agy`'s own durable conversation store (`--conversation <id>`), so threads survive across calls without keeping a process warm.
 
@@ -100,8 +102,10 @@ Or add to your MCP client config:
 - `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage? }`
 - `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`
-- `list_models()` -> `{ models }`
+- `list_models()` -> `{ models, model_details }`
 - `list_sessions(dir?)` -> `{ sessions }`
+
+`models` holds ids alone, so its entries can be passed straight to `model`; `model_details` pairs each id with the display label `agy` prints for it, in the same order, for showing a readable name. Through v2.1.0 `models` carried each `agy models` row whole, which was a tab-joined `id<TAB>label` string that `agy` does not accept as a model at all, so a client had to split it and pick a column ([#135](https://github.com/tphakala/agy-mcp/issues/135)).
 
 `usage` is agy's own token accounting (`input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens`), and together with `num_turns` it appears once a run reports a terminal result.
 
@@ -220,6 +224,10 @@ Two extra hardening layers are always available:
 agy-mcp -http 127.0.0.1:8765 -http-token "$(openssl rand -hex 32)"
 ```
 
+## Upgrading from v2.1
+
+**Behaviour change to check your client against:** `list_models` used to return each `agy models` row whole in `models`, as a tab-joined `id<TAB>label` string. It now returns the id alone, and pairs each id with its display label in the new `model_details` field. No type on the wire changed, only the values, so a client that renders `models` to a human now shows a slug and should read `model_details[].label` instead, and one that split each entry on the tab will find nothing to split. A stored old value passed back as `model` still works: the server reduces a whole row to its id before running it.
+
 ## Upgrading from v1
 
 v2 requires agy 1.1.10 and drives it through `--output-format stream-json`. The upgrade is safe to do in place, but two things are worth knowing.
@@ -239,7 +247,7 @@ v2 requires agy 1.1.10 and drives it through `--output-format stream-json`. The 
 |-----|---------|---------|
 | `AGY_MCP_AGY_PATH` | `agy` on PATH | path to the agy binary |
 | `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
-| `AGY_MCP_DEFAULT_MODEL` | agy default | default model |
+| `AGY_MCP_DEFAULT_MODEL` | agy default | default model, as an id (`gemini-3.1-pro-high`), not a display label |
 | `AGY_MCP_HTTP_TOKEN` | (none) | optional bearer token for HTTP mode; empty = unauthenticated |
 | `AGY_MCP_WAIT_READY_FILE` | (none) | absolute path `wait-job` / `hook-wait` create once their SIGINT/SIGTERM handler is installed, so a parent can signal without racing it; must be fresh per invocation, an existing file is refused rather than overwritten; empty = nothing is written |
 

@@ -160,6 +160,26 @@ func TestToStartRequestPassesRunOptions(t *testing.T) {
 	}
 }
 
+// TestToStartRequestPassesModel: model is threaded into the start request
+// verbatim, where the manager reduces it (a whole `agy models` row becomes its id)
+// and buildAgyArgs forwards it as --model. This layer deliberately does not
+// validate or rewrite it, since agy owns the model namespace and the reduction
+// has to sit below the AGY_MCP_DEFAULT_MODEL fallback to cover that too.
+//
+// It completes the pass-through family above: model was the one run option with no
+// test here, so dropping `Model: in.Model` from toStartRequest left every test in
+// the repo green while silently ignoring a caller's model choice.
+func TestToStartRequestPassesModel(t *testing.T) {
+	t.Parallel()
+	req, err := runInput{Prompt: "x", Model: "gemini-3.1-pro-high"}.toStartRequest()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Model != "gemini-3.1-pro-high" {
+		t.Errorf("Model = %q, want it threaded through unchanged", req.Model)
+	}
+}
+
 // TestToStartRequestValidatesMode: mode is an agy enum (accept-edits, plan), so a
 // bad value must fail fast at the tool boundary with a message that quotes the bad
 // value and names the accepted values, rather than reaching agy. An empty mode is

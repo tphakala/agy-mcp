@@ -15,7 +15,7 @@ type Config struct {
 	AgyPath        string        // path to the agy binary
 	SupervisorExe  string        // path to the agy-mcp binary used as the run-job supervisor
 	StateDir       string        // root of the on-disk job store
-	DefaultModel   string        // empty means let agy use its configured default
+	DefaultModel   string        // a model id (see list_models); empty means let agy use its configured default
 	DefaultTimeout time.Duration // hard per-job timeout
 	MaxConcurrency int           // global cap on concurrent jobs
 	JobTTL         time.Duration // age after which finished jobs are GC'd

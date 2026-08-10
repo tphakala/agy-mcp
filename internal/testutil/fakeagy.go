@@ -80,10 +80,12 @@ func (cfg FakeAgy) version() string {
 //   - `agy --version`, which the manager probes once before it will run
 //     anything. Without this every manager-level test would fail in the version
 //     gate rather than exercising its actual subject.
-//   - `agy models`, which prints one plain model name per line, not JSON.
-//     plainPath holds that listing (Stdout, reused as the model list), and the
-//     configured Stderr and Exit apply so a failing listing can be exercised
-//     too.
+//   - `agy models`, which prints one tab-separated "<id>\t<display label>" row
+//     per line, not JSON (agy 1.1.11); a row carrying no tab is read as an id
+//     with no label. plainPath holds that listing (Stdout, reused as the model
+//     list), and the configured Stderr and Exit apply so a failing listing can
+//     be exercised too. Note the real binary prints its progress banner on
+//     stderr, which is why ListModels reads stdout alone.
 func (cfg FakeAgy) subcommandPreamble(plainPath, errPath string) string {
 	return fmt.Sprintf("if [ \"$1\" = \"--version\" ]; then printf '%%s\\n' %q; exit 0; fi\n", cfg.version()) +
 		fmt.Sprintf("if [ \"$1\" = \"models\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", plainPath, errPath, cfg.Exit)

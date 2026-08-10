@@ -25,7 +25,7 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 		withCacheFile:  true,
 	})
 
-	job, err := m.StartJob(StartRequest{Prompt: "review main.go", Model: "Gemini 3.1 Pro (High)"})
+	job, err := m.StartJob(StartRequest{Prompt: "review main.go", Model: "gemini-3.1-pro-high"})
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	if meta.Prompt != "review main.go" {
 		t.Errorf("prompt = %q", meta.Prompt)
 	}
-	if !hasArg(meta.Args, "--model", "Gemini 3.1 Pro (High)") {
+	if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
 		t.Errorf("args missing model: %v", meta.Args)
 	}
 	if !contains(meta.Args, "-p") || !contains(meta.Args, "--dangerously-skip-permissions") {
@@ -136,7 +136,7 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 		agyPath:        "/usr/bin/agy",
 		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
 		defaultTimeout: time.Minute,
-		defaultModel:   "Gemini 3.1 Pro (High)",
+		defaultModel:   "gemini-3.1-pro-high",
 		maxConcurrency: 4,
 		withCacheFile:  true,
 	})
@@ -154,17 +154,89 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 	}
 	// The model and timeout defaults must be resolved into meta (and the args),
 	// not left stale: issue #24 asks to normalize all-or-none.
-	if meta.Model != "Gemini 3.1 Pro (High)" {
+	if meta.Model != "gemini-3.1-pro-high" {
 		t.Errorf("meta.Model = %q, want the resolved default", meta.Model)
 	}
 	if meta.Timeout != time.Minute {
 		t.Errorf("meta.Timeout = %v, want the resolved default", meta.Timeout)
 	}
-	if !hasArg(meta.Args, "--model", "Gemini 3.1 Pro (High)") {
+	if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
 		t.Errorf("args missing resolved default model: %v", meta.Args)
 	}
 	if !hasArg(meta.Args, "--print-timeout", time.Minute.String()) {
 		t.Errorf("args missing resolved default timeout: %v", meta.Args)
+	}
+}
+
+// TestStartJobReducesModelRowToID: a caller that copies a whole `agy models` row
+// ("<id>\t<label>") passes a string agy does not accept as --model. Only the id
+// may reach the args and the persisted meta (issue #135).
+func TestStartJobReducesModelRowToID(t *testing.T) {
+	m := newManager(t, managerOpts{
+		agyPath:       "/usr/bin/agy",
+		supervisorExe: testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		// A configured default is set too, so this also pins that an explicit
+		// request model wins: the reduction runs after the fallback, and nothing
+		// else in the suite exercises both being present at once.
+		defaultModel:   "gemini-3.6-flash-low",
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+
+	job, err := m.StartJob(StartRequest{
+		Prompt: "x",
+		Model:  "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+		Effort: "high",
+	})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	meta, err := m.store.Load(job.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if meta.Model != "gemini-3.1-pro-high" {
+		t.Errorf("meta.Model = %q, want the id column alone", meta.Model)
+	}
+	if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
+		t.Errorf("args must carry the id alone, got: %v", meta.Args)
+	}
+	// Effort is set here only so the reduction is exercised on the request shape
+	// that motivated it; buildAgyArgs emits --effort independently of the model,
+	// so this asserts the two coexist, not that agy would accept the pair.
+	if !hasArg(meta.Args, "--effort", "high") {
+		t.Errorf("args missing effort: %v", meta.Args)
+	}
+}
+
+// TestStartJobReducesDefaultModelRowToID: the same reduction must cover a model
+// that arrives from AGY_MCP_DEFAULT_MODEL rather than from the caller, because
+// the fallback is applied inside StartJob and so is invisible to the tool
+// boundary that validates the request (issue #135).
+func TestStartJobReducesDefaultModelRowToID(t *testing.T) {
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		defaultModel:   "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+
+	job, err := m.StartJob(StartRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	meta, err := m.store.Load(job.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if meta.Model != "gemini-3.1-pro-high" {
+		t.Errorf("meta.Model = %q, want the id column alone", meta.Model)
+	}
+	if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
+		t.Errorf("args must carry the id alone, got: %v", meta.Args)
 	}
 }
 

@@ -46,7 +46,10 @@ func TestResolveStateDirOverride(t *testing.T) {
 // TestResolveDefaultModelAndJobTTL: AGY_MCP_DEFAULT_MODEL flows into the config,
 // and JobTTL defaults to 24h (a regression to 0 would silently disable GC).
 func TestResolveDefaultModelAndJobTTL(t *testing.T) {
-	t.Setenv("AGY_MCP_DEFAULT_MODEL", "Gemini 3.1 Pro (High)")
+	// A model id, the form AGY_MCP_DEFAULT_MODEL should be set to: a display label
+	// works only until a run also sets effort, which agy then refuses (issue #135).
+	// Resolve itself is pass-through, so this pins the value, not a normalization.
+	t.Setenv("AGY_MCP_DEFAULT_MODEL", "gemini-3.1-pro-high")
 	t.Setenv("AGY_MCP_STATE_DIR", t.TempDir())
 	fakeAgyOnPath(t)
 
@@ -54,7 +57,7 @@ func TestResolveDefaultModelAndJobTTL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.DefaultModel != "Gemini 3.1 Pro (High)" {
+	if c.DefaultModel != "gemini-3.1-pro-high" {
 		t.Errorf("DefaultModel = %q, want the AGY_MCP_DEFAULT_MODEL value", c.DefaultModel)
 	}
 	if c.JobTTL != 24*time.Hour {
