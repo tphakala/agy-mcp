@@ -229,7 +229,7 @@ func TestStartJobReducesModelRowToID(t *testing.T) {
 			if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
 				t.Errorf("args must carry the id alone, got: %v", meta.Args)
 			}
-			if tc.assertEffort && !hasArg(meta.Args, "--effort", "high") {
+			if tc.assertEffort && !hasArg(meta.Args, "--effort", tc.requestEffort) {
 				t.Errorf("args missing effort: %v", meta.Args)
 			}
 		})

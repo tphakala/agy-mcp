@@ -41,8 +41,9 @@ type Model struct {
 // share, so the two cannot drift apart. `agy models` prints "<id>\t<label>" per
 // row; this trims the value, cuts on the FIRST tab (so a label that itself
 // contains a tab stays whole), and trims each half. A value with no tab yields
-// that value as the id and an empty label. It never invents or drops content;
-// the caller decides what an empty id means.
+// that value as the id and an empty label. Beyond trimming surrounding
+// whitespace it neither invents nor drops content; the caller decides what an
+// empty id means.
 func splitModelRow(row string) (id, label string) {
 	id, label, _ = strings.Cut(strings.TrimSpace(row), "\t")
 	return strings.TrimSpace(id), strings.TrimSpace(label)
