@@ -105,11 +105,11 @@ func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
 // tab yields an id with an empty label instead of being dropped, so output that
 // carries no label column still produces usable model values.
 func parseModels(raw string) []Model {
-	// One model per line at most, so the newline count (plus one for a final line
-	// without a trailing newline) is a cheap, correct capacity hint; it over-counts
-	// only blank lines. This matches how the list_models handler preallocs and, like
-	// it, hands back a non-nil empty slice for empty input; no caller marshals this
-	// value, so nil vs empty is not observable downstream.
+	// One model per line at most, so strings.Count(raw,"\n")+1 is an upper bound on
+	// the result: a cheap capacity hint that never under-allocates. It over-allocates
+	// by the blank lines skipped, plus one when raw ends in a trailing newline or is
+	// empty. Like the list_models handler, it returns a non-nil empty slice for empty
+	// input; no caller marshals this value, so nil vs empty is not observable downstream.
 	models := make([]Model, 0, strings.Count(raw, "\n")+1)
 	for line := range strings.Lines(raw) {
 		// splitModelRow trims before it cuts, so a blank or whitespace-only line is
