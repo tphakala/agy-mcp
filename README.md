@@ -98,9 +98,9 @@ Or add to your MCP client config:
 ## Tools
 
 - `agy_run(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?)` -> `{ job_id, conversation_id?, state }`
-- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
-- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage? }`
-- `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, partial?, num_turns?, usage?, note? }`
+- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
+- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id?, model?, partial?, num_turns?, usage?, step_type? }`
+- `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`
 - `list_models()` -> `{ models, model_details }`
 - `list_sessions(dir?)` -> `{ sessions }`
@@ -108,6 +108,8 @@ Or add to your MCP client config:
 `models` holds ids alone, so its entries can be passed straight to `model`; `model_details` pairs each id with the display label `agy` prints for it, in the same order, for showing a readable name. Through v2.1.0 `models` carried each `agy models` row whole, which was a tab-joined `id<TAB>label` string that `agy` does not accept as a model at all, so a client had to split it and pick a column ([#135](https://github.com/tphakala/agy-mcp/issues/135)).
 
 `usage` is agy's own token accounting (`input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `total_tokens`), and together with `num_turns` it appears once a run reports a terminal result.
+
+`model` echoes the model id agy-mcp resolved for the run (the one you passed, or `AGY_MCP_DEFAULT_MODEL`, reduced to its id), so a caller can confirm which model actually ran. It is absent when no model was pinned and `agy` ran on its own default.
 
 A run that ends badly still hands back whatever it managed to say, so `result` is set on `failed` and `cancelled` jobs too and is worth reading rather than discarding. `partial` is what says whether to trust it as the final answer, and it follows from where the text came from rather than from the state.
 

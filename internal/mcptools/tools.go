@@ -183,6 +183,9 @@ type statusOutput struct {
 	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set on any terminal state whose text could be recovered, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first. A running job carries none even once it has produced text, so collect the result once the state is terminal"`
 	Error          string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Empty until agy names a fresh run's conversation, which takes about a second, so agy_status, agy_wait and agy_run_sync all report none when asked inside that window; ask again once the run is under way"`
+	// Model echoes the resolved model so a caller can see which one actually ran;
+	// see manager.Status.Model.
+	Model string `json:"model,omitempty" jsonschema:"the model id agy-mcp resolved for this run and passed to agy: the model you set, or AGY_MCP_DEFAULT_MODEL, reduced to the id column. Absent when the server pinned no model and agy ran on its own default"`
 	// Partial marks a result that is not a verified final answer; see
 	// manager.Status.Partial.
 	Partial bool `json:"partial,omitempty" jsonschema:"true when result is not the verified final answer, so treat it as incomplete. It follows from where the text came from: true when the text was reconstructed from the streamed events, because agy never reported a terminal result or the one it reported carried no text, and true when agy reported a terminal result that was not a success, so its text is only what the run had produced when it stopped. A response agy itself marked successful is never partial, even on a job that was then cancelled or killed"`
@@ -216,6 +219,7 @@ func toStatusOutput(st manager.Status) statusOutput {
 		Result:         st.Result,
 		Error:          st.Error,
 		ConversationID: st.ConversationID,
+		Model:          st.Model,
 		Partial:        st.Partial,
 		NumTurns:       st.NumTurns,
 		StepType:       st.StepType,

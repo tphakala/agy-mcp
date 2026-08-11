@@ -60,6 +60,11 @@ type Status struct {
 	Result         string
 	Error          string // present when failed: agy's own message, or a stderr tail + exit code
 	ConversationID string
+	// Model is the model id agy-mcp resolved for this run and persisted to meta:
+	// the request's model, or AGY_MCP_DEFAULT_MODEL when none was given, reduced to
+	// the id column (see modelID). Empty when neither was set, meaning the server
+	// pinned no model and agy ran on its own default (which this build cannot name).
+	Model string
 	// Partial marks a Result this build cannot vouch for as the complete final
 	// answer. It follows from where the text came from, not from State:
 	//
@@ -99,6 +104,7 @@ func (m *Manager) Status(id string) (Status, error) {
 	st := Status{
 		Elapsed:        time.Since(meta.StartedAt),
 		ConversationID: meta.ConversationID,
+		Model:          meta.Model,
 	}
 	// The progress file is what makes a running job's conversation id readable:
 	// the supervisor records it as soon as agy's init event names the

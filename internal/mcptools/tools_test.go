@@ -1,10 +1,13 @@
 package mcptools
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 // TestToStartRequestRejectsExcessiveTimeout: a client timeout is validated
@@ -260,5 +263,30 @@ func TestToStartRequestValidatesEffort(t *testing.T) {
 				t.Fatalf("Effort = %q, want %q", req.Effort, tc.effort)
 			}
 		})
+	}
+}
+
+// TestStatusOutputModelEchoAndOmitempty: toStatusOutput echoes the resolved model
+// onto the wire (issue #138 item 2), and omits the key entirely when the model is
+// empty, so the field never becomes a required member of the generated schema
+// (cf. #138 item 8).
+func TestStatusOutputModelEchoAndOmitempty(t *testing.T) {
+	got := toStatusOutput(manager.Status{State: manager.StateDone, Model: "gemini-3.1-pro-high"})
+	if got.Model != "gemini-3.1-pro-high" {
+		t.Errorf("Model = %q, want it echoed from the status", got.Model)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"model":"gemini-3.1-pro-high"`) {
+		t.Errorf("marshaled output missing model: %s", b)
+	}
+	b2, err := json.Marshal(toStatusOutput(manager.Status{State: manager.StateDone}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b2), `"model"`) {
+		t.Errorf("an empty model must be omitted from the wire, got: %s", b2)
 	}
 }

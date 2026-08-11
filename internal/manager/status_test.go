@@ -826,3 +826,42 @@ func TestStatusRecoveredFromPayload(t *testing.T) {
 		})
 	}
 }
+
+// TestStatusEchoesResolvedModel: Status echoes the resolved model persisted to
+// meta (issue #138 item 2), so a caller can see which model actually ran. It is
+// set at construction, before the terminal-vs-running branch, so it rides every
+// state; an empty meta.Model stays empty (the server pinned no model).
+func TestStatusEchoesResolvedModel(t *testing.T) {
+	boot := readBootID()
+	for _, tc := range []struct {
+		name      string
+		metaModel string
+		pid       int
+		bootID    string
+		done      bool
+		want      string
+	}{
+		{"done state carries the model", "gemini-3.1-pro-high", 0, boot, true, "gemini-3.1-pro-high"},
+		{"interrupted state carries the model too", "gemini-3.1-pro-high", 999999, "old-boot", false, "gemini-3.1-pro-high"},
+		{"no pinned model stays empty", "", 0, boot, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newManager(t, managerOpts{})
+			dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: tc.pid, BootID: tc.bootID, Model: tc.metaModel})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.done {
+				writeResultPayload(t, dir, streamjson.Result{Status: streamjson.StatusSuccess, Response: "x"})
+				_ = m.store.WriteExitCode("j", 0)
+			}
+			st, err := m.Status("j")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Model != tc.want {
+				t.Errorf("st.Model = %q, want %q (state %q)", st.Model, tc.want, st.State)
+			}
+		})
+	}
+}
