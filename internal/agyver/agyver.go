@@ -17,12 +17,15 @@ import (
 // run-shaping flags agy-mcp forwards in headless -p (--model and --effort)
 // actually take effect; on 1.1.8/1.1.9 they were silently ignored, so a lower
 // floor would let a passing gate hide a no-op flag. 1.1.11 is the version the
-// `agy models` output was measured against (one "<id>\t<label>" row per model);
-// list_models parses that shape and the tool schema documents the first column
-// as ids, so pinning the floor there keeps that promise from resting on an
-// older format nobody probed (issue #138). The 1.1.8 and 1.1.10 facts are from
-// agy's own changelog (run `agy changelog` to confirm); the 1.1.11 row format is
-// a probe recorded in internal/manager/models.go.
+// `agy models` output was probed against: id-first "<id>\t<label>" rows, which
+// is the shape list_models reports and the tool schema calls ids. parseModels
+// would still parse an older or differently-shaped output without erroring, so
+// this is not about crashing; it is that a build whose columns differed would
+// have the schema present labels as ids (the #135 class), so pinning the floor
+// at the probed version keeps the schema's id claim honest (issue #138). The
+// 1.1.8 and 1.1.10 facts are from agy's own changelog (run `agy changelog`); the
+// 1.1.11 row shape is pinned by the parse tests (TestParseModels) and the format
+// note in internal/testutil/fakeagy.go.
 var Required = Version{Major: 1, Minor: 1, Patch: 11}
 
 // Version is a parsed agy version.

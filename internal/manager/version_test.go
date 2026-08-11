@@ -67,6 +67,18 @@ func TestAgyBinaryCheckedRefusesOldVersion(t *testing.T) {
 	}
 }
 
+// TestAgyBinaryCheckedRefusesImmediateSubFloor pins the boundary issue #138 item
+// 9 moved: agy 1.1.10, the release directly below the 1.1.11 floor and one that
+// used to pass, is now refused. That is what makes raising the floor a real gate
+// change rather than a constant edit; TestAgyBinaryCheckedRefusesOldVersion only
+// proves an ancient 1.1.7 is refused, which was true before the bump too.
+func TestAgyBinaryCheckedRefusesImmediateSubFloor(t *testing.T) {
+	m, _ := versionManager(t, "1.1.10", nil)
+	if _, err := m.agyBinaryChecked(t.Context()); err == nil {
+		t.Fatal("agy 1.1.10 (one below the 1.1.11 floor) must be refused")
+	}
+}
+
 // A refusal is deliberately not cached, so upgrading agy is picked up without
 // restarting the server, matching the deferred PATH lookup's promise.
 func TestAgyBinaryCheckedRetriesAfterRefusal(t *testing.T) {
