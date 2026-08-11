@@ -10,15 +10,20 @@ import (
 	"strings"
 )
 
-// Required is the oldest agy that agy-mcp can drive. Two facts set the floor.
+// Required is the oldest agy that agy-mcp can drive. Three facts set the floor.
 // 1.1.8 added --output-format (text, json, stream-json) to print mode, and the
 // whole job pipeline reads the stream-json event stream, so an older agy cannot
-// be used at all rather than degraded. 1.1.10 is then the first release where
-// the run-shaping flags agy-mcp forwards in headless -p (--model and --effort)
-// actually take effect; on 1.1.8/1.1.9 they were silently
-// ignored, so a lower floor would let a passing gate hide a no-op flag. Both
-// facts are from agy's own changelog (run `agy changelog` to confirm).
-var Required = Version{Major: 1, Minor: 1, Patch: 10}
+// be used at all rather than degraded. 1.1.10 is the first release where the
+// run-shaping flags agy-mcp forwards in headless -p (--model and --effort)
+// actually take effect; on 1.1.8/1.1.9 they were silently ignored, so a lower
+// floor would let a passing gate hide a no-op flag. 1.1.11 is the version the
+// `agy models` output was measured against (one "<id>\t<label>" row per model);
+// list_models parses that shape and the tool schema documents the first column
+// as ids, so pinning the floor there keeps that promise from resting on an
+// older format nobody probed (issue #138). The 1.1.8 and 1.1.10 facts are from
+// agy's own changelog (run `agy changelog` to confirm); the 1.1.11 row format is
+// a probe recorded in internal/manager/models.go.
+var Required = Version{Major: 1, Minor: 1, Patch: 11}
 
 // Version is a parsed agy version.
 type Version struct {

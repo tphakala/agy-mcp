@@ -915,7 +915,8 @@ func buildAgyArgs(req StartRequest) []string {
 		// for that exact print-mode feature, unlike --effort which was accepted but a
 		// no-op in -p until 1.1.10. Passing it on every run makes prompt semantics mean
 		// what the caller wrote, independent of the installed agy version. Always
-		// available because the agy floor (agyver.Required) is 1.1.10 (>= 1.1.9).
+		// available because the agy floor (agyver.Required) is at or above the 1.1.9
+		// that introduced the flag.
 		disableSlashCommandsFlag,
 	}
 	if req.Model != "" {

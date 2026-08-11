@@ -453,7 +453,7 @@ func TestString(t *testing.T) {
 	if got := (Version{1, 1, 8}).String(); got != "1.1.8" {
 		t.Fatalf("String() = %q, want 1.1.8", got)
 	}
-	if got := Required.String(); got != "1.1.10" {
+	if got := Required.String(); got != "1.1.11" {
 		t.Fatalf("Required = %q; update this test deliberately when the floor moves", got)
 	}
 }
