@@ -168,75 +168,71 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 	}
 }
 
-// TestStartJobReducesModelRowToID: a caller that copies a whole `agy models` row
-// ("<id>\t<label>") passes a string agy does not accept as --model. Only the id
-// may reach the args and the persisted meta (issue #135).
+// TestStartJobReducesModelRowToID: a model value that arrives as a whole
+// `agy models` row ("<id>\t<label>") is a string agy does not accept as --model,
+// so StartJob must reduce it to the id column before it reaches the args and the
+// persisted meta (issue #135). The reduction runs after the default fallback is
+// applied, so it must hold whether the row comes from the caller's request or
+// from AGY_MCP_DEFAULT_MODEL; both are covered here.
 func TestStartJobReducesModelRowToID(t *testing.T) {
-	m := newManager(t, managerOpts{
-		agyPath:       "/usr/bin/agy",
-		supervisorExe: testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
-		// A configured default is set too, so this also pins that an explicit
-		// request model wins: the reduction runs after the fallback, and nothing
-		// else in the suite exercises both being present at once.
-		defaultModel:   "gemini-3.6-flash-low",
-		defaultTimeout: time.Minute,
-		maxConcurrency: 4,
-		withCacheFile:  true,
-	})
+	const row = "gemini-3.1-pro-high\tGemini 3.1 Pro (High)"
+	for _, tc := range []struct {
+		name          string
+		requestModel  string // the request's Model
+		requestEffort string // set only where effort coexistence is asserted
+		defaultModel  string // the configured AGY_MCP_DEFAULT_MODEL
+		assertEffort  bool
+	}{
+		{
+			// The request carries the row while a DIFFERENT default is configured, so
+			// this also pins that an explicit request model wins: the reduction runs
+			// after the fallback, and nothing else in the suite exercises both being
+			// present at once. Effort is set so the reduction is exercised on the
+			// request shape that motivated it; buildAgyArgs emits --effort independently
+			// of the model, so asserting both just pins that they coexist, not that agy
+			// would accept the pair.
+			name:          "explicit request row wins over a different default",
+			requestModel:  row,
+			requestEffort: "high",
+			defaultModel:  "gemini-3.6-flash-low",
+			assertEffort:  true,
+		},
+		{
+			// The row arrives via the fallback applied inside StartJob, which is
+			// invisible to the tool boundary that validates the request, so the
+			// reduction must cover it there too.
+			name:         "default fallback row",
+			defaultModel: row,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newManager(t, managerOpts{
+				agyPath:        "/usr/bin/agy",
+				supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+				defaultModel:   tc.defaultModel,
+				defaultTimeout: time.Minute,
+				maxConcurrency: 4,
+				withCacheFile:  true,
+			})
 
-	job, err := m.StartJob(StartRequest{
-		Prompt: "x",
-		Model:  "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
-		Effort: "high",
-	})
-	if err != nil {
-		t.Fatalf("StartJob: %v", err)
-	}
-	meta, err := m.store.Load(job.ID)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if meta.Model != "gemini-3.1-pro-high" {
-		t.Errorf("meta.Model = %q, want the id column alone", meta.Model)
-	}
-	if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
-		t.Errorf("args must carry the id alone, got: %v", meta.Args)
-	}
-	// Effort is set here only so the reduction is exercised on the request shape
-	// that motivated it; buildAgyArgs emits --effort independently of the model,
-	// so this asserts the two coexist, not that agy would accept the pair.
-	if !hasArg(meta.Args, "--effort", "high") {
-		t.Errorf("args missing effort: %v", meta.Args)
-	}
-}
-
-// TestStartJobReducesDefaultModelRowToID: the same reduction must cover a model
-// that arrives from AGY_MCP_DEFAULT_MODEL rather than from the caller, because
-// the fallback is applied inside StartJob and so is invisible to the tool
-// boundary that validates the request (issue #135).
-func TestStartJobReducesDefaultModelRowToID(t *testing.T) {
-	m := newManager(t, managerOpts{
-		agyPath:        "/usr/bin/agy",
-		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
-		defaultTimeout: time.Minute,
-		defaultModel:   "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
-		maxConcurrency: 4,
-		withCacheFile:  true,
-	})
-
-	job, err := m.StartJob(StartRequest{Prompt: "x"})
-	if err != nil {
-		t.Fatalf("StartJob: %v", err)
-	}
-	meta, err := m.store.Load(job.ID)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if meta.Model != "gemini-3.1-pro-high" {
-		t.Errorf("meta.Model = %q, want the id column alone", meta.Model)
-	}
-	if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
-		t.Errorf("args must carry the id alone, got: %v", meta.Args)
+			job, err := m.StartJob(StartRequest{Prompt: "x", Model: tc.requestModel, Effort: tc.requestEffort})
+			if err != nil {
+				t.Fatalf("StartJob: %v", err)
+			}
+			meta, err := m.store.Load(job.ID)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if meta.Model != "gemini-3.1-pro-high" {
+				t.Errorf("meta.Model = %q, want the id column alone", meta.Model)
+			}
+			if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
+				t.Errorf("args must carry the id alone, got: %v", meta.Args)
+			}
+			if tc.assertEffort && !hasArg(meta.Args, "--effort", "high") {
+				t.Errorf("args missing effort: %v", meta.Args)
+			}
+		})
 	}
 }
 
