@@ -16,17 +16,17 @@ import (
 // be used at all rather than degraded. 1.1.10 is the first release where the
 // run-shaping flags agy-mcp forwards in headless -p (--model and --effort)
 // actually take effect; on 1.1.8/1.1.9 they were silently ignored, so a lower
-// floor would let a passing gate hide a no-op flag. 1.1.11 is the version the
-// `agy models` output was probed against: id-first "<id>\t<label>" rows, which
-// is the shape list_models reports and the tool schema calls ids. parseModels
-// would still parse an older or differently-shaped output without erroring, so
-// this is not about crashing; it is that a build whose columns differed would
-// have the schema present labels as ids (the #135 class), so pinning the floor
-// at the probed version keeps the schema's id claim honest (issue #138). The
-// 1.1.8 and 1.1.10 facts are from agy's own changelog (run `agy changelog`); the
-// 1.1.11 row shape is pinned by the parse tests (TestParseModels) and the format
-// note in internal/testutil/fakeagy.go.
-var Required = Version{Major: 1, Minor: 1, Patch: 11}
+// floor would let a passing gate hide a no-op flag. 1.1.12 added machine-readable
+// output to the `models` subcommand: `agy --output-format json models` returns a
+// command envelope whose command.data.models is a list of {id,label} objects, and
+// list_models decodes that typed field instead of tab-splitting the text rows.
+// decodeModelsEnvelope refuses an envelope whose status is not SUCCESS or whose
+// command is not `models`, so a renamed or restructured envelope fails loudly
+// rather than yielding an empty catalog; an agy without the envelope at all is
+// simply too old to read. All three facts are from agy's own changelog (run
+// `agy changelog`): the 1.1.12 line reads "machine-readable output to the models
+// and agents subcommands".
+var Required = Version{Major: 1, Minor: 1, Patch: 12}
 
 // Version is a parsed agy version.
 type Version struct {
