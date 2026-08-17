@@ -17,21 +17,23 @@ import (
 // serve_http_test.go so `go test ./...` stays green on Windows too.
 
 // TestListModelsOverMCP exercises the list_models tool end to end: the handler
-// runs `agy models` (the fake agy prints two "<id>\t<label>" rows, the shape agy
-// 1.1.11 prints) and returns them on the wire. This handler had no MCP-layer
-// test.
+// decodes the JSON envelope from `agy --output-format json models` (the fake
+// renders three {id,label} entries, the last label-less) and returns them on the
+// wire. This handler had no MCP-layer test.
 //
 // The split matters, it is not cosmetic: `models` is what a caller passes as the
 // model parameter, so it must carry ids alone. Returning the whole row, or the
 // label, is issue #135, because a label makes agy refuse any run that also sets
 // effort.
 func TestListModelsOverMCP(t *testing.T) {
-	// The third row carries no label column, so this also pins what a label-less
-	// model looks like on the wire: an empty string, not a missing key.
+	// The third entry carries no label, so this also pins what a label-less model
+	// looks like on the wire: an empty string, not a missing key.
 	mgr, _ := newTestManager(t, testutil.FakeAgy{
-		Stdout: "gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n" +
-			"claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n" +
-			"some-unlabelled-model",
+		Models: []testutil.FakeModel{
+			{ID: "gemini-3.1-pro-high", Label: "Gemini 3.1 Pro (High)"},
+			{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Thinking)"},
+			{ID: "some-unlabelled-model"},
+		},
 	})
 	cs := connect(t, mgr, nil)
 
@@ -71,7 +73,9 @@ func TestListModelsOverMCP(t *testing.T) {
 // dropping either initialiser marshals the field as null and breaks such a client
 // silently.
 func TestListModelsEmptyCatalogReturnsArrays(t *testing.T) {
-	mgr, _ := newTestManager(t, testutil.FakeAgy{Stdout: ""})
+	// No Models configured: the fake emits an envelope with an empty models array,
+	// which the handler must turn into empty wire arrays, not null.
+	mgr, _ := newTestManager(t, testutil.FakeAgy{})
 	cs := connect(t, mgr, nil)
 
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_models"})

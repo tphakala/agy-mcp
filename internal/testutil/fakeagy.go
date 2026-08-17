@@ -63,6 +63,19 @@ type FakeAgy struct {
 	// probes once before it will run anything. Defaults to the minimum agy-mcp
 	// accepts; set it lower to exercise the refusal.
 	Version string
+
+	// Models is the catalog the fake reports for `agy --output-format json models`,
+	// one {id,label} object per entry in the envelope's command.data.models array.
+	// An empty Models yields a well-formed envelope with an empty (non-null) models
+	// array, so the empty-catalog path can be exercised. It is independent of
+	// Stdout, which is the run response text and no longer doubles as the listing.
+	Models []FakeModel
+}
+
+// FakeModel is one {id,label} entry the fake reports for the models listing.
+type FakeModel struct {
+	ID    string
+	Label string
 }
 
 // version returns the version this fake reports, defaulting to the minimum the
@@ -80,15 +93,51 @@ func (cfg FakeAgy) version() string {
 //   - `agy --version`, which the manager probes once before it will run
 //     anything. Without this every manager-level test would fail in the version
 //     gate rather than exercising its actual subject.
-//   - `agy models`, which prints one tab-separated "<id>\t<display label>" row
-//     per line, not JSON (agy 1.1.11); a row carrying no tab is read as an id
-//     with no label. plainPath holds that listing (Stdout, reused as the model
-//     list), and the configured Stderr and Exit apply so a failing listing can
-//     be exercised too. Note the real binary prints its progress banner on
-//     stderr, which is why ListModels reads stdout alone.
-func (cfg FakeAgy) subcommandPreamble(plainPath, errPath string) string {
+//   - `agy --output-format json models`, the invocation ListModels makes: agy's
+//     global --output-format flag precedes the `models` subcommand, so the match
+//     is on $1 and $3. modelsPath holds the JSON envelope rendered from Models,
+//     and the configured Stderr and Exit apply so a failing listing can be
+//     exercised too. The real binary prints its progress banner on stderr, which
+//     is why ListModels reads stdout alone. A run invocation never matches: it
+//     leads with --dangerously-skip-permissions, not --output-format.
+func (cfg FakeAgy) subcommandPreamble(modelsPath, errPath string) string {
 	return fmt.Sprintf("if [ \"$1\" = \"--version\" ]; then printf '%%s\\n' %q; exit 0; fi\n", cfg.version()) +
-		fmt.Sprintf("if [ \"$1\" = \"models\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", plainPath, errPath, cfg.Exit)
+		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$3\" = \"models\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", modelsPath, errPath, cfg.Exit)
+}
+
+// modelsEnvelopeJSON renders the JSON envelope agy 1.1.12+ prints for
+// `agy --output-format json models`: a SUCCESS `models` command whose
+// command.data.models carries one {id,label} object per configured model. The
+// inner slice is always non-nil so an empty catalog marshals as "models":[]
+// rather than "models":null, matching the real binary and letting ListModels'
+// decoder see a valid empty list rather than a framing it rejects.
+func (cfg FakeAgy) modelsEnvelopeJSON(t *testing.T) string {
+	t.Helper()
+	type modelObj struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+	}
+	models := make([]modelObj, 0, len(cfg.Models))
+	for _, mo := range cfg.Models {
+		models = append(models, modelObj(mo))
+	}
+	var env struct {
+		Status  string `json:"status"`
+		Command struct {
+			Name string `json:"name"`
+			Data struct {
+				Models []modelObj `json:"models"`
+			} `json:"data"`
+		} `json:"command"`
+	}
+	env.Status = "SUCCESS"
+	env.Command.Name = "models"
+	env.Command.Data.Models = models
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal fake agy models envelope: %v", err)
+	}
+	return string(b)
 }
 
 // ConvID returns the conversation id this fake reports, applying the same
@@ -218,22 +267,22 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 
 	outPath := filepath.Join(dir, "fake-agy.out")
 	errPath := filepath.Join(dir, "fake-agy.err")
-	plainPath := filepath.Join(dir, "fake-agy.plain")
+	modelsPath := filepath.Join(dir, "fake-agy.models")
 	if err := os.WriteFile(outPath, []byte(cfg.streamLines(t)), 0o644); err != nil {
 		t.Fatalf("write fake agy stdout: %v", err)
 	}
 	if err := os.WriteFile(errPath, []byte(cfg.Stderr), 0o644); err != nil {
 		t.Fatalf("write fake agy stderr: %v", err)
 	}
-	if err := os.WriteFile(plainPath, []byte(cfg.Stdout), 0o644); err != nil {
-		t.Fatalf("write fake agy plain stdout: %v", err)
+	if err := os.WriteFile(modelsPath, []byte(cfg.modelsEnvelopeJSON(t)), 0o644); err != nil {
+		t.Fatalf("write fake agy models envelope: %v", err)
 	}
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 %ssleep %.3f
 cat %q
 cat %q 1>&2
 exit %d
-`, cfg.subcommandPreamble(plainPath, errPath), cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
+`, cfg.subcommandPreamble(modelsPath, errPath), cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake agy: %v", err)
 	}

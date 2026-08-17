@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -37,9 +38,10 @@ type Model struct {
 	Label string
 }
 
-// splitModelRow applies the single row-split rule that modelID and parseModels
-// share, so the two cannot drift apart. `agy models` prints "<id>\t<label>" per
-// row; this trims the value, cuts on the FIRST tab (so a label that itself
+// splitModelRow splits a "<id>\t<label>" model row into its id and label, the
+// reducer modelID applies to a caller-supplied --model value. `agy models` prints
+// rows in this shape, so a caller (or AGY_MCP_DEFAULT_MODEL) can paste a whole
+// one; this trims the value, cuts on the FIRST tab (so a label that itself
 // contains a tab stays whole), and trims each half. A value with no tab yields
 // that value as the id and an empty label. Beyond trimming surrounding
 // whitespace it neither invents nor drops content; the caller decides what an
@@ -69,11 +71,14 @@ func modelID(v string) string {
 	return v
 }
 
-// ListModels runs `agy models` and returns the available models.
+// ListModels lists agy's available models. It decodes the JSON envelope from
+// `agy --output-format json models` (agy 1.1.12+) rather than tab-splitting the
+// text rows, so the ids and labels come from a typed field instead of a guessed
+// column.
 func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
-	// Version-gated like the job path even though `agy models` itself does not
-	// need stream-json: an agy too old to drive is a configuration problem, and
-	// one clear message about it beats a model list from a binary that cannot
+	// Version-gated like the job path even though the models listing itself does
+	// not need stream-json: an agy too old to drive is a configuration problem,
+	// and one clear message about it beats a model list from a binary that cannot
 	// actually run a job.
 	agy, err := m.agyBinaryChecked(ctx)
 	if err != nil {
@@ -86,7 +91,11 @@ func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
 	// context and a client may hold that open indefinitely.
 	ctx, cancel := context.WithTimeout(ctx, listModelsTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, agy, "models")
+	// --output-format is agy's global print-mode flag, so it must precede the
+	// `models` subcommand; agy rejects `models --output-format json` outright
+	// (the subcommand flagset does not define it). The listing banner stays on
+	// stderr, so stdout is the envelope alone.
+	cmd := exec.CommandContext(ctx, agy, outputFormatFlag, jsonOutputFormat, "models")
 	cmd.WaitDelay = listModelsKillGrace
 	out, err := cmd.Output()
 	if err != nil {
@@ -98,29 +107,61 @@ func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
 		}
 		return nil, fmt.Errorf("agy models: %w", err)
 	}
-	return parseModels(string(out)), nil
+	return decodeModelsEnvelope(out)
 }
 
-// parseModels turns `agy models` output into one Model per non-blank line, using
-// splitModelRow to split each row into its id and label columns. A line with no
-// tab yields an id with an empty label instead of being dropped, so output that
-// carries no label column still produces usable model values.
-func parseModels(raw string) []Model {
-	// One model per line at most, so strings.Count(raw,"\n")+1 is an upper bound on
-	// the result: a cheap capacity hint that never under-allocates. It over-allocates
-	// by the blank lines skipped, plus one when raw ends in a trailing newline or is
-	// empty. Like the list_models handler, it returns a non-nil empty slice for empty
-	// input; no caller marshals this value, so nil vs empty is not observable downstream.
-	models := make([]Model, 0, strings.Count(raw, "\n")+1)
-	for line := range strings.Lines(raw) {
-		// splitModelRow trims before it cuts, so a blank or whitespace-only line is
-		// the only input that yields an empty id here; a real row never does. That
-		// makes the empty id the blank-line skip, with no second TrimSpace.
-		id, label := splitModelRow(line)
-		if id == "" {
-			continue
-		}
-		models = append(models, Model{ID: id, Label: label})
+const (
+	// jsonOutputFormat is the --output-format value ListModels passes for the
+	// models listing: the single-object envelope, distinct from the stream-json
+	// format the job pipeline drives (streamJSONFormat).
+	jsonOutputFormat = "json"
+	// modelsEnvelopeStatusOK and modelsCommandName are the envelope framing
+	// decodeModelsEnvelope requires before it trusts the listing. They are the
+	// literals agy prints, mirrored in internal/testutil/fakeagy.go.
+	modelsEnvelopeStatusOK = "SUCCESS"
+	modelsCommandName      = "models"
+)
+
+// modelsEnvelope is the subset of agy's `--output-format json models` output that
+// list_models needs: the status/command framing that proves the payload is the
+// models listing, and the id/label objects under command.data.models. Fields agy
+// also emits (a redundant `response` text column, usage, timing) are ignored.
+type modelsEnvelope struct {
+	Status  string `json:"status"`
+	Command struct {
+		Name string `json:"name"`
+		Data struct {
+			Models []struct {
+				ID    string `json:"id"`
+				Label string `json:"label"`
+			} `json:"models"`
+		} `json:"data"`
+	} `json:"command"`
+}
+
+// decodeModelsEnvelope turns agy's JSON models envelope into Models, validating
+// the framing before it trusts the list. A payload whose status is not SUCCESS or
+// whose command is not `models` is a shape agy-mcp does not recognize (a future
+// field rename, or an error envelope that still exited 0), so it is an error
+// rather than a silently empty catalog: cmd.Output() only catches a non-zero
+// exit, and a well-formed-but-renamed envelope on exit 0 would otherwise decode to
+// zero models and mask the change. An envelope that IS the models command but
+// lists no models is a legitimately empty catalog and returns an empty, non-nil
+// slice.
+func decodeModelsEnvelope(raw []byte) ([]Model, error) {
+	var env modelsEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("agy models: parse json envelope: %w", err)
 	}
-	return models
+	if env.Status != modelsEnvelopeStatusOK {
+		return nil, fmt.Errorf("agy models: envelope status %q, want %q", env.Status, modelsEnvelopeStatusOK)
+	}
+	if env.Command.Name != modelsCommandName {
+		return nil, fmt.Errorf("agy models: envelope command %q, want %q", env.Command.Name, modelsCommandName)
+	}
+	models := make([]Model, 0, len(env.Command.Data.Models))
+	for _, mo := range env.Command.Data.Models {
+		models = append(models, Model{ID: mo.ID, Label: mo.Label})
+	}
+	return models, nil
 }
