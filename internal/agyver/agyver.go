@@ -20,9 +20,9 @@ import (
 // output to the `models` subcommand: `agy --output-format json models` returns a
 // command envelope whose command.data.models is a list of {id,label} objects, and
 // list_models decodes that typed field instead of tab-splitting the text rows.
-// decodeModelsEnvelope refuses an envelope whose status is not SUCCESS or whose
-// command is not `models`, so an envelope that is not a successful models
-// response fails loudly rather than being read as an empty catalog; an agy
+// decodeModelsEnvelope refuses an envelope whose status is not SUCCESS, whose
+// command is not `models`, or that omits the models array, so a shape change in
+// any of those fails loudly rather than being read as an empty catalog; an agy
 // without the envelope at all is simply too old to read. All three facts are
 // from agy's own changelog (run
 // `agy changelog`): the 1.1.12 line reads "machine-readable output to the models

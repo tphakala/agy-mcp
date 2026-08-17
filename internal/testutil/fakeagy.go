@@ -95,14 +95,16 @@ func (cfg FakeAgy) version() string {
 //     gate rather than exercising its actual subject.
 //   - `agy --output-format json models`, the invocation ListModels makes: agy's
 //     global --output-format flag precedes the `models` subcommand, so the match
-//     is on $1 and $3. modelsPath holds the JSON envelope rendered from Models,
+//     is on all three of $1=--output-format, $2=json, $3=models, matching the
+//     exact invocation rather than any --output-format value (real agy accepts
+//     only json here). modelsPath holds the JSON envelope rendered from Models,
 //     and the configured Stderr and Exit apply so a failing listing can be
 //     exercised too. The real binary prints its progress banner on stderr, which
 //     is why ListModels reads stdout alone. A run invocation never matches: it
 //     leads with --dangerously-skip-permissions, not --output-format.
 func (cfg FakeAgy) subcommandPreamble(modelsPath, errPath string) string {
 	return fmt.Sprintf("if [ \"$1\" = \"--version\" ]; then printf '%%s\\n' %q; exit 0; fi\n", cfg.version()) +
-		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$3\" = \"models\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", modelsPath, errPath, cfg.Exit)
+		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$2\" = \"json\" ] && [ \"$3\" = \"models\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", modelsPath, errPath, cfg.Exit)
 }
 
 // modelsEnvelopeJSON renders the JSON envelope agy 1.1.12+ prints for

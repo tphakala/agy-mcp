@@ -127,12 +127,17 @@ const (
 // models listing, and the id/label objects under command.data.models. Fields agy
 // also emits (a redundant `response` text column plus usage and timing metadata)
 // are ignored.
+//
+// Models is a POINTER so decodeModelsEnvelope can tell an absent or null array
+// (nil, which a `data`/`models` rename or drop produces) from a present-but-empty
+// one (a non-nil pointer to an empty slice, a legitimate empty catalog). A plain
+// slice collapses both to nil and would read a renamed field as an empty catalog.
 type modelsEnvelope struct {
 	Status  string `json:"status"`
 	Command struct {
 		Name string `json:"name"`
 		Data struct {
-			Models []struct {
+			Models *[]struct {
 				ID    string `json:"id"`
 				Label string `json:"label"`
 			} `json:"models"`
@@ -141,14 +146,15 @@ type modelsEnvelope struct {
 }
 
 // decodeModelsEnvelope turns agy's JSON models envelope into Models, validating
-// the framing before it trusts the list. A payload whose status is not SUCCESS or
-// whose command is not `models` is a shape agy-mcp does not recognize (a future
-// field rename, or an error envelope that still exited 0), so it is an error
-// rather than a silently empty catalog: cmd.Output() only catches a non-zero
-// exit, and a well-formed-but-renamed envelope on exit 0 would otherwise decode to
-// zero models and mask the change. An envelope that IS the models command but
-// lists no models is a legitimately empty catalog and returns an empty, non-nil
-// slice.
+// the framing before it trusts the list. It is an error, not a silently empty
+// catalog, when the status is not SUCCESS, the command is not `models`, or the
+// command.data.models array is absent or null: each is a shape agy-mcp does not
+// recognize (a future field rename or restructure, or an error envelope that
+// still exited 0), and cmd.Output() only catches a non-zero exit, so a
+// well-formed-but-renamed envelope on exit 0 would otherwise decode to zero
+// models and mask the change. An envelope that IS the models command and carries
+// an explicit empty array is a legitimately empty catalog and returns an empty,
+// non-nil slice.
 func decodeModelsEnvelope(raw []byte) ([]Model, error) {
 	var env modelsEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -160,8 +166,14 @@ func decodeModelsEnvelope(raw []byte) ([]Model, error) {
 	if env.Command.Name != modelsCommandName {
 		return nil, fmt.Errorf("agy models: envelope command %q, want %q", env.Command.Name, modelsCommandName)
 	}
-	models := make([]Model, 0, len(env.Command.Data.Models))
-	for _, mo := range env.Command.Data.Models {
+	// nil, not empty: an absent or null command.data.models (a renamed or dropped
+	// field), as opposed to a present "models":[] which is a real empty catalog.
+	if env.Command.Data.Models == nil {
+		return nil, errors.New("agy models: envelope has no command.data.models array")
+	}
+	rows := *env.Command.Data.Models
+	models := make([]Model, 0, len(rows))
+	for _, mo := range rows {
 		models = append(models, Model{ID: mo.ID, Label: mo.Label})
 	}
 	return models, nil

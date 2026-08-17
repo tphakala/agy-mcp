@@ -69,13 +69,18 @@ func TestDecodeModelsEnvelope(t *testing.T) {
 		t.Fatalf("decodeModelsEnvelope (empty) = %#v, want a non-nil empty slice", got)
 	}
 
-	// Shapes that must be a loud error, not a silent empty catalog. The last two
-	// pin the framing checks: without the status/command validation each decodes to
-	// a models list with err nil, and this case would go green.
+	// Shapes that must be a loud error, not a silent empty catalog. Each pins a
+	// specific guard: without its check the payload decodes to a (possibly empty)
+	// models list with err nil, and that case would go green. The last three cover
+	// a renamed or dropped inner array (absent data, absent models, null models),
+	// which must be distinguished from a present "models":[] empty catalog above.
 	for _, tc := range []struct{ name, raw string }{
 		{"malformed json", `{"status":"SUCCESS","command":`},
 		{"status not SUCCESS", `{"status":"ERROR","command":{"name":"models","data":{"models":[{"id":"x"}]}}}`},
 		{"wrong command", `{"status":"SUCCESS","command":{"name":"run","data":{"models":[{"id":"x"}]}}}`},
+		{"missing data object", `{"status":"SUCCESS","command":{"name":"models"}}`},
+		{"missing models array", `{"status":"SUCCESS","command":{"name":"models","data":{}}}`},
+		{"null models array", `{"status":"SUCCESS","command":{"name":"models","data":{"models":null}}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := decodeModelsEnvelope([]byte(tc.raw)); err == nil {
