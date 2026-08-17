@@ -125,7 +125,8 @@ const (
 // modelsEnvelope is the subset of agy's `--output-format json models` output that
 // list_models needs: the status/command framing that proves the payload is the
 // models listing, and the id/label objects under command.data.models. Fields agy
-// also emits (a redundant `response` text column, usage, timing) are ignored.
+// also emits (a redundant `response` text column plus usage and timing metadata)
+// are ignored.
 type modelsEnvelope struct {
 	Status  string `json:"status"`
 	Command struct {

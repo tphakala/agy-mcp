@@ -109,8 +109,7 @@ func (cfg FakeAgy) subcommandPreamble(modelsPath, errPath string) string {
 // `agy --output-format json models`: a SUCCESS `models` command whose
 // command.data.models carries one {id,label} object per configured model. The
 // inner slice is always non-nil so an empty catalog marshals as "models":[]
-// rather than "models":null, matching the real binary and letting ListModels'
-// decoder see a valid empty list rather than a framing it rejects.
+// rather than "models":null, matching what the real binary emits.
 func (cfg FakeAgy) modelsEnvelopeJSON(t *testing.T) string {
 	t.Helper()
 	type modelObj struct {

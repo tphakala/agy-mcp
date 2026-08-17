@@ -21,9 +21,10 @@ import (
 // command envelope whose command.data.models is a list of {id,label} objects, and
 // list_models decodes that typed field instead of tab-splitting the text rows.
 // decodeModelsEnvelope refuses an envelope whose status is not SUCCESS or whose
-// command is not `models`, so a renamed or restructured envelope fails loudly
-// rather than yielding an empty catalog; an agy without the envelope at all is
-// simply too old to read. All three facts are from agy's own changelog (run
+// command is not `models`, so an envelope that is not a successful models
+// response fails loudly rather than being read as an empty catalog; an agy
+// without the envelope at all is simply too old to read. All three facts are
+// from agy's own changelog (run
 // `agy changelog`): the 1.1.12 line reads "machine-readable output to the models
 // and agents subcommands".
 var Required = Version{Major: 1, Minor: 1, Patch: 12}
