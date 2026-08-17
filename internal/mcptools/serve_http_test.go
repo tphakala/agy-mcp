@@ -201,8 +201,9 @@ func TestHTTPServeAdvertisesInstructions(t *testing.T) {
 		t.Fatal("no InitializeResult")
 	}
 	// Spot-check anchors, not the full text: a use-case cue, the sync entry-point
-	// tool name, and the parallelism guidance that mirrors the gate's real scope.
-	for _, want := range []string{"Peer review", "agy_run_sync", "SAME conversation_id"} {
+	// tool name, the parallelism guidance that mirrors the gate's real scope, and
+	// the prompt-injection boundary that marks a delegated result as untrusted.
+	for _, want := range []string{"Peer review", "agy_run_sync", "SAME conversation_id", "report to weigh"} {
 		if !strings.Contains(init.Instructions, want) {
 			t.Errorf("server instructions missing %q; got:\n%s", want, init.Instructions)
 		}
