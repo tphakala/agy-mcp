@@ -29,6 +29,9 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
+	// The fake supervisor writes out/exit_code; wait for it before teardown so its
+	// writes finish before t.TempDir RemoveAll (see deferJobDone).
+	deferJobDone(t, m, job.ID)
 	if job.ID == "" {
 		t.Fatal("empty job id")
 	}
@@ -47,12 +50,6 @@ func TestStartJobPersistsMetaAndSpawns(t *testing.T) {
 	if !contains(meta.Args, "-p") || !contains(meta.Args, "--dangerously-skip-permissions") {
 		t.Errorf("args missing required flags: %v", meta.Args)
 	}
-
-	// The fake supervisor writes out/exit_code; wait briefly for it.
-	testutil.WaitFor(t, 15*time.Second, func() bool {
-		_, ok := m.store.ExitCode(job.ID)
-		return ok
-	}, "supervisor did not write exit_code")
 }
 
 // TestStartJobWiresConversationID covers the continue-a-conversation path that
@@ -72,6 +69,7 @@ func TestStartJobWiresConversationID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
+	deferJobDone(t, m, job.ID)
 	if job.ConversationID != convID {
 		t.Errorf("returned conversation id = %q, want %q", job.ConversationID, convID)
 	}
@@ -145,6 +143,7 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
+	deferJobDone(t, m, job.ID)
 	meta, err := m.store.Load(job.ID)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -219,6 +218,7 @@ func TestStartJobReducesModelRowToID(t *testing.T) {
 			if err != nil {
 				t.Fatalf("StartJob: %v", err)
 			}
+			deferJobDone(t, m, job.ID)
 			meta, err := m.store.Load(job.ID)
 			if err != nil {
 				t.Fatalf("Load: %v", err)
@@ -299,6 +299,34 @@ func TestStartJobSerializesSameConversation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already running on conversation") {
 		t.Fatalf("second run error = %v, want a refusal naming the shared conversation", err)
 	}
+}
+
+// deferJobDone registers a cleanup that blocks until the job's supervisor has
+// written its exit-code sentinel, which WriteFakeSupervisor emits as its LAST
+// write to the job dir (see fakesupervisor.go). A StartJob test that spawns a
+// supervisor and returns before it finishes races the detached supervisor's
+// writes against t.TempDir teardown, so RemoveAll intermittently fails with
+// "directory not empty" (issue #149).
+//
+// It is registered right after a successful StartJob rather than called at the
+// end of the test, so it still runs (t.Cleanup is LIFO, so before the newManager
+// StateDir's own teardown) when an assertion fails early via t.Fatalf and skips
+// the rest of the body; calling it inline at the end would be skipped on exactly
+// that path and mask the real failure with a spurious RemoveAll error.
+//
+// Only tests whose fake supervisor actually writes into the job dir and completes
+// on its own need it. Tests that expect StartJob to fail (no supervisor spawned),
+// that kill a sleeping supervisor (killJob), or that use a non-writing supervisor
+// such as `sleep` are not exposed; a supervisor that is SIGKILLed never writes an
+// exit code, so waiting for one there would time out.
+func deferJobDone(t *testing.T, m *Manager, id string) {
+	t.Helper()
+	t.Cleanup(func() {
+		testutil.WaitFor(t, 15*time.Second, func() bool {
+			_, ok := m.store.ExitCode(id)
+			return ok
+		}, "supervisor did not write its exit-code sentinel")
+	})
 }
 
 func contains(ss []string, want string) bool {
