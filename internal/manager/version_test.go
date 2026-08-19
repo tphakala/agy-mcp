@@ -68,14 +68,14 @@ func TestAgyBinaryCheckedRefusesOldVersion(t *testing.T) {
 }
 
 // TestAgyBinaryCheckedRefusesImmediateSubFloor pins the boundary the floor bump
-// moves: agy 1.1.11, the release directly below the 1.1.12 floor and one that
+// moves: agy 1.1.14, the release directly below the 1.1.15 floor and one that
 // used to pass, is now refused. That is what makes raising the floor a real gate
 // change rather than a constant edit; TestAgyBinaryCheckedRefusesOldVersion only
 // proves an ancient 1.1.7 is refused, which was true before the bump too.
 func TestAgyBinaryCheckedRefusesImmediateSubFloor(t *testing.T) {
-	m, _ := versionManager(t, "1.1.11", nil)
+	m, _ := versionManager(t, "1.1.14", nil)
 	if _, err := m.agyBinaryChecked(t.Context()); err == nil {
-		t.Fatal("agy 1.1.11 (one below the 1.1.12 floor) must be refused")
+		t.Fatal("agy 1.1.14 (one below the 1.1.15 floor) must be refused")
 	}
 }
 

@@ -10,24 +10,50 @@ import (
 	"strings"
 )
 
-// Required is the oldest agy that agy-mcp can drive. Three facts set the floor.
-// 1.1.8 added --output-format (text, json, stream-json) to print mode, and the
-// whole job pipeline reads the stream-json event stream, so an older agy cannot
-// be used at all rather than degraded. 1.1.10 is the first release where the
-// run-shaping flags agy-mcp forwards in headless -p (--model and --effort)
-// actually take effect; on 1.1.8/1.1.9 they were silently ignored, so a lower
-// floor would let a passing gate hide a no-op flag. 1.1.12 added machine-readable
-// output to the `models` subcommand: `agy --output-format json models` returns a
-// command envelope whose command.data.models is a list of {id,label} objects, and
-// list_models decodes that typed field instead of tab-splitting the text rows.
-// decodeModelsEnvelope refuses an envelope whose status is not SUCCESS, whose
-// command is not `models`, or that omits the models array, so a shape change in
-// any of those fails loudly rather than being read as an empty catalog; an agy
-// without the envelope at all is simply too old to read. All three facts are
-// from agy's own changelog (run
-// `agy changelog`): the 1.1.12 line reads "machine-readable output to the models
-// and agents subcommands".
-var Required = Version{Major: 1, Minor: 1, Patch: 12}
+// Required is the oldest agy that agy-mcp can drive. The floor is 1.1.15 because
+// that release fixed streamed text corrupting non-ASCII characters into U+FFFD
+// replacement characters in the --output-format stream-json text deltas. Those
+// deltas are the text agy-mcp reconstructs: the supervisor concatenates every
+// agent_response text_delta into the job's out file (internal/supervisor/stream.go),
+// and agy-mcp falls back to that streamed text as the job result whenever agy's
+// terminal result payload is absent or carried an empty response
+// (internal/manager/status.go): a run cut short before agy's result event, or one
+// it ends with no response. A still-running job is not
+// affected; it reports no result text until it is terminal. On an older agy that
+// reconstructed text is lossy for any non-ASCII content (another language, emoji,
+// box drawing, unicode in code), and agy-mcp cannot repair bytes it never received
+// intact, so the binary is refused rather than driven into silent corruption.
+// Whether agy's terminal result response field carried the same corruption is not
+// asserted here: the 1.1.15 line names the text deltas (and the interactive
+// display), not that response field.
+//
+// Earlier releases set earlier, lower floors that this one subsumes. They are kept
+// here so a maintainer who ever lowers the floor knows what each step below 1.1.15
+// gives up:
+//   - 1.1.8 added --output-format (text, json, stream-json) to print mode, and the
+//     whole job pipeline reads the stream-json event stream, so an older agy cannot
+//     be used at all rather than degraded.
+//   - 1.1.10 is the first release where the run-shaping flags agy-mcp forwards in
+//     headless -p (--model and --effort) actually take effect; on 1.1.8/1.1.9 they
+//     were silently ignored, so a lower floor would let a passing gate hide a
+//     no-op flag.
+//   - 1.1.12 added the machine-readable `models` envelope
+//     (`agy --output-format json models` -> command.data.models, a list of
+//     {id,label} objects) that list_models decodes instead of tab-splitting text.
+//     decodeModelsEnvelope refuses an envelope whose status is not SUCCESS, whose
+//     command is not `models`, or that omits the models array, so a shape change
+//     fails loudly rather than reading as an empty catalog; an agy without the
+//     envelope at all is simply too old to read. 1.1.12 also fixed --mode (which
+//     agy-mcp forwards) being silently ignored in headless -p.
+//   - 1.1.14 made a failed language server exit non-zero instead of exiting
+//     silently as success, so agy-mcp's exit-code-driven state reports that
+//     failure as failed rather than an empty done.
+//
+// All facts are from agy's own changelog (run `agy changelog`); the 1.1.15 line
+// reads "Fixed streamed text corrupting non-ASCII characters into replacement
+// characters, in both the interactive display and --output-format stream-json
+// text deltas."
+var Required = Version{Major: 1, Minor: 1, Patch: 15}
 
 // Version is a parsed agy version.
 type Version struct {
