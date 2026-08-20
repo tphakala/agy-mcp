@@ -36,6 +36,11 @@ type streamOutcome struct {
 //     while the job is still running.
 //   - out, which accumulates the assistant's text. It is the fallback the
 //     manager reports as a partial result when no terminal event ever arrives.
+//     Only agent_response deltas contribute: agy's stream carries no thinking
+//     text (only a usage.thinking_tokens counter) and a tool step carries no
+//     response text, so a run killed while still reasoning or mid-tool, before
+//     it streams any answer, leaves out empty by design, not by defect
+//     (MEASURED against agy 1.1.15).
 //
 // The terminal result is returned rather than written here, so the caller can
 // order it against the exit-code sentinel.
@@ -70,12 +75,20 @@ func consumeStream(jobDir string, r io.Reader, out io.Writer) streamOutcome {
 					changed = true
 				}
 				// Append every delta rather than tracking which steps have already
-				// contributed. The field is a delta by name and agy emits it once per
-				// completed step, so appending reproduces the response; a run with
-				// several agent_response steps accumulates all of them, which is more
-				// context than the terminal result carries. The manager reads it when
-				// no terminal result reached disk, and also when one did but carried
+				// contributed. agy streams one agent_response step as many text_delta
+				// events (the ACTIVE states carry successive chunks, the DONE state the
+				// final tail), so appending every one in arrival order reproduces the
+				// response: for a single-response run, concatenating its agent_response
+				// deltas matched its terminal result byte-for-byte (MEASURED against agy
+				// 1.1.15). A run
+				// with several agent_response steps accumulates all of them, which is
+				// more context than the terminal result carries. The manager reads it
+				// when no terminal result reached disk, and also when one did but carried
 				// no response of its own, since then this is the only text there is.
+				//
+				// Do NOT dedup by step_index to "skip repeats": the deltas are not
+				// repeats and agy does not emit one per step, so a step-indexed filter
+				// would drop every ACTIVE chunk and keep only the final tail.
 				if su.StepType == streamjson.StepTypeAgentResponse && su.TextDelta != "" {
 					// A failed append costs partial-result fidelity, nothing more: the
 					// terminal result event is the authoritative response and is written

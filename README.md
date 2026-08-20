@@ -108,9 +108,9 @@ Or add to your MCP client config:
 ## Tools
 
 - `agy_run(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?)` -> `{ job_id, conversation_id?, state }`
-- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
-- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, conversation_id?, model?, partial?, num_turns?, usage?, step_type? }`
-- `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
+- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, wait?)` -> `{ job_id, state, elapsed, result?, error?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
+- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type? }`
+- `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`
 - `list_models()` -> `{ models, model_details }`
 - `list_sessions(dir?)` -> `{ sessions }`
@@ -121,7 +121,7 @@ Or add to your MCP client config:
 
 `model` echoes the model id agy-mcp resolved for the run (the one you passed, or `AGY_MCP_DEFAULT_MODEL`, reduced to its id), so a caller can confirm which model actually ran. It is absent when no model was pinned and `agy` ran on its own default.
 
-A run that ends badly still hands back whatever it managed to say, so `result` is set on `failed` and `cancelled` jobs too and is worth reading rather than discarding. `partial` is what says whether to trust it as the final answer, and it follows from where the text came from rather than from the state.
+A run that ends badly still hands back whatever it managed to say, so `result` is set on `failed` and `cancelled` jobs too and is worth reading rather than discarding. `partial` is what says whether to trust it as the final answer, and it follows from where the text came from rather than from the state. When such a run produced no text at all but still named a conversation, `recovery` carries a short note on continuing that conversation instead of restating the task.
 
 It is true when the text was reconstructed from the streamed events, which happens when agy never reported a terminal result (a clean exit whose final event never arrived, a cancel, a timeout, a supervisor that died mid-stream) and also when agy did report one whose response was empty, so the stream is the only text there is. It is likewise true when agy reported a terminal result that was not a success, in which case the text is only what the run had produced by the time it stopped. A response agy itself marked successful is never `partial`, even on a job that was then cancelled or killed: agy prints its result and can hang on the way out, so the answer was already complete when the job was terminated. Note the distinction that last sentence turns on, since a `done` job can still report `partial`: it is a claim about agy's own response, not about every result reported for a run agy marked successful.
 

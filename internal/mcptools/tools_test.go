@@ -290,3 +290,43 @@ func TestStatusOutputModelEchoAndOmitempty(t *testing.T) {
 		t.Errorf("an empty model must be omitted from the wire, got: %s", b2)
 	}
 }
+
+// TestStatusOutputRecoveryHint: toStatusOutput sets the recovery hint only when a
+// run ended terminally with no text to offer but a conversation worth continuing,
+// the timeout/cancel-before-any-output case from issue #151. A run that produced
+// text (even a partial one), has no conversation_id, is still running, or finished
+// successfully gets no hint, and the omitempty key is absent from the wire then.
+func TestStatusOutputRecoveryHint(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		st       manager.Status
+		wantHint bool
+	}{
+		{"timeout kill, no text, has conversation", manager.Status{State: manager.StateFailed, ConversationID: "c1"}, true},
+		{"cancel before any output", manager.Status{State: manager.StateCancelled, ConversationID: "c1"}, true},
+		{"failed but no conversation to continue", manager.Status{State: manager.StateFailed}, false},
+		{"failed with a partial result already offered", manager.Status{State: manager.StateFailed, ConversationID: "c1", Result: "as far as I got", Partial: true}, false},
+		{"done and successful needs no recovery", manager.Status{State: manager.StateDone, ConversationID: "c1"}, false},
+		{"running is not terminal", manager.Status{State: manager.StateRunning, ConversationID: "c1"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := toStatusOutput(tt.st)
+			if (got.Recovery != "") != tt.wantHint {
+				t.Errorf("Recovery = %q, want hint present = %v", got.Recovery, tt.wantHint)
+			}
+			if tt.wantHint && !strings.Contains(got.Recovery, "conversation_id") {
+				t.Errorf("a recovery hint must tell the caller to reuse conversation_id, got %q", got.Recovery)
+			}
+			b, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(b), `"recovery"`) != tt.wantHint {
+				t.Errorf("recovery key on wire = %v, want %v: %s", strings.Contains(string(b), `"recovery"`), tt.wantHint, b)
+			}
+		})
+	}
+}

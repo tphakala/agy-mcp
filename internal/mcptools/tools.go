@@ -29,7 +29,7 @@ type runInput struct {
 	ConversationID string   `json:"conversation_id,omitempty" jsonschema:"continue this specific conversation instead of starting fresh, so earlier context need not be restated; take it from a previous run's conversation_id or from list_sessions. Mutually exclusive with continue_latest"`
 	ContinueLatest bool     `json:"continue_latest,omitempty" jsonschema:"continue the most recent conversation for cwd instead of starting fresh. Mutually exclusive with conversation_id: setting this true together with a conversation_id is an error, though leaving it false alongside one is fine"`
 	Cwd            string   `json:"cwd,omitempty" jsonschema:"absolute path of the directory the agent runs in and may edit files under; also scopes continue_latest. Fresh runs sharing a cwd run concurrently. A relative path is resolved against the server's working directory, which is not necessarily yours, so pass an absolute one. Symlinks are resolved. Defaults to the server's own working directory"`
-	Timeout        string   `json:"timeout,omitempty" jsonschema:"max wall-clock duration for the whole run (Go duration, e.g. 20m); a value over 24h is rejected. On expiry the agy process tree is killed and the job ends in state failed. Omit to use the server's default"`
+	Timeout        string   `json:"timeout,omitempty" jsonschema:"max wall-clock duration for the whole run (Go duration, e.g. 20m); a value over 24h is rejected. On expiry the agy process tree is killed mid-run and the job ends in state failed. The kill is hard: any answer already streamed is offered back as a partial result, but work still in the model's reasoning or a tool call has produced no recoverable text yet, so a run killed before it streams its answer recovers nothing. To carry on, start a fresh agy_run with this run's conversation_id so the thread continues without restating the task; the killed turn's own reasoning is not recoverable. Omit to use the server's default"`
 	JSONSchema     string   `json:"json_schema,omitempty" jsonschema:"optional JSON Schema to enforce on the run's structured result: pass either an inline schema string or a path to a schema file, and agy constrains the final result to it (in stream-json mode the schema applies to the terminal result event). Omit for an unconstrained free-text result. Useful when the result is consumed programmatically, e.g. extraction, classification, or structured summaries"`
 }
 
@@ -178,10 +178,16 @@ type statusInput struct {
 }
 
 type statusOutput struct {
-	State          string `json:"state" jsonschema:"running, done, failed or cancelled"`
-	Elapsed        string `json:"elapsed" jsonschema:"wall-clock time the job has run, frozen at completion once terminal"`
-	Result         string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set on any terminal state whose text could be recovered, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first. A running job carries none even once it has produced text, so collect the result once the state is terminal"`
-	Error          string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
+	State   string `json:"state" jsonschema:"running, done, failed or cancelled"`
+	Elapsed string `json:"elapsed" jsonschema:"wall-clock time the job has run, frozen at completion once terminal"`
+	Result  string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set on any terminal state whose text could be recovered, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first. A running job carries none even once it has produced text, so collect the result once the state is terminal"`
+	Error   string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
+	// Recovery is tool-facing advice, not a property of the job: it is present
+	// only when a run ended terminally with no text to offer but a conversation
+	// worth continuing (for example a timeout, a cancel, a crash, or an agy error
+	// before any answer was streamed), which otherwise reads as a bare empty
+	// failure (issue #151).
+	Recovery       string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result: present only on a terminal failed or cancelled job that produced no text but has a conversation_id. Start a fresh agy_run with that conversation_id to continue the thread without restating the task; the killed turn's own reasoning is not recoverable. Absent whenever any result, even a partial one, was recovered"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Empty until agy names a fresh run's conversation, which takes about a second, so agy_status, agy_wait and agy_run_sync all report none when asked inside that window; ask again once the run is under way"`
 	// Model echoes the resolved model so a caller can see which one actually ran;
 	// see manager.Status.Model.
@@ -232,6 +238,15 @@ func toStatusOutput(st manager.Status) statusOutput {
 			CacheReadTokens: u.CacheReadTokens,
 			TotalTokens:     u.TotalTokens,
 		}
+	}
+	// A run that ended terminally with no text but a known conversation is the
+	// issue #151 case: a bare empty failure the caller can still act on. Offer the
+	// continuation as recovery advice. A run that produced any text (even a
+	// partial one) needs none, since its output is already in Result.
+	if out.Result == "" && out.ConversationID != "" &&
+		(out.State == manager.StateFailed || out.State == manager.StateCancelled) {
+		out.Recovery = "no result text was recovered. " +
+			"Start a fresh agy_run with this conversation_id to continue the thread without restating the task."
 	}
 	return out
 }
