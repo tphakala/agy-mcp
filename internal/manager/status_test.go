@@ -32,8 +32,58 @@ func TestStatusInterruptedNoOutput(t *testing.T) {
 	if !strings.Contains(st.Error, "interrupted") {
 		t.Fatalf("error = %q, want it to mention the interruption", st.Error)
 	}
+	if st.FailureReason != ReasonInterrupted {
+		t.Fatalf("failure_reason = %q, want %q", st.FailureReason, ReasonInterrupted)
+	}
 	if st.Partial {
 		t.Fatalf("a no-output interruption is not a partial result: %+v", st)
+	}
+}
+
+// TestClassifyAgyError pins the quota/rate-limit matcher: the wording agy has
+// been seen to relay and the common provider spellings map to a retryable
+// ReasonQuotaExhausted, while an ordinary agy error stays ReasonAgyError. The
+// negatives matter as much as the positives: a hard error misread as transient
+// would tell a caller to wait out a wall that never clears.
+func TestClassifyAgyError(t *testing.T) {
+	// Each positive is written to match exactly ONE isQuotaError substring, so
+	// deleting any single matcher turns exactly one row red. A string matching two
+	// matchers at once (say "429 ... rate limit") would leave a deleted matcher
+	// silently covered by its neighbour.
+	quota := []string{
+		"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 21m50s.", // quota
+		"you have hit your rate limit for this model",                                                           // rate limit (space)
+		"provider returned a rate-limit response",                                                               // rate-limit (hyphen)
+		"the model is resource exhausted right now",                                                             // resource exhausted (space)
+		"grpc status resource_exhausted on this request",                                                        // resource_exhausted (underscore)
+		"grpc code ResourceExhausted returned",                                                                  // resourceexhausted (camelCase, lowercased)
+		"HTTP 429: Too Many Requests",                                                                           // too many requests
+		// Contains "disk quota" (which suppresses the "quota" token) yet still
+		// carries a real "rate limit" signal, so it stays retryable. This pins the
+		// disk-quota exclusion to the quota token alone: a whole-function early
+		// return on "disk quota" would misclassify this as a hard error.
+		"disk quota note aside, you hit a rate limit; retry later",
+	}
+	for _, msg := range quota {
+		if got := classifyAgyError(msg); got != ReasonQuotaExhausted {
+			t.Errorf("classifyAgyError(%q) = %q, want %q", msg, got, ReasonQuotaExhausted)
+		}
+	}
+	other := []string{
+		"model unavailable",
+		"panic: nil pointer dereference",
+		"context deadline exceeded",
+		"agy reported an error without a message",
+		"", // an ERROR payload with no message must not read as a quota wall
+		// EDQUOT contains "quota" but is a hard OS storage error, not a provider
+		// wall; it must fall to ReasonAgyError so the caller is not told to wait
+		// for a reset that never comes.
+		"write /var/data/out.tmp: disk quota exceeded",
+	}
+	for _, msg := range other {
+		if got := classifyAgyError(msg); got != ReasonAgyError {
+			t.Errorf("classifyAgyError(%q) = %q, want %q", msg, got, ReasonAgyError)
+		}
 	}
 }
 
@@ -118,6 +168,7 @@ type terminalCase struct {
 	wantResult  string
 	wantPartial bool
 	wantErrSub  string
+	wantReason  string // FailureReason; required on every failed row, forbidden elsewhere
 	wantConvID  string // conversation carried off the payload, "" not asserted
 	wantTurns   int    // agy's own accounting, 0 not asserted
 }
@@ -167,16 +218,27 @@ func terminalCases() []terminalCase {
 			name: "error payload keeps the text it carried",
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusError, Response: "got this far", Error: "model unavailable"},
 			out: "streamed", wantState: StateFailed, wantResult: "got this far", wantPartial: true,
-			wantErrSub: "model unavailable",
+			wantErrSub: "model unavailable", wantReason: ReasonAgyError,
 		}, {
 			name: "error payload with no text falls back to the stream",
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusError, Error: "model unavailable"},
 			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
-			wantErrSub: "model unavailable",
+			wantErrSub: "model unavailable", wantReason: ReasonAgyError,
 		}, {
 			name: "error payload with no message still explains itself",
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusError},
-			wantState: StateFailed, wantErrSub: "without a message",
+			wantState: StateFailed, wantErrSub: "without a message", wantReason: ReasonAgyError,
+		}, {
+			// A quota or rate-limit wall arrives as an ERROR payload like any other,
+			// but is transient: it must be told apart from a hard error so a caller
+			// can wait out the reset rather than give up. The reset time stays in the
+			// message; the reason is what makes it branchable.
+			name: "a quota wall is classified as retryable, not a hard error",
+			code: 0, res: &streamjson.Result{
+				Status: streamjson.StatusError,
+				Error:  "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 21m50s.",
+			},
+			wantState: StateFailed, wantErrSub: "Resets in 21m50s", wantReason: ReasonQuotaExhausted,
 		}, {
 			// The bug: a response with no status used to report done and NOT partial,
 			// so a future agy that renames the status field would have a run cut
@@ -187,29 +249,29 @@ func terminalCases() []terminalCase {
 		}, {
 			name: "a payload with no recognized field at all is indeterminate",
 			code: 0, res: &streamjson.Result{},
-			wantState: StateFailed, wantErrSub: "no status and no response",
+			wantState: StateFailed, wantErrSub: "no status and no response", wantReason: ReasonAgyError,
 		}, {
 			name: "an indeterminate payload still falls back to the stream",
 			code: 0, res: &streamjson.Result{},
 			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
-			wantErrSub: "no status and no response",
+			wantErrSub: "no status and no response", wantReason: ReasonAgyError,
 		}, {
 			name: "an unrecognized status keeps its response",
 			code: 0, res: &streamjson.Result{Status: "MAX_TURNS", Response: "as far as I got"},
 			wantState: StateFailed, wantResult: "as far as I got", wantPartial: true,
-			wantErrSub: "unrecognized result status",
+			wantErrSub: "unrecognized result status", wantReason: ReasonAgyError,
 		}, {
 			// The no-text sibling of the row above. Every other payload status has
 			// one, and the asymmetry is what let this case lose its coverage when
 			// four older tests were folded into this table.
 			name: "an unrecognized status with no response",
 			code: 0, res: &streamjson.Result{Status: "MAX_TURNS"},
-			wantState: StateFailed, wantErrSub: "unrecognized result status",
+			wantState: StateFailed, wantErrSub: "unrecognized result status", wantReason: ReasonAgyError,
 		}, {
 			name: "an unrecognized status with no response falls back to the stream",
 			code: 0, res: &streamjson.Result{Status: "MAX_TURNS"},
 			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
-			wantErrSub: "unrecognized result status",
+			wantErrSub: "unrecognized result status", wantReason: ReasonAgyError,
 		},
 		// --- clean exit, no terminal payload ------------------------------------
 		{
@@ -265,19 +327,19 @@ func terminalCases() []terminalCase {
 			name: "a timeout after a success payload is not partial",
 			code: jobstore.ExitTimeout, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "finished"},
 			out: "streamed", wantState: StateFailed, wantResult: "finished",
-			wantErrSub: "timeout",
+			wantErrSub: "timeout", wantReason: ReasonTimeout,
 		}, {
 			name: "a crash after a success payload is not partial",
 			code: 1, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "finished"},
 			out: "streamed", wantState: StateFailed, wantResult: "finished",
-			wantErrSub: "exit 1",
+			wantErrSub: "exit 1", wantReason: ReasonAgyError,
 		},
 		// --- timed out, crashed, spawn-failed -----------------------------------
 		{
 			name: "a timeout carries the stream",
 			code: jobstore.ExitTimeout, out: "as far as I got",
 			wantState: StateFailed, wantResult: "as far as I got", wantPartial: true,
-			wantErrSub: "timeout",
+			wantErrSub: "timeout", wantReason: ReasonTimeout,
 		}, {
 			// The bug: 127 never carried any text, though the branch beside it
 			// argues that a crashed run loses its answer exactly as a timed-out one
@@ -286,16 +348,23 @@ func terminalCases() []terminalCase {
 			name: "a real agy 127 carries the stream",
 			code: jobstore.ExitSpawnFail, out: "agy said this much",
 			wantState: StateFailed, wantResult: "agy said this much", wantPartial: true,
-			wantErrSub: "could not exec the agy binary",
+			wantErrSub: "could not exec the agy binary", wantReason: ReasonSpawnFailed,
 		}, {
 			name:      "a true spawn failure has nothing to carry",
 			code:      jobstore.ExitSpawnFail,
-			wantState: StateFailed, wantErrSub: "could not exec the agy binary",
+			wantState: StateFailed, wantErrSub: "could not exec the agy binary", wantReason: ReasonSpawnFailed,
 		}, {
 			name: "a crash carries the stream and the stderr tail",
 			code: 1, out: "partial", errFile: "panic: boom",
 			wantState: StateFailed, wantResult: "partial", wantPartial: true,
-			wantErrSub: "panic: boom",
+			wantErrSub: "panic: boom", wantReason: ReasonAgyError,
+		}, {
+			// A non-zero exit whose stderr is a quota wall (agy usually reports one in
+			// its payload, but may exit non-zero with it only on stderr) is still
+			// classified as retryable off the stderr tail, not flatly as agy_error.
+			name: "a non-zero exit with a quota wall on stderr is retryable",
+			code: 1, errFile: "Error: 429 Too Many Requests: rate limit exceeded",
+			wantState: StateFailed, wantErrSub: "rate limit", wantReason: ReasonQuotaExhausted,
 		}, {
 			// A payload's own message outranks the stderr tail: agy reports failures
 			// it survives in band, where the exit code is only ever 1.
@@ -303,7 +372,7 @@ func terminalCases() []terminalCase {
 			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Response: "partial text", Error: "model unavailable"},
 			out: "streamed", errFile: "some stderr",
 			wantState: StateFailed, wantResult: "partial text", wantPartial: true,
-			wantErrSub: "model unavailable",
+			wantErrSub: "model unavailable", wantReason: ReasonAgyError,
 		},
 	}
 }
@@ -327,6 +396,16 @@ func TestStatusTerminalContractTableIsWellFormed(t *testing.T) {
 		}
 		if tc.wantResult == "" && tc.wantPartial {
 			t.Errorf("row %q declares partial with no result, which says nothing to a caller", tc.name)
+		}
+		// FailureReason is set with, and only with, StateFailed: a failed row that
+		// declares no reason would leave the field blank exactly where a caller
+		// reaches for it, and a done or cancelled row that declares one asserts a
+		// reason the code must never set.
+		if tc.wantState == StateFailed && tc.wantReason == "" {
+			t.Errorf("row %q is a failure but declares no failure_reason", tc.name)
+		}
+		if tc.wantState != StateFailed && tc.wantReason != "" {
+			t.Errorf("row %q is not a failure yet declares failure_reason %q", tc.name, tc.wantReason)
 		}
 	}
 }
@@ -388,6 +467,9 @@ func assertTerminalStatus(t *testing.T, st Status, tc terminalCase) {
 		}
 	} else if !strings.Contains(st.Error, tc.wantErrSub) {
 		t.Errorf("error = %q, want it to mention %q", st.Error, tc.wantErrSub)
+	}
+	if st.FailureReason != tc.wantReason {
+		t.Errorf("failure_reason = %q, want %q", st.FailureReason, tc.wantReason)
 	}
 	if tc.wantConvID != "" && st.ConversationID != tc.wantConvID {
 		t.Errorf("conversation_id = %q, want %q carried off the payload", st.ConversationID, tc.wantConvID)
@@ -500,6 +582,37 @@ func TestStatusDoneButOutputUnreadable(t *testing.T) {
 	st, _ := m.Status("j")
 	if st.State != StateFailed || st.Error == "" {
 		t.Fatalf("status = %+v, want failed when the output file cannot be read", st)
+	}
+	// An unreadable output is not agy's failure and cannot be classified further,
+	// so it is ReasonUnknown; pin it so the reason cannot silently regress to
+	// ReasonAgyError (which would tell a caller agy itself errored).
+	if st.FailureReason != ReasonUnknown {
+		t.Fatalf("failure_reason = %q, want %q for an unreadable output", st.FailureReason, ReasonUnknown)
+	}
+}
+
+// TestStatusInterruptedOutputUnreadable exercises the recovery path (dead PID,
+// no exit-code sentinel) when the output file also cannot be read: the job is a
+// failure this build cannot describe from agy's own account, so it is
+// ReasonUnknown. This is the status.go recoverInterrupted read-error branch,
+// which no other test reaches.
+func TestStatusInterruptedOutputUnreadable(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	// BootID differs from current -> the recorded PID is from a previous boot, so
+	// the process cannot be alive and there is no sentinel: the recovery path.
+	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
+	// A directory at the out path makes readFile fail, unlike a missing file
+	// (which reads as an empty, clean interruption).
+	if err := os.Mkdir(filepath.Join(dir, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	st, _ := m.Status("j")
+	if st.State != StateFailed || st.Error == "" {
+		t.Fatalf("status = %+v, want failed when the interrupted output cannot be read", st)
+	}
+	if st.FailureReason != ReasonUnknown {
+		t.Fatalf("failure_reason = %q, want %q for an unreadable interrupted output", st.FailureReason, ReasonUnknown)
 	}
 }
 
