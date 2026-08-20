@@ -57,7 +57,8 @@ func TestClassifyAgyError(t *testing.T) {
 		"the model is resource exhausted right now",                                                             // resource exhausted (space)
 		"grpc status resource_exhausted on this request",                                                        // resource_exhausted (underscore)
 		"grpc code ResourceExhausted returned",                                                                  // resourceexhausted (camelCase, lowercased)
-		"HTTP 429: Too Many Requests",                                                                           // too many requests
+		"got HTTP 429 from the provider",                                                                        // http 429 (status line, not a bare 429)
+		"provider says: Too Many Requests",                                                                      // too many requests
 		// Contains "disk quota" (which suppresses the "quota" token) yet still
 		// carries a real "rate limit" signal, so it stays retryable. This pins the
 		// disk-quota exclusion to the quota token alone: a whole-function early

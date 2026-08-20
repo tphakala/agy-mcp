@@ -50,7 +50,7 @@ const (
 const (
 	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota or rate-limit wall; transient
 	ReasonTimeout        = "timeout"         // agy-mcp killed the run for exceeding its timeout
-	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started (exec failed)
+	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
 	ReasonInterrupted    = "interrupted"     // the job process vanished without writing a result
 	ReasonUnknown        = "unknown"         // a failure that fits none of the above (e.g. the output could not be read)
@@ -715,6 +715,9 @@ func isQuotaError(msg string) bool {
 	return quota ||
 		strings.Contains(l, "rate limit") ||
 		strings.Contains(l, "rate-limit") ||
+		// "http 429", not a bare "429": the status line is a strong rate-limit
+		// signal, while the lone number would collide with any offset, id or count.
+		strings.Contains(l, "http 429") ||
 		strings.Contains(l, "resource exhausted") ||
 		strings.Contains(l, "resource_exhausted") ||
 		strings.Contains(l, "resourceexhausted") ||
