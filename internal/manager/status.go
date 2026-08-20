@@ -37,6 +37,25 @@ const (
 	StateCancelled = "cancelled"
 )
 
+// Failure reasons reported in Status.FailureReason. They classify a StateFailed
+// job so a caller can branch on the cause without scraping the free-text Error:
+// above all, tell a transient wall it can wait out (ReasonQuotaExhausted) from a
+// hard error. The set is small, stable and closed; an outcome that fits none of
+// the named reasons is ReasonUnknown rather than a new value, so a caller's
+// switch never has to grow to stay correct.
+//
+// A reason is set only alongside StateFailed. A cancelled job needs none (its
+// state already is the reason), and a running or done job has no failure to
+// name.
+const (
+	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota or rate-limit wall; transient
+	ReasonTimeout        = "timeout"         // agy-mcp killed the run for exceeding its timeout
+	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
+	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
+	ReasonInterrupted    = "interrupted"     // the job process vanished without writing a result
+	ReasonUnknown        = "unknown"         // a failure that fits none of the above (e.g. the output could not be read)
+)
+
 // Status is the observable state of a job.
 type Status struct {
 	State   string // running | done | failed | cancelled
@@ -57,8 +76,16 @@ type Status struct {
 	// promises exactly that); reading per tick would re-read a growing file, and
 	// mid-stream text is not an answer. Collect a result once the state is
 	// terminal.
-	Result         string
-	Error          string // present when failed: agy's own message, or a stderr tail + exit code
+	Result string
+	Error  string // present when failed: agy's own message, or a stderr tail + exit code
+	// FailureReason classifies a StateFailed job into one of the stable Reason
+	// constants, so a caller can branch on the cause (most usefully, tell a
+	// transient ReasonQuotaExhausted wall from a hard error) without scraping
+	// Error. It is set only when State is StateFailed; a cancelled, running or
+	// done job leaves it empty. Error still carries the human-readable detail,
+	// including a quota wall's reset time, which this field deliberately does not
+	// parse out.
+	FailureReason  string
 	ConversationID string
 	// Model is the model id agy-mcp resolved for this run and persisted to meta:
 	// the request's model, or AGY_MCP_DEFAULT_MODEL when none was given, reduced to
@@ -168,6 +195,7 @@ func recoverInterrupted(dir string, st Status) Status {
 	case rerr != nil:
 		st.State = StateFailed
 		st.Error = fmt.Sprintf("job process exited and its output could not be read: %v", rerr)
+		st.FailureReason = ReasonUnknown
 	case out != "":
 		st.State = StateDone
 		st.Result = out
@@ -175,6 +203,7 @@ func recoverInterrupted(dir string, st Status) Status {
 	default:
 		st.State = StateFailed
 		st.Error = "job process exited without writing a result (interrupted)"
+		st.FailureReason = ReasonInterrupted
 	}
 	return st
 }
@@ -208,12 +237,14 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	case jobstore.ExitTimeout:
 		st.State = StateFailed
 		st.Error = "job exceeded its timeout and was terminated"
+		st.FailureReason = ReasonTimeout
 	case jobstore.ExitSpawnFail:
 		// 127 is written both when the supervisor could not exec agy and when agy
 		// itself exits 127, so name both causes rather than asserting one, and keep
 		// any stderr (a true spawn failure has none; a genuine agy 127 does).
 		st.State = StateFailed
 		st.Error = spawnFailMessage(dir)
+		st.FailureReason = ReasonSpawnFailed
 	default:
 		st.State = StateFailed
 		if hasResult && res.Error != "" {
@@ -221,6 +252,10 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		} else {
 			st.Error = errorSummary(dir, code)
 		}
+		// A non-zero exit's message can still be a quota wall (agy usually reports
+		// one in its payload, but may exit non-zero with it only on stderr), so
+		// classify the message rather than flatly calling every crash agy_error.
+		st.FailureReason = classifyAgyError(st.Error)
 	}
 	// Every non-zero exit is a run cut short: a cancel, a timeout, a crash, an
 	// OOM kill, agy exiting 1, and a 127 that is a real agy exit rather than a
@@ -245,6 +280,7 @@ func cleanExitWithoutPayload(dir string, meta jobstore.Meta, st Status) Status {
 	if err != nil {
 		st.State = StateFailed
 		st.Error = fmt.Sprintf("job completed but its output could not be read: %v", err)
+		st.FailureReason = ReasonUnknown
 		return st
 	}
 	st.State = StateDone
@@ -270,6 +306,9 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 	switch {
 	case res.Status == streamjson.StatusError:
 		st.State = StateFailed
+		// Classify off agy's own message: this is where a quota wall lands, and
+		// telling it apart from a generic error is the whole point of the field.
+		st.FailureReason = classifyAgyError(res.Error)
 		st.Error = res.Error
 		if st.Error == "" {
 			// agy said it failed but gave no reason. Say that, rather than
@@ -295,6 +334,7 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 	case res.Status == "":
 		st.State = StateFailed
 		st.Error = "agy's result payload carried no status and no response"
+		st.FailureReason = ReasonAgyError
 	// A named status this build has never heard of. agyver sets a version floor
 	// and no ceiling, so a newer agy may report an outcome such as CANCELLED or
 	// MAX_TURNS; deriving success from "not ERROR" would hand those back as
@@ -303,6 +343,7 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 	default:
 		st.State = StateFailed
 		st.Error = fmt.Sprintf("agy reported an unrecognized result status %q", res.Status)
+		st.FailureReason = ReasonAgyError
 	}
 	return carryText(dir, st, true, res)
 }
@@ -626,6 +667,61 @@ func cleanTail(dir string) (string, error) {
 		tail = tail[1:]
 	}
 	return tail, nil
+}
+
+// classifyAgyError maps an error message agy produced (a terminal ERROR
+// payload, or a non-zero exit's stderr tail) to a failure reason. A provider
+// quota or rate-limit wall is the one transient, retryable case and is told
+// apart as ReasonQuotaExhausted; everything else agy reports is ReasonAgyError.
+//
+// It is only ever called on the branches that would otherwise be a flat
+// ReasonAgyError, so it never has to name the structural reasons (timeout,
+// spawn-fail, interrupted) that their own branches already know.
+func classifyAgyError(msg string) string {
+	if isQuotaError(msg) {
+		return ReasonQuotaExhausted
+	}
+	return ReasonAgyError
+}
+
+// isQuotaError reports whether an error message describes a provider quota or
+// rate-limit wall: a transient condition that clears on its own, distinct from a
+// hard failure. agy relays the provider's own wording (observed as "Individual
+// quota reached. Please upgrade your subscription to increase your limits.
+// Resets in 21m50s."), which agy-mcp does not control, so the match is a
+// case-insensitive scan for the phrases that wording and the common provider
+// spellings (including gRPC RESOURCE_EXHAUSTED and HTTP 429) use.
+//
+// The match is a substring heuristic, so it is not exact in either direction.
+// The two directions are not equally safe. A provider phrasing none of these
+// catch falls back to ReasonAgyError: a real quota wall then reads as a generic
+// error, which still tells the truth and only loses the retryable hint. The
+// dangerous direction is the reverse, a hard error whose text merely contains one
+// of these words being called retryable, because the caller is then told to wait
+// for a reset that never comes. The one common collision, EDQUOT's "disk quota
+// exceeded", is excluded outright; other collisions (a local "resource exhausted"
+// from an OOM, say) remain a small accepted risk, since agy surfaces provider
+// wording far more often than raw OS errors. So this does not claim to never
+// mislabel a hard error, only to bias toward under-matching and to rule out the
+// one hard-error phrase seen in practice.
+func isQuotaError(msg string) bool {
+	l := strings.ToLower(msg)
+	// "disk quota exceeded" (EDQUOT) is a hard OS storage error that contains
+	// "quota" but never clears on its own, so it must never read as retryable. The
+	// exclusion is scoped to the "quota" token alone, not the whole function, so a
+	// message that somehow carried both "disk quota" and a genuine rate-limit
+	// signal still classifies as retryable off that other signal.
+	quota := strings.Contains(l, "quota") && !strings.Contains(l, "disk quota")
+	return quota ||
+		strings.Contains(l, "rate limit") ||
+		strings.Contains(l, "rate-limit") ||
+		// "http 429", not a bare "429": the status line is a strong rate-limit
+		// signal, while the lone number would collide with any offset, id or count.
+		strings.Contains(l, "http 429") ||
+		strings.Contains(l, "resource exhausted") ||
+		strings.Contains(l, "resource_exhausted") ||
+		strings.Contains(l, "resourceexhausted") ||
+		strings.Contains(l, "too many requests")
 }
 
 func errorSummary(dir string, code int) string {

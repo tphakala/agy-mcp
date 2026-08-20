@@ -182,12 +182,16 @@ type statusOutput struct {
 	Elapsed string `json:"elapsed" jsonschema:"wall-clock time the job has run, frozen at completion once terminal"`
 	Result  string `json:"result,omitempty" jsonschema:"the delegated agent's output. Set on any terminal state whose text could be recovered, so a failed or cancelled job can carry one too; read it in those states rather than discarding it, but check partial first. A running job carries none even once it has produced text, so collect the result once the state is terminal"`
 	Error   string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
+	// FailureReason classifies a failure so a caller can branch on the cause
+	// without scraping Error; see manager's Reason constants.
+	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota or rate-limit wall; this is transient, error carries the reset time, so wait for it before retrying, and recovery spells this out when no partial result was returned), timeout (agy-mcp killed the run for exceeding its timeout), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
 	// Recovery is tool-facing advice, not a property of the job: it is present
-	// only when a run ended terminally with no text to offer but a conversation
-	// worth continuing (for example a timeout, a cancel, a crash, or an agy error
+	// only when a run ended terminally with no text to offer but is still
+	// actionable (for example a timeout, a cancel, a crash, or an agy error
 	// before any answer was streamed), which otherwise reads as a bare empty
-	// failure (issue #151).
-	Recovery       string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result: present only on a terminal failed or cancelled job that produced no text but has a conversation_id. Start a fresh agy_run with that conversation_id to continue the thread without restating the task; the killed turn's own reasoning is not recoverable. Absent whenever any result, even a partial one, was recovered"`
+	// failure (issue #151). A quota_exhausted failure is the one case whose advice
+	// is given even without a conversation to continue: wait for the reset instead.
+	Recovery       string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result text: present only on a terminal failed or cancelled job that produced no text. Usually the job also has a conversation_id and the advice is to start a fresh agy_run with it to continue the thread without restating the task (the killed turn's own reasoning is not recoverable). The exception is a failure_reason of quota_exhausted, which is transient: the advice is to wait for the reset carried in error and then retry, and it is given even when no conversation_id was named. Absent whenever any result, even a partial one, was recovered"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Empty until agy names a fresh run's conversation, which takes about a second, so agy_status, agy_wait and agy_run_sync all report none when asked inside that window; ask again once the run is under way"`
 	// Model echoes the resolved model so a caller can see which one actually ran;
 	// see manager.Status.Model.
@@ -224,6 +228,7 @@ func toStatusOutput(st manager.Status) statusOutput {
 		Elapsed:        st.Elapsed.Round(time.Second).String(),
 		Result:         st.Result,
 		Error:          st.Error,
+		FailureReason:  st.FailureReason,
 		ConversationID: st.ConversationID,
 		Model:          st.Model,
 		Partial:        st.Partial,
@@ -239,12 +244,30 @@ func toStatusOutput(st manager.Status) statusOutput {
 			TotalTokens:     u.TotalTokens,
 		}
 	}
-	// A run that ended terminally with no text but a known conversation is the
-	// issue #151 case: a bare empty failure the caller can still act on. Offer the
-	// continuation as recovery advice. A run that produced any text (even a
-	// partial one) needs none, since its output is already in Result.
-	if out.Result == "" && out.ConversationID != "" &&
-		(out.State == manager.StateFailed || out.State == manager.StateCancelled) {
+	// Recovery is tool-facing advice for a terminal run that ended with no result
+	// text but is still actionable. BOTH branches require out.Result == "": a run
+	// that produced any text (even a partial one) has its output in Result and
+	// needs no continuation hint, and keeping that invariant is what lets a caller
+	// read the presence of recovery as "no usable result, here is what to do next"
+	// (dropping the guard on the quota branch would break that for a quota wall
+	// that streamed partial text, flipping recovery from absent to present for a
+	// job shape that already occurred). A quota wall gets its own message because
+	// the action differs: not "continue a lost thread" but "wait out a transient
+	// limit, then retry". It takes priority over the generic issue #151 hint and,
+	// unlike it, fires even when no conversation was named, since waiting for the
+	// reset and retrying is advice a fresh run can act on too.
+	switch {
+	case out.FailureReason == manager.ReasonQuotaExhausted && out.Result == "":
+		advice := "agy's model quota or rate limit is exhausted; the error message carries the reset time. " +
+			"This is transient, not a hard failure: wait for the reset, then retry"
+		if out.ConversationID != "" {
+			advice += " with this conversation_id to continue the thread without restating the task."
+		} else {
+			advice += " the run."
+		}
+		out.Recovery = advice
+	case out.Result == "" && out.ConversationID != "" &&
+		(out.State == manager.StateFailed || out.State == manager.StateCancelled):
 		out.Recovery = "no result text was recovered. " +
 			"Start a fresh agy_run with this conversation_id to continue the thread without restating the task."
 	}

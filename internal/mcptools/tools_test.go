@@ -330,3 +330,70 @@ func TestStatusOutputRecoveryHint(t *testing.T) {
 		})
 	}
 }
+
+// TestStatusOutputFailureReason: toStatusOutput echoes FailureReason to the wire
+// (omitempty, so absent unless set), and a quota wall gets its own recovery
+// advice, which takes priority over the generic issue #151 hint and points the
+// caller at the reset time rather than at continuing a lost thread.
+func TestStatusOutputFailureReason(t *testing.T) {
+	t.Parallel()
+
+	// The reason is echoed verbatim and the omitempty key is absent when unset.
+	failed := toStatusOutput(manager.Status{State: manager.StateFailed, FailureReason: manager.ReasonAgyError, Error: "model unavailable"})
+	if failed.FailureReason != manager.ReasonAgyError {
+		t.Errorf("FailureReason = %q, want %q", failed.FailureReason, manager.ReasonAgyError)
+	}
+	done, err := json.Marshal(toStatusOutput(manager.Status{State: manager.StateDone}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(done), `"failure_reason"`) {
+		t.Errorf("failure_reason key must be absent on a clean done: %s", done)
+	}
+
+	// Quota recovery: present, names the transient/reset nature, and reuses the
+	// conversation when one exists.
+	withConv := toStatusOutput(manager.Status{
+		State: manager.StateFailed, FailureReason: manager.ReasonQuotaExhausted,
+		Error: "Individual quota reached. Resets in 21m50s.", ConversationID: "c1",
+	})
+	if withConv.Recovery == "" {
+		t.Fatal("a quota wall must carry recovery advice")
+	}
+	if !strings.Contains(withConv.Recovery, "reset") {
+		t.Errorf("quota recovery should point at the reset, got %q", withConv.Recovery)
+	}
+	if !strings.Contains(withConv.Recovery, "conversation_id") {
+		t.Errorf("quota recovery with a conversation should tell the caller to reuse it, got %q", withConv.Recovery)
+	}
+
+	// A quota wall with no conversation still gets advice (wait then retry the
+	// run), where the generic issue #151 hint would have stayed silent.
+	noConv := toStatusOutput(manager.Status{
+		State: manager.StateFailed, FailureReason: manager.ReasonQuotaExhausted,
+		Error: "Individual quota reached. Resets in 21m50s.",
+	})
+	if noConv.Recovery == "" {
+		t.Error("a quota wall must carry recovery advice even without a conversation_id")
+	}
+
+	// A quota wall that DID stream partial text keeps the Recovery invariant:
+	// recovery is present only when there is no result, so a caller can read its
+	// presence as "no usable result". The partial text is in Result, and
+	// failure_reason still signals the transient wall. Before the guard, this job
+	// shape flipped recovery from absent to present (a regression).
+	withText := toStatusOutput(manager.Status{
+		State: manager.StateFailed, FailureReason: manager.ReasonQuotaExhausted,
+		Error:  "Individual quota reached. Resets in 21m50s.",
+		Result: "partial analysis", ConversationID: "c1",
+	})
+	if withText.Recovery != "" {
+		t.Errorf("a quota wall carrying partial text must not set recovery (result already holds the text), got %q", withText.Recovery)
+	}
+	if withText.Result != "partial analysis" {
+		t.Errorf("partial text must be preserved in result, got %q", withText.Result)
+	}
+	if withText.FailureReason != manager.ReasonQuotaExhausted {
+		t.Errorf("failure_reason must still signal the quota wall even with partial text, got %q", withText.FailureReason)
+	}
+}
