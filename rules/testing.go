@@ -156,5 +156,5 @@ func HttptestNewTestServer(m dsl.Matcher) {
 		`synctest.Test($_, func($*_) { $*body })`,
 	).
 		Where(m["body"].Contains(`httptest.NewServer($_)`)).
-		Report("this synctest bubble starts an httptest.NewServer on a real listener; use httptest.NewTestServer(t, handler), which serves over an in-memory network that stays inside the bubble, reachable only through srv.Client() (Go 1.27+)")
+		Report("this synctest bubble starts an httptest.NewServer on a real listener; pass the enclosing test's *testing.T to httptest.NewTestServer (with the handler) instead, which serves over an in-memory network that stays inside the bubble, reachable only through srv.Client() (Go 1.27+)")
 }

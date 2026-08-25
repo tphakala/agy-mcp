@@ -234,7 +234,7 @@ func ResponseBodyDrain(m dsl.Matcher) {
 		`_, _ = io.Copy(io.Discard, $resp.Body); _ = $resp.Body.Close(); $*rest`,
 	).
 		Where(m["resp"].Type.Is("*http.Response") && !m["rest"].Contains(`$resp.Trailer`)).
-		Report("Go 1.27's HTTP/1 transport drains an unread response body on Close (up to a conservative limit); the io.Copy(io.Discard, $resp.Body) before Close is redundant unless a large unread body is expected or $resp.Trailer is read")
+		Report("Go 1.27's standard HTTP/1 Transport drains an unread response body on Close (up to a conservative limit); for a Transport-issued response the io.Copy(io.Discard, $resp.Body) before Close is redundant, unless a large unread body is expected or $resp.Trailer is read. A custom http.RoundTripper's body may not auto-drain, so keep the copy there")
 }
 
 // URLValuesClone detects maps.Clone on url.Values and suggests the Values.Clone
