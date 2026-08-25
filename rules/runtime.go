@@ -6,7 +6,8 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 
 // PreferAddCleanup detects runtime.SetFinalizer and suggests runtime.AddCleanup.
 //
-// runtime.SetFinalizer is NOT deprecated (no Deprecated: tag as of Go 1.26), so
+// runtime.SetFinalizer is NOT deprecated (no Deprecated: tag as of Go 1.27,
+// verified: staticcheck SA1019 does not flag it, unlike tls.Config.Rand), so
 // this is an advisory preference, not a deprecation warning. AddCleanup (Go 1.24)
 // is the recommended API for new code.
 //

@@ -147,4 +147,48 @@
 // a raw net.Dial/net.Listen/http.Server.Addr address), verified empirically.
 // nosprintfhostport is enabled anyway as complementary coverage for the
 // URL-embedded case, which JoinHostPort deliberately does not flag.
+//
+// # Go 1.27 modernizers (harvested 2026-08-25, MEASURED against golangci-lint
+// 2.13.1 on go 1.27.0)
+//
+// Go 1.27 added stdlib APIs and new go fix modernizers. Each candidate matcher
+// was probed against this config's ENABLED stock analyzers (modernize,
+// staticcheck) before adding, per the overlap policy above: a probe file
+// planting every old pattern was run through golangci-lint, and a matcher was
+// added only where no stock analyzer fired.
+//
+// Added (the probe reported zero modernize/staticcheck findings on each pattern,
+// so this is unique coverage):
+//
+//   - random.go's RandMethodN: the generic Rand.N method (generic methods being
+//     the Go 1.27 language feature); no modernizer suggests it.
+//   - net.go's ResponseBodyDrain: Go 1.27's HTTP/1 auto-drain on Close makes an
+//     explicit io.Copy(io.Discard, Body) redundant; no analyzer flags it
+//     (errcheck fires only on an unchecked copy/close, a different concern).
+//   - net.go's URLValuesClone: url.Values.Clone deep-copies where maps.Clone
+//     shares the []string values; no analyzer flags the maps.Clone form.
+//   - strings.go's CutLast: strings.CutLast/bytes.CutLast replace LastIndex
+//     slicing; no analyzer suggests it.
+//   - testing.go's SynctestSleep: synctest.Sleep folds time.Sleep+synctest.Wait.
+//   - testing.go's HttptestNewTestServer: httptest.NewTestServer for a synctest
+//     bubble; no analyzer is synctest-context aware.
+//   - uuid.go's StdlibUUID: the new stdlib uuid package. Advisory and currently
+//     INERT here (agy-mcp does not import github.com/google/uuid); kept for the
+//     shared cross-project standard and to fire if that dependency is ever added.
+//
+// Declined (a stock analyzer this config already enables covers the pattern, so
+// a matcher would only lose the uniq-by-line lottery, the exact drop rule above).
+// Each was verified firing on the same probe:
+//
+//   - AtomicTypes (typed sync/atomic wrappers): modernize's atomictypes analyzer
+//     (new in Go 1.27's go fix) already fires, with autofix.
+//   - EmbeddedFieldLiteral (promoted-field struct-literal keys): modernize's
+//     embedlit analyzer (new in Go 1.27's go fix) already fires, with autofix.
+//   - tls.Config.Rand (deprecated in Go 1.27): staticcheck SA1019 already fires,
+//     and its own message names testing/cryptotest.SetGlobalRandom, so a
+//     richer-message matcher would add nothing.
+//   - runtime.SetFinalizer -> AddCleanup: this package's own PreferAddCleanup
+//     (runtime.go) already covers it; not a Go 1.27 change.
+//   - sort.Ints/Strings/Float64s -> slices.Sort: this package's own SortToSlices
+//     (slices.go) already covers it; not a Go 1.27 change.
 package gorules

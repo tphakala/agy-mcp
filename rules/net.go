@@ -205,3 +205,65 @@ func ErrorBeforeUse(m dsl.Matcher) {
 	).
 		Report("potential nil pointer: $f may be nil if $err != nil; check error before using $f.$method()")
 }
+
+// ResponseBodyDrain detects an explicit drain of an HTTP response body before
+// Close, which Go 1.27 does automatically for HTTP/1 connections.
+//
+// Old pattern:
+//
+//	io.Copy(io.Discard, resp.Body)
+//	resp.Body.Close()
+//
+// Since Go 1.27, closing an HTTP/1 Response.Body drains any unread content up to
+// a conservative limit, so that the connection can be reused. The explicit copy
+// is redundant for small bodies. It still matters for bodies larger than that
+// limit, where the automatic drain gives up and the connection is dropped, so
+// this is advisory: keep the copy only when a large unread body is expected and
+// connection reuse is worth reading it. Only a copy immediately followed by
+// Close is matched, and not when the rest of the block reads resp.Trailer:
+// trailers are populated only once the body reaches EOF, which the bounded
+// automatic drain does not guarantee. A drain that reads to EOF for another
+// reason (surfacing a read error, a non-transport body) is also left alone.
+//
+// See: https://go.dev/doc/go1.27#nethttp
+func ResponseBodyDrain(m dsl.Matcher) {
+	m.Match(
+		`io.Copy(io.Discard, $resp.Body); $resp.Body.Close(); $*rest`,
+		`io.Copy(io.Discard, $resp.Body); _ = $resp.Body.Close(); $*rest`,
+		`_, _ = io.Copy(io.Discard, $resp.Body); $resp.Body.Close(); $*rest`,
+		`_, _ = io.Copy(io.Discard, $resp.Body); _ = $resp.Body.Close(); $*rest`,
+	).
+		Where(m["resp"].Type.Is("*http.Response") && !m["rest"].Contains(`$resp.Trailer`)).
+		Report("Go 1.27's standard HTTP/1 Transport drains an unread response body on Close (up to a conservative limit); for a Transport-issued response the io.Copy(io.Discard, $resp.Body) before Close is redundant, unless a large unread body is expected or $resp.Trailer is read. A custom http.RoundTripper's body may not auto-drain, so keep the copy there")
+}
+
+// URLValuesClone detects maps.Clone on url.Values and suggests the Values.Clone
+// method added in Go 1.27.
+//
+// Old pattern:
+//
+//	v2 := maps.Clone(v)    // shares each []string value
+//
+// New pattern (Go 1.27+):
+//
+//	v2 := v.Clone()
+//
+// maps.Clone copies the map but keeps the same backing array for every value
+// slice, so Values.Add on the copy appends into storage the original still
+// references (Values.Set replaces the entry and is unaffected). Values.Clone is
+// a deep copy. Reported without an auto-fix because a caller may rely on the
+// shallow copy.
+//
+// url.URL also gained a Clone method, but a plain *u copy is not flagged: the
+// only pointer field it shares is User, and url.Userinfo is documented as
+// immutable, so the struct copy is already safe.
+//
+// See: https://pkg.go.dev/net/url#Values.Clone
+// See: https://pkg.go.dev/net/url#URL.Clone
+func URLValuesClone(m dsl.Matcher) {
+	m.Match(
+		`maps.Clone($v)`,
+	).
+		Where(m["v"].Type.Is("url.Values")).
+		Report("use $v.Clone() instead of maps.Clone($v): maps.Clone shares the []string values, Values.Clone is a deep copy (Go 1.27+)")
+}
