@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bg-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080c14" />
+      <stop offset="50%" stop-color="#0d1424" />
+      <stop offset="100%" stop-color="#05080e" />
+    </linearGradient>
+
+    <!-- Glow Gradients -->
+    <linearGradient id="cyan-violet" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00D8FF" />
+      <stop offset="100%" stop-color="#9333EA" />
+    </linearGradient>
+    <radialGradient id="cyan-glow" cx="80%" cy="50%" r="40%">
+      <stop offset="0%" stop-color="#00D8FF" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#00D8FF" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="purple-glow" cx="20%" cy="20%" r="50%">
+      <stop offset="0%" stop-color="#7C3AED" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#7C3AED" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="400" fill="url(#bg-gradient)" rx="16" />
+  <rect width="1200" height="400" fill="url(#cyan-glow)" rx="16" />
+  <rect width="1200" height="400" fill="url(#purple-glow)" rx="16" />
+  <rect width="1198" height="398" x="1" y="1" fill="none" stroke="#1E293B" stroke-width="1.5" rx="15" />
+
+  <!-- Decorative Background Grid Lines -->
+  <g stroke="#334155" stroke-opacity="0.15" stroke-width="1">
+    <line x1="100" y1="0" x2="100" y2="400" />
+    <line x1="300" y1="0" x2="300" y2="400" />
+    <line x1="500" y1="0" x2="500" y2="400" />
+    <line x1="700" y1="0" x2="700" y2="400" />
+    <line x1="900" y1="0" x2="900" y2="400" />
+    <line x1="1100" y1="0" x2="1100" y2="400" />
+    <line x1="0" y1="100" x2="1200" y2="100" />
+    <line x1="0" y1="200" x2="1200" y2="200" />
+    <line x1="0" y1="300" x2="1200" y2="300" />
+  </g>
+
+  <!-- Left: Content / Typography -->
+  <g transform="translate(80, 0)">
+    <!-- Small Category Pill -->
+    <rect x="0" y="75" width="230" height="28" rx="14" fill="#0F172A" stroke="#38BDF8" stroke-width="1" stroke-opacity="0.4" />
+    <text x="115" y="93" fill="#38BDF8" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" text-anchor="middle" letter-spacing="0.05em">MODEL CONTEXT PROTOCOL</text>
+
+    <!-- Main Title -->
+    <text x="0" y="175" fill="url(#cyan-violet)" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" letter-spacing="-0.03em">agy-mcp</text>
+
+    <!-- Tagline -->
+    <text x="0" y="225" fill="#E2E8F0" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="500">
+      Native MCP server &amp; daemon bridge for the Antigravity CLI
+    </text>
+
+    <!-- Feature Pills -->
+    <g transform="translate(0, 270)">
+      <!-- Pill 1: Go Core -->
+      <rect x="0" y="0" width="90" height="32" rx="8" fill="#1E293B" fill-opacity="0.6" stroke="#334155" stroke-width="1"/>
+      <text x="45" y="20" fill="#94A3B8" font-family="'JetBrains Mono', monospace, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Go 1.26+</text>
+
+      <!-- Pill 2: Transports -->
+      <rect x="102" y="0" width="130" height="32" rx="8" fill="#1E293B" fill-opacity="0.6" stroke="#334155" stroke-width="1"/>
+      <text x="167" y="20" fill="#94A3B8" font-family="'JetBrains Mono', monospace, sans-serif" font-size="12" font-weight="600" text-anchor="middle">stdio / HTTP</text>
+
+      <!-- Pill 3: Async Lifecycle -->
+      <rect x="244" y="0" width="150" height="32" rx="8" fill="#1E293B" fill-opacity="0.6" stroke="#334155" stroke-width="1"/>
+      <text x="319" y="20" fill="#94A3B8" font-family="'JetBrains Mono', monospace, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Async Job Control</text>
+
+      <!-- Pill 4: Clients -->
+      <rect x="406" y="0" width="170" height="32" rx="8" fill="#1E293B" fill-opacity="0.6" stroke="#334155" stroke-width="1"/>
+      <text x="491" y="20" fill="#94A3B8" font-family="'JetBrains Mono', monospace, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Claude • Cursor • Cline</text>
+    </g>
+  </g>
+
+  <!-- Right: Floating Antigravity Graphic Motif -->
+  <g transform="translate(950, 190)">
+    <!-- Outer Orbital Rings -->
+    <ellipse cx="0" cy="0" rx="140" ry="55" fill="none" stroke="#38BDF8" stroke-opacity="0.25" stroke-width="1.5" stroke-dasharray="8 6" transform="rotate(-20)" />
+    <ellipse cx="0" cy="0" rx="110" ry="40" fill="none" stroke="#A855F7" stroke-opacity="0.3" stroke-width="1.5" transform="rotate(25)" />
+
+    <!-- Levitating Geometric Cube Wireframe -->
+    <g transform="scale(1.2)">
+      <!-- Cube Back Faces -->
+      <polygon points="0,-40 35,-20 0,0 -35,-20" fill="#0C4A6E" fill-opacity="0.5" stroke="#38BDF8" stroke-width="1.5" />
+      <polygon points="-35,-20 0,0 0,40 -35,20" fill="#1E1B4B" fill-opacity="0.6" stroke="#818CF8" stroke-width="1.5" />
+      <polygon points="35,-20 0,0 0,40 35,20" fill="#3B0764" fill-opacity="0.5" stroke="#C084FC" stroke-width="1.5" />
+    </g>
+
+    <!-- Floating Gravity Particles -->
+    <circle cx="-60" cy="-70" r="3" fill="#38BDF8" opacity="0.8" />
+    <circle cx="80" cy="-50" r="2" fill="#A855F7" opacity="0.7" />
+    <circle cx="50" cy="65" r="3.5" fill="#38BDF8" opacity="0.6" />
+    <circle cx="-75" cy="45" r="2.5" fill="#C084FC" opacity="0.9" />
+  </g>
+</svg>

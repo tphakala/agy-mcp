@@ -1,11 +1,16 @@
-# agy-mcp
+<p align="center">
+  <img src="assets/agy-mcp.svg" alt="agy-mcp Banner" width="100%">
+</p>
 
-[![CI](https://github.com/tphakala/agy-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/tphakala/agy-mcp/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/tphakala/agy-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/tphakala/agy-mcp/actions/workflows/codeql.yml)
-[![Version](https://img.shields.io/github/v/tag/tphakala/agy-mcp?label=version&sort=semver)](https://github.com/tphakala/agy-mcp/tags)
-[![Go Reference](https://pkg.go.dev/badge/github.com/tphakala/agy-mcp/v2.svg)](https://pkg.go.dev/github.com/tphakala/agy-mcp/v2)
-[![Coverage](https://codecov.io/gh/tphakala/agy-mcp/branch/main/graph/badge.svg)](https://codecov.io/gh/tphakala/agy-mcp)
-[![License: MIT](https://img.shields.io/github/license/tphakala/agy-mcp)](LICENSE)
+<p align="center">
+  <a href="https://github.com/tphakala/agy-mcp/actions/workflows/ci.yml"><img src="https://github.com/tphakala/agy-mcp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tphakala/agy-mcp/actions/workflows/codeql.yml"><img src="https://github.com/tphakala/agy-mcp/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://github.com/tphakala/agy-mcp/tags"><img src="https://img.shields.io/github/v/tag/tphakala/agy-mcp?label=version&sort=semver" alt="Version"></a>
+  <a href="https://pkg.go.dev/github.com/tphakala/agy-mcp/v2"><img src="https://pkg.go.dev/badge/github.com/tphakala/agy-mcp/v2.svg" alt="Go Reference"></a>
+  <a href="https://codecov.io/gh/tphakala/agy-mcp"><img src="https://codecov.io/gh/tphakala/agy-mcp/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/tphakala/agy-mcp" alt="License: MIT"></a>
+  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-Protocol-00ADD8" alt="MCP Spec"></a>
+</p>
 
 An MCP (Model Context Protocol) server that wraps the [Antigravity CLI](https://antigravity.google) (`agy`), so any MCP client (Claude Code, Cursor, Cline, and others) can run `agy` prompts, peer reviews, and follow-up turns as native tools.
 
