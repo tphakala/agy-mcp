@@ -58,7 +58,7 @@ Two transports run the same core:
   The version is checked once per process, the first time a tool actually needs agy, and the verdict is cached. A binary that is too old is reported as `agy 1.1.15 or newer is required ...; found 1.1.7 at /usr/local/bin/agy`. A failed check is deliberately not cached, so upgrading agy is picked up without restarting the server.
 
   A missing `agy` does not stop the server from starting. `initialize`, `tools/list`, and `list_sessions` never exec it, so the lookup is deferred: the server starts, logs a warning to stderr, serves discovery normally, and the tools that do need the binary (`agy_run`, `agy_run_sync`, `list_models`) fail per call with `agy not found on PATH; set AGY_MCP_AGY_PATH`. An `agy` installed later is picked up without restarting the server. An explicit `AGY_MCP_AGY_PATH` is treated differently: it is a claim about one specific binary, so a typo or a non-executable target still fails fast at startup.
-- Go 1.26+ to build.
+- Go 1.27+ to build.
 - The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_run_sync` / `agy_status` / `agy_cancel`) is implemented on **Linux** and **macOS** (process groups, SIGTERM cancel, an advisory flock) and on **Windows** (Job Objects, `OpenProcess` + process creation time, `LockFileEx`); stdio/HTTP serving, `list_models`, and `list_sessions` work identically everywhere.
 
   Windows behaves the same as Linux with two documented differences:
