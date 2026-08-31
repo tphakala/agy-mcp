@@ -78,17 +78,25 @@ func consumeStream(jobDir string, r io.Reader, out io.Writer) streamOutcome {
 				// contributed. agy streams one agent_response step as many text_delta
 				// events (the ACTIVE states carry successive chunks, the DONE state the
 				// final tail), so appending every one in arrival order reproduces the
-				// response: for a single-response run, concatenating its agent_response
-				// deltas matched its terminal result byte-for-byte (MEASURED against agy
-				// 1.1.15). A run
-				// with several agent_response steps accumulates all of them, which is
-				// more context than the terminal result carries. The manager reads it
+				// response.
+				//
+				// MEASURED against agy 1.1.15, and re-measured against 1.1.22: a
+				// 9448-byte response arrived as 38 ACTIVE deltas of 125 to 226 bytes
+				// each plus a 2248-byte DONE tail, all on one step_index, and
+				// concatenating all 39 equalled the terminal result byte for byte
+				// (non-ASCII text included). A response short enough to fit one chunk
+				// arrives as a single DONE delta instead, with no ACTIVE events at all
+				// (also MEASURED against 1.1.22), so both shapes have to work.
+				//
+				// A run with several agent_response steps accumulates all of them, which
+				// is more context than the terminal result carries. The manager reads it
 				// when no terminal result reached disk, and also when one did but carried
 				// no response of its own, since then this is the only text there is.
 				//
 				// Do NOT dedup by step_index to "skip repeats": the deltas are not
 				// repeats and agy does not emit one per step, so a step-indexed filter
 				// would drop every ACTIVE chunk and keep only the final tail.
+				// TestConsumeStreamAccumulatesChunksWithinOneStep pins exactly that.
 				if su.StepType == streamjson.StepTypeAgentResponse && su.TextDelta != "" {
 					// A failed append costs partial-result fidelity, nothing more: the
 					// terminal result event is the authoritative response and is written
