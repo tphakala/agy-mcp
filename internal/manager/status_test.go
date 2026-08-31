@@ -729,6 +729,44 @@ func TestStatusSpawnFail(t *testing.T) {
 // TestStatusExit127SurfacesStderr: 127 is also a valid agy exit code, so when
 // agy itself exits 127 (with stderr) the message must surface that stderr rather
 // than masking it behind the spawn-failure text.
+// spawnFailMessage names an unreadable stderr rather than dropping the error,
+// the same way errorSummary does. Without this the branch has no coverage at
+// all, and removing it leaves the whole package green.
+//
+// POSIX only, for the reason TestErrorSummaryDistinguishesEmptyStderr's
+// unreadable row is: on Windows a directory's Size() is 0, so tailFile sizes a
+// zero-length buffer and ReadAt returns (0, nil) without reading, so the read
+// never fails and there is no error to name.
+func TestStatusSpawnFailNamesUnreadableStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory does not make tailFile's read fail on Windows")
+	}
+	m := newManager(t, managerOpts{})
+	dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Mkdir(jobstore.ErrPath(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode("j", jobstore.ExitSpawnFail); err != nil {
+		t.Fatalf("WriteExitCode: %v", err)
+	}
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !strings.Contains(st.Error, "stderr unavailable:") {
+		t.Fatalf("error = %q, want the unreadable stderr named", st.Error)
+	}
+	// The 127 explanation must survive alongside it, so the added clause
+	// supplements the message rather than replacing it.
+	if !strings.Contains(st.Error, "could not exec the agy binary") {
+		t.Fatalf("error = %q, want the spawn-failure explanation kept", st.Error)
+	}
+}
+
 func TestStatusExit127SurfacesStderr(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})

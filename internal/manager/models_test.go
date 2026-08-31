@@ -22,6 +22,30 @@ func TestListModelsIncludesStderrOnError(t *testing.T) {
 	}
 }
 
+// A whitespace-only stderr is not a message: appending it would produce
+// "agy models: exit status 1: " with nothing after the separator, the same
+// dangling-separator shape errorSummary and spawnFailMessage were fixed for.
+// TestListModelsIncludesStderrOnError only covers a stderr with content, so
+// without this the trim is unpinned.
+func TestListModelsOmitsWhitespaceOnlyStderr(t *testing.T) {
+	skipIfWindows(t, "Unix-specific: WriteFakeAgy emits a bash script that is not executable on Windows")
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stderr: " \n\t ", Exit: 1})
+	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
+
+	_, err := m.ListModels(t.Context())
+	if err == nil {
+		t.Fatal("ListModels must fail when agy exits non-zero")
+	}
+	if strings.HasSuffix(err.Error(), ": ") || strings.HasSuffix(err.Error(), ":") {
+		t.Fatalf("err = %q, ends in a dangling separator with no message after it", err)
+	}
+	// Positive control: the failure itself must still be reported, so the trim
+	// cannot pass by swallowing the error entirely.
+	if !strings.Contains(err.Error(), "agy models:") {
+		t.Fatalf("err = %q, want it to name the failing command", err)
+	}
+}
+
 // TestDecodeModelsEnvelope pins how agy's JSON models envelope becomes Models:
 // the id/label pairs come from command.data.models, a label-less entry keeps an
 // empty label rather than being dropped, an empty models array is a valid empty
