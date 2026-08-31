@@ -92,10 +92,11 @@ func TestSupervisorCapturesOutputAndSentinel(t *testing.T) {
 // End-to-end counterpart to TestConsumeStreamAccumulatesChunksWithinOneStep:
 // the fake emits the response as several ACTIVE deltas plus a DONE tail on one
 // step, the way agy streams a long response, and the supervisor must land the
-// whole thing in the out file. The direct consumeStream test pins the decoder;
-// this pins the path a real run takes, including the fake that stands in for
-// agy, so the two cannot drift apart.
-func TestSupervisorAccumulatesChunkedDeltas(t *testing.T) {
+// whole thing in the out file with its non-ASCII runes intact. The direct
+// consumeStream test pins the decoder; this pins the path a real run takes,
+// through the fake and onto disk. It does not pin the fake's own delta emission:
+// TestFakeAgyStreamChunksEmitsManyDeltasOnOneStep does that.
+func TestSupervisorLandsWholeChunkedResponseIntact(t *testing.T) {
 	dir := t.TempDir()
 	// Long enough that chunking is meaningful, and non-ASCII so a chunk boundary
 	// landing inside a multi-byte rune would corrupt the reassembly.
@@ -113,8 +114,11 @@ func TestSupervisorAccumulatesChunkedDeltas(t *testing.T) {
 	if string(out) != answer {
 		t.Fatalf("out = %q, want the concatenation of every delta %q", out, answer)
 	}
-	// The terminal result carries the same text, so out matching it is the
-	// property the manager relies on when it falls back to the streamed text.
+	// The terminal result carries the whole answer too. Comparing it to the
+	// answer directly, not to out, keeps this check independent of the out
+	// assertion above, so a bug that corrupted both identically cannot satisfy
+	// both. Result matching the streamed text is what the manager relies on when
+	// it falls back to the streamed text.
 	res, err := jobstore.ReadResultDir(dir)
 	if err != nil {
 		t.Fatalf("read result: %v", err)
@@ -123,8 +127,8 @@ func TestSupervisorAccumulatesChunkedDeltas(t *testing.T) {
 	if err := json.Unmarshal(res, &got); err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
-	if got.Response != string(out) {
-		t.Fatalf("result response %q != streamed out %q", got.Response, out)
+	if got.Response != answer {
+		t.Fatalf("result response %q != the whole answer %q", got.Response, answer)
 	}
 }
 

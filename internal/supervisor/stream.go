@@ -95,8 +95,8 @@ func consumeStream(jobDir string, r io.Reader, out io.Writer) streamOutcome {
 				//
 				// Do NOT dedup by step_index to "skip repeats": the deltas are not
 				// repeats and agy does not emit one per step, so a step-indexed filter
-				// would drop every ACTIVE chunk and keep only the final tail.
-				// TestConsumeStreamAccumulatesChunksWithinOneStep pins exactly that.
+				// would keep one delta of the step and drop the rest, whichever way it
+				// dedups. TestConsumeStreamAccumulatesChunksWithinOneStep pins exactly that.
 				if su.StepType == streamjson.StepTypeAgentResponse && su.TextDelta != "" {
 					// A failed append costs partial-result fidelity, nothing more: the
 					// terminal result event is the authoritative response and is written

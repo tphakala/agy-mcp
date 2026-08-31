@@ -54,9 +54,8 @@ func TestConfigureGroupPreservesExistingFlags(t *testing.T) {
 	}
 }
 
-// ConfigureNoWindow is what keeps the manager's short-lived probes (the
-// `agy --version` check and the models listing) from flashing a console window
-// when the manager itself has no console to inherit.
+// ConfigureNoWindow is what keeps the manager's short-lived probes from flashing
+// a console window when the manager itself has no console to inherit.
 func TestConfigureNoWindowSetsCreateNoWindow(t *testing.T) {
 	cmd := exec.Command("cmd.exe", "/c", "exit")
 	ConfigureNoWindow(cmd)
@@ -65,13 +64,15 @@ func TestConfigureNoWindowSetsCreateNoWindow(t *testing.T) {
 	}
 }
 
-// The probes want window suppression alone: a new process group would change how
-// console control events reach them, and neither probe is supervised as a tree.
-// Asserting the absence keeps ConfigureNoWindow from quietly becoming an alias
-// for ConfigureGroup.
+// The probes want window suppression alone, and neither probe is supervised as a
+// tree. Asserting the absence keeps ConfigureNoWindow from quietly becoming an
+// alias for ConfigureGroup.
 func TestConfigureNoWindowDoesNotStartNewProcessGroup(t *testing.T) {
 	cmd := exec.Command("cmd.exe", "/c", "exit")
 	ConfigureNoWindow(cmd)
+	if cmd.SysProcAttr == nil {
+		t.Fatal("ConfigureNoWindow must set SysProcAttr")
+	}
 	if cmd.SysProcAttr.CreationFlags&windows.CREATE_NEW_PROCESS_GROUP != 0 {
 		t.Error("ConfigureNoWindow must not set CREATE_NEW_PROCESS_GROUP")
 	}

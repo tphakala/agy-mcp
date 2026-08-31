@@ -109,10 +109,9 @@ func TestConsumeStreamAccumulatesDeltas(t *testing.T) {
 }
 
 // agy streams one agent_response step as MANY text_delta events: successive
-// ACTIVE chunks followed by a DONE tail, all sharing one step_index (MEASURED
-// against agy 1.1.22: a 9448-byte response arrived as 38 ACTIVE deltas plus a
-// 2248-byte DONE tail, and concatenating all 39 equalled the terminal result
-// byte for byte).
+// ACTIVE chunks followed by a DONE tail, all sharing one step_index (the shape,
+// and the measurement behind it, are recorded at consumeStream's append site in
+// stream.go).
 //
 // This is the shape TestConsumeStreamAccumulatesDeltas does NOT cover: that one
 // gives every delta a distinct step_index, so a dedup keyed on step_index keeps
@@ -137,21 +136,6 @@ func TestConsumeStreamAccumulatesChunksWithinOneStep(t *testing.T) {
 	// satisfied by lines that were skipped rather than accumulated.
 	if oc.malformed != 0 {
 		t.Fatalf("malformed = %d, want 0", oc.malformed)
-	}
-}
-
-// The DONE tail alone is not the answer. Pinned separately because it is the
-// exact regression a `state == "DONE"` filter would introduce, and because that
-// filter still leaves the test above failing in a way that could be mistaken for
-// an ordering bug rather than a dropped-chunk bug.
-func TestConsumeStreamDoesNotKeepOnlyTheDoneTail(t *testing.T) {
-	stream := `{"event":"init","conversation_id":"c-1"}
-{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"dropped-if-done-only "}}
-{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"tail"}}
-`
-	_, out, _ := consume(t, stream)
-	if got := out.String(); got == "tail" {
-		t.Fatal("out kept only the DONE tail; the ACTIVE chunk before it was dropped")
 	}
 }
 

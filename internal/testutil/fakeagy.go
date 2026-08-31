@@ -31,8 +31,9 @@ const defaultFakeConversationID = "11111111-2222-3333-4444-555555555555"
 // hand-rolling JSON escaping in shell.
 type FakeAgy struct {
 	// Stdout is the response text. It is emitted as the agent_response step's
-	// text_delta and as the terminal result's response, mirroring what real agy
-	// does for a single-turn run.
+	// text_delta (one delta, or several when StreamChunks splits it) and as the
+	// terminal result's response, mirroring what real agy does for a single-turn
+	// run.
 	Stdout string
 	Stderr string        // printed to stderr
 	Exit   int           // exit code
@@ -59,21 +60,26 @@ type FakeAgy struct {
 	// in for a run cut short before agy could summarize it.
 	OmitResult bool
 
-	// StreamChunks splits Stdout across that many agent_response text_delta
-	// events on a SINGLE step: the first StreamChunks-1 in ACTIVE state, the
-	// remainder as the DONE tail. It reproduces how agy streams a response long
-	// enough to chunk (MEASURED against agy 1.1.22: a 9448-byte response arrived
-	// as 38 ACTIVE deltas of 125 to 226 bytes each plus a 2248-byte DONE tail,
-	// and concatenating all 39 equalled the terminal result byte for byte).
+	// StreamChunks splits Stdout across up to that many agent_response text_delta
+	// events on a SINGLE step: every delta but the last in ACTIVE state, the last
+	// as the DONE tail. The count is an upper bound, clamped to one piece per rune,
+	// so a value above the rune count yields one delta per rune rather than empty
+	// ones. It reproduces the SHAPE of how agy streams a response long enough to
+	// chunk (several ACTIVE deltas on one step, then a DONE tail), not agy's own
+	// size distribution: the pieces here are roughly equal, so this tail is
+	// chunk-sized, where agy's measured tail is many times one of its chunks. See
+	// stream.go for the measured distribution.
 	//
-	// Zero or one emits the single DONE delta carrying the whole response, which
-	// is what agy does for a response short enough to fit one chunk (also
-	// MEASURED against 1.1.22) and what every existing test expects. Splitting is
-	// by rune, so a chunk boundary never lands inside a multi-byte character.
+	// Zero, one or a negative value emits the single DONE delta carrying the whole
+	// response, which is what agy does for a response short enough to fit one chunk
+	// (MEASURED against agy 1.1.22) and what every existing test expects. Splitting
+	// is by rune, so a chunk boundary never lands inside a multi-byte character.
 	//
-	// Whatever the value, the deltas always concatenate to Stdout, which is also
-	// the Response the terminal result carries, so a consumer that accumulates
-	// every delta reproduces the result exactly.
+	// Whatever the value, the deltas concatenate to Stdout as it appears on the
+	// wire, which is also the Response the terminal result carries, so a consumer
+	// that accumulates every delta reproduces the result exactly. At the Go-string
+	// level an invalid-UTF-8 Stdout differs, since the rune split substitutes
+	// U+FFFD; json.Marshal coerces both sides identically, so the wire forms match.
 	StreamChunks int
 
 	// Version is what the script reports for `agy --version`, which the manager
@@ -196,9 +202,11 @@ func (cfg FakeAgy) result() streamjson.Result {
 // splits on rune boundaries so a piece is never invalid UTF-8, and always
 // returns at least one piece (the whole text) so the caller emits the same
 // single DONE delta it always did for n of 0 or 1. n larger than the rune count
-// yields one piece per rune rather than empty ones, because consumeStream skips
-// an empty delta and an empty piece would silently reduce the chunk count the
-// caller asked for.
+// is clamped to the rune count (one piece per rune) rather than producing empty
+// pieces: unclamped, the last piece would be empty, so streamLines would emit a
+// DONE tail carrying no text, a shape real agy never produces. The second n <= 1
+// check after the clamp is load-bearing: it returns early on empty text, whose
+// rune count clamps n to 0 and would otherwise divide by zero at len(runes) / n.
 func splitChunks(text string, n int) []string {
 	if n <= 1 {
 		return []string{text}

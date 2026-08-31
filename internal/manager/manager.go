@@ -163,6 +163,15 @@ func (m *Manager) agyBinaryChecked(ctx context.Context) (string, error) {
 	return agy, nil
 }
 
+// probeCmd builds the command for one of the manager's short-lived agy probes.
+// It exists so the console-window suppression both probes need is applied in one
+// place a test can inspect, rather than being remembered separately at each site.
+func probeCmd(ctx context.Context, agy string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, agy, args...)
+	proc.ConfigureNoWindow(cmd)
+	return cmd
+}
+
 // readAgyVersion runs `agy --version` and returns its raw output.
 //
 // A non-zero exit is deliberately not treated as failure: --version is not
@@ -173,11 +182,7 @@ func (m *Manager) agyBinaryChecked(ctx context.Context) (string, error) {
 func readAgyVersion(ctx context.Context, agy string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, versionCheckTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, agy, "--version")
-	// Suppress the console window this probe would otherwise flash on Windows when
-	// the manager itself has no console to inherit (an MCP client launching it from
-	// a GUI app). No-op elsewhere.
-	proc.ConfigureNoWindow(cmd)
+	cmd := probeCmd(ctx, agy, "--version")
 	// Without this, killing the process on deadline does not unblock the output
 	// copy: CombinedOutput reads through a pipe whose write end agy's descendants
 	// inherit, so a grandchild that outlives the kill holds the read open and the

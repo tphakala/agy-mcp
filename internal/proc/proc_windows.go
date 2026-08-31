@@ -39,13 +39,13 @@ func ConfigureGroup(cmd *exec.Cmd) {
 }
 
 // ConfigureNoWindow suppresses the console window of a short-lived child without
-// otherwise changing how it is spawned. It is for the probes the manager runs
-// directly (`agy --version`, the models listing), which want neither a new
-// process group nor Job Object supervision, only the window suppression.
+// otherwise changing how it is spawned. It is for the short-lived probes the
+// manager runs directly, which want neither a new process group nor Job Object
+// supervision, only the window suppression.
 //
 // A console-mode child that cannot inherit a console gets a fresh one allocated,
-// and that console has a visible window, so a manager launched from a GUI app
-// rather than a terminal would otherwise flash one window per probe.
+// and that console has a visible window, so a manager with no console of its own
+// would otherwise flash one window per probe.
 func ConfigureNoWindow(cmd *exec.Cmd) {
 	ensureSysProcAttr(cmd)
 	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW

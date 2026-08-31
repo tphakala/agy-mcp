@@ -179,7 +179,10 @@ func TestFakeAgyDefaultsToOneDoneDelta(t *testing.T) {
 // delta ever carries.
 func TestSplitChunks(t *testing.T) {
 	const text = "the quick brown fox jumps over the lazy dog"
-	const unicode = "hyvää yötä \u00e4\u00f6\u00e5 \u4f60\u597d\u4e16\u754c emoji"
+	// A 4-byte rune (U+1D11E, outside the BMP) is included so a byte-wise split has
+	// a wide rune to cut through; the earlier fixture's trailing "emoji" was ASCII,
+	// so no rune above 3 bytes was ever exercised despite the naming.
+	const multibyte = "hyvää yötä \u00e4\u00f6\u00e5 \u4f60\u597d\u4e16\u754c \U0001D11E"
 
 	for _, tc := range []struct {
 		name      string
@@ -193,8 +196,11 @@ func TestSplitChunks(t *testing.T) {
 		{"splits into n", text, 4, 4},
 		{"uneven split", text, 5, 5},
 		{"n equal to rune count", "abcd", 4, 4},
-		{"n above rune count clamps", "abcd", 99, 4},
-		{"unicode splits on runes", unicode, 6, 6},
+		// A multi-byte string here, not ASCII: with rune count == byte count the
+		// clamp does not discriminate a rune split from a byte split.
+		{"n above rune count clamps", "äö", 99, 2},
+		{"unicode splits on runes", multibyte, 5, 5},
+		{"unicode splits on runes, uneven", multibyte, 7, 7},
 		{"empty text", "", 4, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

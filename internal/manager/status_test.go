@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -114,34 +115,70 @@ func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
 }
 
 // errorSummary must tell three cases apart, because this string is all a caller
-// sees for a non-zero exit that left no result payload. The empty-stderr case is
+// sees for a non-zero exit with no error message from a result payload (no
+// payload, or a payload whose Error was empty). The empty-stderr case is
 // the one that used to render as a dangling "exit N:", which reads as a message
 // that got cut off rather than as the absence of one. MEASURED against agy
 // 1.1.22: a run terminating non-zero with nothing on stderr does occur, and its
 // status Error was exactly "exit 1:".
 func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		stderr  string
-		writeIt bool
-		code    int
-		want    string
+		name       string
+		stderr     string
+		writeIt    bool
+		errIsDir   bool
+		code       int
+		want       string
+		wantPrefix bool
 	}{
 		{name: "stderr with content", stderr: "boom", writeIt: true, code: 1, want: "exit 1: boom"},
-		{name: "trailing newline trimmed", stderr: "boom\n\n", writeIt: true, code: 2, want: "exit 2: boom"},
+		{name: "trailing whitespace trimmed", stderr: "boom\n\n", writeIt: true, code: 2, want: "exit 2: boom"},
+		// Leading whitespace is part of the message and must survive: cleanTail
+		// trims only the trailing end. This pins the parity a TrimRightFunc ->
+		// TrimSpace change would break.
+		{name: "leading whitespace preserved", stderr: "  boom  \n", writeIt: true, code: 1, want: "exit 1:   boom"},
 		{name: "empty stderr file", stderr: "", writeIt: true, code: 1, want: "exit 1 (no stderr output)"},
 		{name: "whitespace-only stderr", stderr: "  \t\n ", writeIt: true, code: 3, want: "exit 3 (no stderr output)"},
 		{name: "no stderr file at all", writeIt: false, code: 4, want: "exit 4 (no stderr output)"},
+		// A directory at the stderr path makes tailFile's read fail, which is the
+		// only way to reach errorSummary's <stderr unavailable> branch. POSIX only:
+		// see the skip below.
+		{name: "unreadable stderr", errIsDir: true, code: 5, want: "exit 5: <stderr unavailable:", wantPrefix: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
-			dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-			if tc.writeIt {
+			dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			switch {
+			case tc.errIsDir:
+				// A directory reads as an error on POSIX, but not on Windows: there a
+				// directory's Size() is 0, so tailFile sizes a zero-length buffer and
+				// (*os.File).ReadAt returns (0, nil) without ever reading, leaving
+				// tail empty and no error. Skipping keeps this row honest rather than
+				// asserting a branch the platform cannot reach. NOT MEASURED on
+				// Windows; derived from tailFile's buffer sizing and ReadAt's
+				// len(b) > 0 loop.
+				if runtime.GOOS == "windows" {
+					t.Skip("a directory does not make tailFile's read fail on Windows")
+				}
+				if err := os.Mkdir(jobstore.ErrPath(dir), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			case tc.writeIt:
 				if err := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if got := errorSummary(dir, tc.code); got != tc.want {
+			got := errorSummary(dir, tc.code)
+			if tc.wantPrefix {
+				if !strings.HasPrefix(got, tc.want) {
+					t.Errorf("errorSummary = %q, want prefix %q", got, tc.want)
+				}
+				return
+			}
+			if got != tc.want {
 				t.Errorf("errorSummary = %q, want %q", got, tc.want)
 			}
 		})
@@ -151,7 +188,7 @@ func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
 // The same absence, seen through Status, which is where a caller actually meets
 // it. Pinned separately so the message cannot regress only on the path that
 // matters while the unit test above still passes.
-func TestStatusFailedWithEmptyStderrNamesTheAbsence(t *testing.T) {
+func TestStatusFailedWithMissingStderrNamesTheAbsence(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	_, _ = m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
 	_ = m.store.WriteExitCode("j", 1)
@@ -165,9 +202,6 @@ func TestStatusFailedWithEmptyStderrNamesTheAbsence(t *testing.T) {
 	}
 	if st.Error != "exit 1 (no stderr output)" {
 		t.Fatalf("error = %q, want the absence named rather than a dangling colon", st.Error)
-	}
-	if strings.HasSuffix(st.Error, ":") {
-		t.Errorf("error %q ends in a dangling colon", st.Error)
 	}
 }
 
