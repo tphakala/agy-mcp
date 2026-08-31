@@ -23,10 +23,19 @@ func ensureSysProcAttr(cmd *exec.Cmd) {
 // ConfigureGroup marks the spawned process as the root of a new process group so
 // it is isolated from the parent's console control events. The supervisor uses it
 // for agy; the process tree is actually terminated via the Job Object captured by
-// Track. It ORs the flag into any CreationFlags a caller set first.
+// Track. It ORs the flags into any CreationFlags a caller set first.
+//
+// CREATE_NO_WINDOW additionally runs the child without a console. The supervisor
+// is itself started with DETACHED_PROCESS and so has no console to hand down, and
+// a console-mode child that cannot inherit one has a fresh console allocated for
+// it, which is a visible window. Suppressing it costs nothing: agy's stdio are
+// redirected to a devnull/pipe/file trio, and its tree is killed through the Job
+// Object rather than console control events. The flag stays effective alongside
+// CREATE_NEW_PROCESS_GROUP; it is ignored only for a non-console application or
+// with CREATE_NEW_CONSOLE or DETACHED_PROCESS, none of which apply here.
 func ConfigureGroup(cmd *exec.Cmd) {
 	ensureSysProcAttr(cmd)
-	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW
 }
 
 // StartDetached configures cmd so the spawned supervisor is detached from the
