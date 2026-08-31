@@ -108,6 +108,37 @@ func TestConsumeStreamAccumulatesDeltas(t *testing.T) {
 	}
 }
 
+// agy streams one agent_response step as MANY text_delta events: successive
+// ACTIVE chunks followed by a DONE tail, all sharing one step_index (the shape,
+// and the measurement behind it, are recorded at consumeStream's append site in
+// stream.go).
+//
+// This is the shape TestConsumeStreamAccumulatesDeltas does NOT cover: that one
+// gives every delta a distinct step_index, so a dedup keyed on step_index keeps
+// all three and passes. Here the indexes are identical, so such a dedup keeps
+// one delta and drops the rest.
+//
+// The stream deliberately carries no result event, so out is the only place the
+// text can be observed and the assertion cannot pass off the terminal payload.
+func TestConsumeStreamAccumulatesChunksWithinOneStep(t *testing.T) {
+	stream := `{"event":"init","conversation_id":"c-1"}
+{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"chunk one "}}
+{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"chunk two "}}
+{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"chunk three "}}
+{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"the tail"}}
+`
+	_, out, oc := consume(t, stream)
+	const want = "chunk one chunk two chunk three the tail"
+	if got := out.String(); got != want {
+		t.Fatalf("out = %q, want %q; every delta of a step must be appended, ACTIVE ones included", got, want)
+	}
+	// Positive control: all four lines decoded, so the equality above cannot be
+	// satisfied by lines that were skipped rather than accumulated.
+	if oc.malformed != 0 {
+		t.Fatalf("malformed = %d, want 0", oc.malformed)
+	}
+}
+
 // A run cut off before its result event still leaves its conversation behind,
 // which is what lets the manager report a continuable partial result. This
 // fixture's cut lands mid-line, so the truncated step contributes no text: the

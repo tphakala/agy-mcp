@@ -95,15 +95,17 @@ func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
 	// `models` subcommand; agy rejects `models --output-format json` outright
 	// (the subcommand flagset does not define it). The listing banner stays on
 	// stderr, so stdout is the envelope alone.
-	cmd := exec.CommandContext(ctx, agy, outputFormatFlag, jsonOutputFormat, "models")
+	cmd := probeCmd(ctx, agy, outputFormatFlag, jsonOutputFormat, "models")
 	cmd.WaitDelay = listModelsKillGrace
 	out, err := cmd.Output()
 	if err != nil {
 		// Output() captures stderr into (*exec.ExitError).Stderr; include it so a
 		// real cause (an auth prompt, a usage error) is visible instead of a bare
 		// "exit status 1".
-		if ee, ok := errors.AsType[*exec.ExitError](err); ok && len(ee.Stderr) > 0 {
-			return nil, fmt.Errorf("agy models: %w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			if stderr := strings.TrimSpace(string(ee.Stderr)); stderr != "" {
+				return nil, fmt.Errorf("agy models: %w: %s", err, stderr)
+			}
 		}
 		return nil, fmt.Errorf("agy models: %w", err)
 	}

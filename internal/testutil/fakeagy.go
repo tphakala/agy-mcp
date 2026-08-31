@@ -31,8 +31,9 @@ const defaultFakeConversationID = "11111111-2222-3333-4444-555555555555"
 // hand-rolling JSON escaping in shell.
 type FakeAgy struct {
 	// Stdout is the response text. It is emitted as the agent_response step's
-	// text_delta and as the terminal result's response, mirroring what real agy
-	// does for a single-turn run.
+	// text_delta (one delta, or several when StreamChunks splits it) and as the
+	// terminal result's response, mirroring what real agy does for a single-turn
+	// run.
 	Stdout string
 	Stderr string        // printed to stderr
 	Exit   int           // exit code
@@ -58,6 +59,28 @@ type FakeAgy struct {
 	// OmitResult emits the init and step events but no terminal result, standing
 	// in for a run cut short before agy could summarize it.
 	OmitResult bool
+
+	// StreamChunks splits Stdout across up to that many agent_response text_delta
+	// events on a SINGLE step: every delta but the last in ACTIVE state, the last
+	// as the DONE tail. The count is an upper bound, clamped to one piece per rune,
+	// so a value above the rune count yields one delta per rune rather than empty
+	// ones. It reproduces the SHAPE of how agy streams a response long enough to
+	// chunk (several ACTIVE deltas on one step, then a DONE tail), not agy's own
+	// size distribution: the pieces here are roughly equal, so this tail is
+	// chunk-sized, where agy's measured tail is many times one of its chunks. See
+	// stream.go for the measured distribution.
+	//
+	// Zero, one or a negative value emits the single DONE delta carrying the whole
+	// response, which is what agy does for a response short enough to fit one chunk
+	// (MEASURED against agy 1.1.22) and what every existing test expects. Splitting
+	// is by rune, so a chunk boundary never lands inside a multi-byte character.
+	//
+	// Whatever the value, the deltas concatenate to Stdout as it appears on the
+	// wire, which is also the Response the terminal result carries, so a consumer
+	// that accumulates every delta reproduces the result exactly. At the Go-string
+	// level an invalid-UTF-8 Stdout differs, since the rune split substitutes
+	// U+FFFD; json.Marshal coerces both sides identically, so the wire forms match.
+	StreamChunks int
 
 	// Version is what the script reports for `agy --version`, which the manager
 	// probes once before it will run anything. Defaults to the minimum agy-mcp
@@ -175,6 +198,43 @@ func (cfg FakeAgy) result() streamjson.Result {
 	}
 }
 
+// splitChunks divides text into n roughly equal pieces for StreamChunks. It
+// splits on rune boundaries so a piece is never invalid UTF-8, and always
+// returns at least one piece (the whole text) so the caller emits the same
+// single DONE delta it always did for n of 0 or 1. n larger than the rune count
+// is clamped to the rune count (one piece per rune) rather than producing empty
+// pieces: unclamped, the last piece would be empty, so streamLines would emit a
+// DONE tail carrying no text, a shape real agy never produces. The second n <= 1
+// check after the clamp is load-bearing: it returns early on empty text, whose
+// rune count clamps n to 0 and would otherwise divide by zero at len(runes) / n.
+func splitChunks(text string, n int) []string {
+	if n <= 1 {
+		return []string{text}
+	}
+	runes := []rune(text)
+	if n > len(runes) {
+		n = len(runes)
+	}
+	if n <= 1 {
+		return []string{text}
+	}
+	out := make([]string, 0, n)
+	per := len(runes) / n
+	rem := len(runes) % n
+	start := 0
+	for i := range n {
+		// Spread the remainder over the first rem pieces, so the pieces differ by
+		// at most one rune and none is empty.
+		size := per
+		if i < rem {
+			size++
+		}
+		out = append(out, string(runes[start:start+size]))
+		start += size
+	}
+	return out
+}
+
 // streamLines renders the configured run as agy's stream-json output, which
 // WriteFakeAgy stages as the script's stdout payload. It is unexported because the
 // only consumer is in this file. One candidate does exist if anyone wants it back:
@@ -187,16 +247,27 @@ func (cfg FakeAgy) streamLines(t *testing.T) string {
 		Kind:           streamjson.EventInit,
 		ConversationID: convID,
 		Init:           &streamjson.Init{Cwd: ".", PermissionMode: "request-review"},
-	}, {
-		Kind: streamjson.EventStepUpdate,
-		StepUpdate: &streamjson.StepUpdate{
-			ConversationID: convID,
-			StepIndex:      0,
-			State:          "DONE",
-			StepType:       streamjson.StepTypeAgentResponse,
-			TextDelta:      cfg.Stdout,
-		},
 	}}
+	// One step, one or more deltas. Every chunk but the last is ACTIVE; the last
+	// is the DONE tail, so a single-chunk run is byte-identical to the single
+	// DONE event this fake emitted before StreamChunks existed.
+	chunks := splitChunks(cfg.Stdout, cfg.StreamChunks)
+	for i, chunk := range chunks {
+		state := "ACTIVE"
+		if i == len(chunks)-1 {
+			state = "DONE"
+		}
+		events = append(events, streamjson.Event{
+			Kind: streamjson.EventStepUpdate,
+			StepUpdate: &streamjson.StepUpdate{
+				ConversationID: convID,
+				StepIndex:      0,
+				State:          state,
+				StepType:       streamjson.StepTypeAgentResponse,
+				TextDelta:      chunk,
+			},
+		})
+	}
 	if !cfg.OmitResult {
 		res := cfg.result()
 		events = append(events, streamjson.Event{Kind: streamjson.EventResult, Result: &res})

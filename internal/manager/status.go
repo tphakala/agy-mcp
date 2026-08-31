@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
@@ -653,14 +654,16 @@ func tailFile(path string, n int64) (string, error) {
 }
 
 // cleanTail returns the trailing stderr of a terminal job (the last errTailBytes,
-// trailing newline trimmed and starting on a valid UTF-8 boundary), or "" when
-// there is none.
+// trailing whitespace trimmed and starting on a valid UTF-8 boundary), or "" when
+// there is none. Trimming all trailing whitespace here, not just newlines, means a
+// caller's tail != "" check distinguishes a real message from a whitespace-only
+// tail that would otherwise render as a message after a separator.
 func cleanTail(dir string) (string, error) {
 	tail, err := tailFile(jobstore.ErrPath(dir), errTailBytes)
 	if err != nil {
 		return "", err
 	}
-	tail = strings.TrimRight(tail, "\n")
+	tail = strings.TrimRightFunc(tail, unicode.IsSpace)
 	// tailFile may have started mid-rune; advance to a valid UTF-8 boundary so a
 	// multi-byte rune is not split.
 	for tail != "" && !utf8.RuneStart(tail[0]) {
@@ -724,14 +727,25 @@ func isQuotaError(msg string) bool {
 		strings.Contains(l, "too many requests")
 }
 
+// errorSummary summarizes a non-zero exit for which no error message came from a
+// result payload: either agy left no payload, or the payload's Error was empty.
+// It distinguishes three stderr outcomes, kept distinct because a caller reading
+// only this string cannot otherwise tell them apart: stderr had content, stderr
+// was empty or absent, or stderr could not be read at all.
 func errorSummary(dir string, code int) string {
 	tail, err := cleanTail(dir)
 	if err != nil {
-		// The stderr file exists but cannot be read; say so rather than emitting a
-		// bare "exit N:" that looks like there was no error output.
+		// The stderr file exists but cannot be read; say so rather than implying
+		// the run produced no error output.
 		return fmt.Sprintf("exit %d: <stderr unavailable: %v>", code, err)
 	}
-	return strings.TrimSpace("exit " + strconv.Itoa(code) + ": " + tail)
+	if tail == "" {
+		// A readable but empty stderr. Naming it beats the dangling "exit N:" that
+		// trimming a colon with nothing after it used to leave behind, which read
+		// as a truncated message rather than as an absence of one.
+		return fmt.Sprintf("exit %d (no stderr output)", code)
+	}
+	return "exit " + strconv.Itoa(code) + ": " + tail
 }
 
 // spawnFailMessage explains a 127 exit. The supervisor writes 127 both when it
@@ -739,7 +753,13 @@ func errorSummary(dir string, code int) string {
 // names both causes and appends any stderr instead of masking it.
 func spawnFailMessage(dir string) string {
 	msg := "agy exited 127: the supervisor could not exec the agy binary (check the configured agy path), or agy itself exited 127"
-	if tail, err := cleanTail(dir); err == nil && tail != "" {
+	tail, err := cleanTail(dir)
+	switch {
+	case err != nil:
+		// The stderr file exists but cannot be read; name it, as errorSummary does,
+		// rather than silently dropping it.
+		msg += fmt.Sprintf("; stderr unavailable: %v", err)
+	case tail != "":
 		msg += "; stderr: " + tail
 	}
 	return msg
