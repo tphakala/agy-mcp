@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
@@ -724,14 +725,29 @@ func isQuotaError(msg string) bool {
 		strings.Contains(l, "too many requests")
 }
 
+// errorSummary describes a non-zero exit that agy left no result payload for.
+// The three outcomes are kept distinct because a caller reading only this string
+// cannot otherwise tell them apart: stderr had something, stderr was empty, or
+// stderr could not be read at all.
 func errorSummary(dir string, code int) string {
 	tail, err := cleanTail(dir)
 	if err != nil {
-		// The stderr file exists but cannot be read; say so rather than emitting a
-		// bare "exit N:" that looks like there was no error output.
+		// The stderr file exists but cannot be read; say so rather than implying
+		// the run produced no error output.
 		return fmt.Sprintf("exit %d: <stderr unavailable: %v>", code, err)
 	}
-	return strings.TrimSpace("exit " + strconv.Itoa(code) + ": " + tail)
+	// cleanTail strips trailing newlines but not other trailing whitespace. The
+	// previous TrimSpace over the whole assembled string did strip it (the "exit"
+	// prefix meant only the tail end was ever affected), so keep that here rather
+	// than letting a tail of spaces through as if it were a message.
+	tail = strings.TrimRightFunc(tail, unicode.IsSpace)
+	if tail == "" {
+		// A readable but empty stderr. Naming it beats the dangling "exit N:" that
+		// trimming a colon with nothing after it used to leave behind, which read
+		// as a truncated message rather than as an absence of one.
+		return fmt.Sprintf("exit %d (no stderr output)", code)
+	}
+	return "exit " + strconv.Itoa(code) + ": " + tail
 }
 
 // spawnFailMessage explains a 127 exit. The supervisor writes 127 both when it

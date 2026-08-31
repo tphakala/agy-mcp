@@ -113,6 +113,64 @@ func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
 	}
 }
 
+// errorSummary must tell three cases apart, because this string is all a caller
+// sees for a non-zero exit that left no result payload. The empty-stderr case is
+// the one that used to render as a dangling "exit N:", which reads as a message
+// that got cut off rather than as the absence of one. MEASURED against agy
+// 1.1.22: a run terminating non-zero with nothing on stderr does occur, and its
+// status Error was exactly "exit 1:".
+func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stderr  string
+		writeIt bool
+		code    int
+		want    string
+	}{
+		{name: "stderr with content", stderr: "boom", writeIt: true, code: 1, want: "exit 1: boom"},
+		{name: "trailing newline trimmed", stderr: "boom\n\n", writeIt: true, code: 2, want: "exit 2: boom"},
+		{name: "empty stderr file", stderr: "", writeIt: true, code: 1, want: "exit 1 (no stderr output)"},
+		{name: "whitespace-only stderr", stderr: "  \t\n ", writeIt: true, code: 3, want: "exit 3 (no stderr output)"},
+		{name: "no stderr file at all", writeIt: false, code: 4, want: "exit 4 (no stderr output)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newManager(t, managerOpts{})
+			dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+			if tc.writeIt {
+				if err := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := errorSummary(dir, tc.code); got != tc.want {
+				t.Errorf("errorSummary = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The same absence, seen through Status, which is where a caller actually meets
+// it. Pinned separately so the message cannot regress only on the path that
+// matters while the unit test above still passes.
+func TestStatusFailedWithEmptyStderrNamesTheAbsence(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	_, _ = m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	_ = m.store.WriteExitCode("j", 1)
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.State != StateFailed {
+		t.Fatalf("state = %q, want failed", st.State)
+	}
+	if st.Error != "exit 1 (no stderr output)" {
+		t.Fatalf("error = %q, want the absence named rather than a dangling colon", st.Error)
+	}
+	if strings.HasSuffix(st.Error, ":") {
+		t.Errorf("error %q ends in a dangling colon", st.Error)
+	}
+}
+
 func TestStatusDone(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
