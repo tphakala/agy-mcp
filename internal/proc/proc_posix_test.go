@@ -31,6 +31,24 @@ func TestConfigureGroupPreservesExistingAttrs(t *testing.T) {
 	}
 }
 
+// ConfigureNoWindow is a no-op off Windows, but the manager's probes call it
+// unconditionally, so it must tolerate a command with no SysProcAttr and must
+// not invent one or disturb an existing one.
+func TestConfigureNoWindowIsInertHere(t *testing.T) {
+	cmd := exec.Command("true")
+	ConfigureNoWindow(cmd)
+	if cmd.SysProcAttr != nil {
+		t.Errorf("ConfigureNoWindow must not allocate SysProcAttr here, got %+v", cmd.SysProcAttr)
+	}
+
+	withAttrs := exec.Command("true")
+	withAttrs.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	ConfigureNoWindow(withAttrs)
+	if !withAttrs.SysProcAttr.Setsid {
+		t.Error("ConfigureNoWindow must leave an existing SysProcAttr untouched")
+	}
+}
+
 // TestErrUnsupportedIsNonNil: ErrUnsupported must be a non-nil sentinel even on
 // Linux, so a caller comparing a (nil) success error against it never gets a
 // false match (errors.Is(nil, nil) is true).

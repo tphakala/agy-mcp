@@ -20,7 +20,7 @@ type managerOpts struct {
 	defaultTimeout time.Duration
 	defaultModel   string
 	jobTTL         time.Duration
-	withCacheFile  bool   // true -> m.cacheFile = a fresh t.TempDir()/last_conversations.json
+	withCacheFile  bool // true -> m.cacheFile = a fresh t.TempDir()/last_conversations.json
 }
 
 // newManager builds a *Manager for tests, consolidating the suite's several

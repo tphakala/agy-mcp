@@ -38,6 +38,19 @@ func ConfigureGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW
 }
 
+// ConfigureNoWindow suppresses the console window of a short-lived child without
+// otherwise changing how it is spawned. It is for the short-lived probes the
+// manager runs directly, which want neither a new process group nor Job Object
+// supervision, only the window suppression.
+//
+// A console-mode child that cannot inherit a console gets a fresh one allocated,
+// and that console has a visible window, so a manager with no console of its own
+// would otherwise flash one window per probe.
+func ConfigureNoWindow(cmd *exec.Cmd) {
+	ensureSysProcAttr(cmd)
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW
+}
+
 // StartDetached configures cmd so the spawned supervisor is detached from the
 // manager and starts it. DETACHED_PROCESS drops the console (the manager's stdio
 // is the JSON-RPC stream), and, when the manager sits in a job that permits it,

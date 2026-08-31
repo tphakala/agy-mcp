@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/streamjson"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
@@ -85,6 +86,49 @@ func TestSupervisorCapturesOutputAndSentinel(t *testing.T) {
 	code, err := os.ReadFile(filepath.Join(dir, "exit_code"))
 	if err != nil || strings.TrimSpace(string(code)) != "0" {
 		t.Fatalf("exit_code = %q, err=%v", code, err)
+	}
+}
+
+// End-to-end counterpart to TestConsumeStreamAccumulatesChunksWithinOneStep:
+// the fake emits the response as several ACTIVE deltas plus a DONE tail on one
+// step, the way agy streams a long response, and the supervisor must land the
+// whole thing in the out file with its non-ASCII runes intact. The direct
+// consumeStream test pins the decoder; this pins the path a real run takes,
+// through the fake and onto disk. It does not pin the fake's own delta emission:
+// TestFakeAgyStreamChunksEmitsManyDeltasOnOneStep does that.
+func TestSupervisorLandsWholeChunkedResponseIntact(t *testing.T) {
+	dir := t.TempDir()
+	// Long enough that chunking is meaningful, and non-ASCII so a chunk boundary
+	// landing inside a multi-byte rune would corrupt the reassembly.
+	const answer = "the quick brown fox jumps over the lazy dog, hyvää yötä, 你好世界"
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: answer, StreamChunks: 7, Exit: 0})
+	writeMeta(t, dir, jobstore.Meta{ID: "j", AgyPath: agy, Args: []string{"-p", "x"}, StartedAt: time.Now()})
+
+	if err := Run(dir); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out, err := os.ReadFile(jobstore.OutPath(dir))
+	if err != nil {
+		t.Fatalf("read out: %v", err)
+	}
+	if string(out) != answer {
+		t.Fatalf("out = %q, want the concatenation of every delta %q", out, answer)
+	}
+	// The terminal result carries the whole answer too. Comparing it to the
+	// answer directly, not to out, keeps this check independent of the out
+	// assertion above, so a bug that corrupted both identically cannot satisfy
+	// both. Result matching the streamed text is what the manager relies on when
+	// it falls back to the streamed text.
+	res, err := jobstore.ReadResultDir(dir)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var got streamjson.Result
+	if err := json.Unmarshal(res, &got); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if got.Response != answer {
+		t.Fatalf("result response %q != the whole answer %q", got.Response, answer)
 	}
 }
 
