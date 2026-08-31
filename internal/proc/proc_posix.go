@@ -23,6 +23,11 @@ func ConfigureGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
+// ConfigureNoWindow is a no-op here. It exists so the manager's probe spawns can
+// call it unconditionally; only Windows allocates a console window for a child
+// that cannot inherit one.
+func ConfigureNoWindow(_ *exec.Cmd) {}
+
 // StartDetached configures cmd so the child leads its own process group and
 // starts it, so the child (the detached supervisor) can be tracked as a group
 // and survives the parent's death via init adoption. On Linux and macOS this is

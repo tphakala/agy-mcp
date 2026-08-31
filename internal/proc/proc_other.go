@@ -17,6 +17,8 @@ const Supported = false
 
 func ConfigureGroup(_ *exec.Cmd) {}
 
+func ConfigureNoWindow(_ *exec.Cmd) {}
+
 func StartDetached(_ *exec.Cmd) error { return ErrUnsupported }
 
 // Group has no state on unsupported platforms; Track never returns one.

@@ -54,6 +54,47 @@ func TestConfigureGroupPreservesExistingFlags(t *testing.T) {
 	}
 }
 
+// ConfigureNoWindow is what keeps the manager's short-lived probes (the
+// `agy --version` check and the models listing) from flashing a console window
+// when the manager itself has no console to inherit.
+func TestConfigureNoWindowSetsCreateNoWindow(t *testing.T) {
+	cmd := exec.Command("cmd.exe", "/c", "exit")
+	ConfigureNoWindow(cmd)
+	if cmd.SysProcAttr == nil || cmd.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW == 0 {
+		t.Fatal("ConfigureNoWindow must set CREATE_NO_WINDOW")
+	}
+}
+
+// The probes want window suppression alone: a new process group would change how
+// console control events reach them, and neither probe is supervised as a tree.
+// Asserting the absence keeps ConfigureNoWindow from quietly becoming an alias
+// for ConfigureGroup.
+func TestConfigureNoWindowDoesNotStartNewProcessGroup(t *testing.T) {
+	cmd := exec.Command("cmd.exe", "/c", "exit")
+	ConfigureNoWindow(cmd)
+	if cmd.SysProcAttr.CreationFlags&windows.CREATE_NEW_PROCESS_GROUP != 0 {
+		t.Error("ConfigureNoWindow must not set CREATE_NEW_PROCESS_GROUP")
+	}
+	if cmd.SysProcAttr.CreationFlags&windows.DETACHED_PROCESS != 0 {
+		t.Error("ConfigureNoWindow must not detach the child")
+	}
+}
+
+// Same hazard TestConfigureGroupPreservesExistingFlags guards: the sentinel is a
+// flag ConfigureNoWindow does not set itself, so the check fails if CreationFlags
+// is assigned rather than ORed.
+func TestConfigureNoWindowPreservesExistingFlags(t *testing.T) {
+	cmd := exec.Command("cmd.exe", "/c", "exit")
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_DEFAULT_ERROR_MODE}
+	ConfigureNoWindow(cmd)
+	if cmd.SysProcAttr.CreationFlags&windows.CREATE_DEFAULT_ERROR_MODE == 0 {
+		t.Error("ConfigureNoWindow must preserve a pre-existing CreationFlag")
+	}
+	if cmd.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW == 0 {
+		t.Error("ConfigureNoWindow must add CREATE_NO_WINDOW")
+	}
+}
+
 // TestStartDetachedRunsAndSetsFlags: StartDetached must actually start the process
 // and mark it detached (no inherited console).
 func TestStartDetachedRunsAndSetsFlags(t *testing.T) {

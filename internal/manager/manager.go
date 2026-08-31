@@ -174,6 +174,10 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, versionCheckTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, agy, "--version")
+	// Suppress the console window this probe would otherwise flash on Windows when
+	// the manager itself has no console to inherit (an MCP client launching it from
+	// a GUI app). No-op elsewhere.
+	proc.ConfigureNoWindow(cmd)
 	// Without this, killing the process on deadline does not unblock the output
 	// copy: CombinedOutput reads through a pipe whose write end agy's descendants
 	// inherit, so a grandchild that outlives the kill holds the read open and the

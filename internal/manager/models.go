@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/tphakala/agy-mcp/v2/internal/proc"
 )
 
 // listModelsTimeout bounds `agy models`, and listModelsKillGrace bounds how long
@@ -96,6 +98,8 @@ func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
 	// (the subcommand flagset does not define it). The listing banner stays on
 	// stderr, so stdout is the envelope alone.
 	cmd := exec.CommandContext(ctx, agy, outputFormatFlag, jsonOutputFormat, "models")
+	// Same console-window suppression as the version probe; no-op off Windows.
+	proc.ConfigureNoWindow(cmd)
 	cmd.WaitDelay = listModelsKillGrace
 	out, err := cmd.Output()
 	if err != nil {
