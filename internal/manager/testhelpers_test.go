@@ -7,8 +7,24 @@ import (
 
 	"github.com/tphakala/agy-mcp/v2/internal/agyver"
 	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
+
+// createJob stages a job dir the ordinary way: a live-boot meta this process's
+// boot id matches, started now. It returns the job dir and fails the test on a
+// store error rather than discarding it, which is what the dozen ad hoc
+// `dir, _ := m.store.Create(jobstore.Meta{ID: "j", ...})` sites did. Callers that
+// need a specific meta shape (a dead supervisor: PID 999999 under "old-boot")
+// still build it inline; this covers only the common healthy case.
+func createJob(t *testing.T, m *Manager, id string) string {
+	t.Helper()
+	dir, err := m.store.Create(jobstore.Meta{ID: id, StartedAt: time.Now(), BootID: readBootID()})
+	if err != nil {
+		t.Fatalf("create job %q: %v", id, err)
+	}
+	return dir
+}
 
 // managerOpts configures newManager's config.Config beyond its sensible
 // zero-value defaults (StateDir: t.TempDir(), MaxConcurrency: 4).

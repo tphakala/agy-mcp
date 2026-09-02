@@ -80,6 +80,12 @@ type FakeAgy struct {
 	// that accumulates every delta reproduces the result exactly. At the Go-string
 	// level an invalid-UTF-8 Stdout differs, since the rune split substitutes
 	// U+FFFD; json.Marshal coerces both sides identically, so the wire forms match.
+	//
+	// Only WriteFakeAgy honors this, so it must be set on a FakeAgy driven directly
+	// (through WriteFakeAgy), not on a FakeSupervisor.Agy: WriteFakeSupervisor stages
+	// the terminal result and progress files itself and never replays the fake's
+	// stdout, so through that path the chunking is inert and a test relying on it
+	// would silently exercise none.
 	StreamChunks int
 
 	// Version is what the script reports for `agy --version`, which the manager
@@ -93,6 +99,14 @@ type FakeAgy struct {
 	// array, so the empty-catalog path can be exercised. It is independent of
 	// Stdout, which is the run response text and no longer doubles as the listing.
 	Models []FakeModel
+
+	// Agents is the catalog the fake reports for `agy --output-format json agents`,
+	// one plain name string per entry in the envelope's command.data.agents array.
+	// Unlike Models these are bare names, not {id,label} objects, matching what real
+	// agy prints (measured against agy 1.1.24). An empty Agents yields a well-formed
+	// envelope with an empty (non-null) agents array, so the empty-catalog path can
+	// be exercised.
+	Agents []string
 }
 
 // FakeModel is one {id,label} entry the fake reports for the models listing.
@@ -125,9 +139,15 @@ func (cfg FakeAgy) version() string {
 //     exercised too. The real binary prints its progress banner on stderr, which
 //     is why ListModels reads stdout alone. A run invocation never matches: it
 //     leads with --dangerously-skip-permissions, not --output-format.
-func (cfg FakeAgy) subcommandPreamble(modelsPath, errPath string) string {
+//   - `agy --output-format json agents`, the invocation ListAgents makes: same
+//     three-token match with `agents` in place of `models`, served from
+//     agentsPath. agy's agents listing carries plain name strings, not the
+//     {id,label} objects models does, which is why the two envelopes are rendered
+//     apart.
+func (cfg FakeAgy) subcommandPreamble(modelsPath, agentsPath, errPath string) string {
 	return fmt.Sprintf("if [ \"$1\" = \"--version\" ]; then printf '%%s\\n' %q; exit 0; fi\n", cfg.version()) +
-		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$2\" = \"json\" ] && [ \"$3\" = \"models\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", modelsPath, errPath, cfg.Exit)
+		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$2\" = \"json\" ] && [ \"$3\" = \"models\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", modelsPath, errPath, cfg.Exit) +
+		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$2\" = \"json\" ] && [ \"$3\" = \"agents\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", agentsPath, errPath, cfg.Exit)
 }
 
 // modelsEnvelopeJSON renders the JSON envelope agy 1.1.12+ prints for
@@ -160,6 +180,35 @@ func (cfg FakeAgy) modelsEnvelopeJSON(t *testing.T) string {
 	b, err := json.Marshal(env)
 	if err != nil {
 		t.Fatalf("marshal fake agy models envelope: %v", err)
+	}
+	return string(b)
+}
+
+// agentsEnvelopeJSON renders the JSON envelope agy prints for
+// `agy --output-format json agents`: a SUCCESS `agents` command whose
+// command.data.agents carries one plain name string per configured agent
+// (measured against agy 1.1.24). The inner slice is always non-nil so an empty
+// catalog marshals as "agents":[] rather than "agents":null, matching what the
+// real binary emits.
+func (cfg FakeAgy) agentsEnvelopeJSON(t *testing.T) string {
+	t.Helper()
+	agents := make([]string, 0, len(cfg.Agents))
+	agents = append(agents, cfg.Agents...)
+	var env struct {
+		Status  string `json:"status"`
+		Command struct {
+			Name string `json:"name"`
+			Data struct {
+				Agents []string `json:"agents"`
+			} `json:"data"`
+		} `json:"command"`
+	}
+	env.Status = "SUCCESS"
+	env.Command.Name = "agents"
+	env.Command.Data.Agents = agents
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal fake agy agents envelope: %v", err)
 	}
 	return string(b)
 }
@@ -253,9 +302,9 @@ func (cfg FakeAgy) streamLines(t *testing.T) string {
 	// DONE event this fake emitted before StreamChunks existed.
 	chunks := splitChunks(cfg.Stdout, cfg.StreamChunks)
 	for i, chunk := range chunks {
-		state := "ACTIVE"
+		state := streamjson.StateActive
 		if i == len(chunks)-1 {
-			state = "DONE"
+			state = streamjson.StateDone
 		}
 		events = append(events, streamjson.Event{
 			Kind: streamjson.EventStepUpdate,
@@ -322,14 +371,24 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 	path := filepath.Join(dir, "fake-agy")
 
 	if cfg.IgnoreSIGTERM {
+		// IgnoreSIGTERM loops forever before ever reaching the print-mode output, so
+		// the output fields have no effect. The struct doc says they are mutually
+		// exclusive; enforce it here (as WriteFakeSupervisor does for its own
+		// combinations) so a test that sets both fails loudly rather than passing
+		// while silently exercising none of the output it staged.
+		if cfg.Stdout != "" || cfg.Stderr != "" || cfg.Status != "" || cfg.ResultError != "" ||
+			cfg.OmitResult || cfg.StreamChunks != 0 || len(cfg.Models) != 0 || len(cfg.Agents) != 0 {
+			t.Fatal("FakeAgy.IgnoreSIGTERM is mutually exclusive with the output fields (Stdout, Stderr, Status, ResultError, OmitResult, StreamChunks, Models, Agents): the hang-forever script never reaches them")
+		}
 		// Trap and ignore SIGTERM, then loop forever. The inner sleep is killed by
 		// the supervisor's group SIGTERM, but bash ignores it and restarts the
 		// loop, so the process survives until the supervisor escalates to SIGKILL.
 		// The version probe still has to answer, or the job never starts. There is
 		// no listing or stderr to serve in this mode, so point those at paths that
-		// do not exist: `agy models` is never called on a hang-forever fake.
+		// do not exist: `agy models` and `agy agents` are never called on a
+		// hang-forever fake.
 		script := "#!/usr/bin/env bash\n" +
-			cfg.subcommandPreamble(filepath.Join(dir, "no-models"), filepath.Join(dir, "no-stderr")) +
+			cfg.subcommandPreamble(filepath.Join(dir, "no-models"), filepath.Join(dir, "no-agents"), filepath.Join(dir, "no-stderr")) +
 			"trap '' TERM\nwhile :; do sleep 1; done\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatalf("write fake agy: %v", err)
@@ -340,6 +399,7 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 	outPath := filepath.Join(dir, "fake-agy.out")
 	errPath := filepath.Join(dir, "fake-agy.err")
 	modelsPath := filepath.Join(dir, "fake-agy.models")
+	agentsPath := filepath.Join(dir, "fake-agy.agents")
 	if err := os.WriteFile(outPath, []byte(cfg.streamLines(t)), 0o644); err != nil {
 		t.Fatalf("write fake agy stdout: %v", err)
 	}
@@ -349,12 +409,15 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 	if err := os.WriteFile(modelsPath, []byte(cfg.modelsEnvelopeJSON(t)), 0o644); err != nil {
 		t.Fatalf("write fake agy models envelope: %v", err)
 	}
+	if err := os.WriteFile(agentsPath, []byte(cfg.agentsEnvelopeJSON(t)), 0o644); err != nil {
+		t.Fatalf("write fake agy agents envelope: %v", err)
+	}
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 %ssleep %.3f
 cat %q
 cat %q 1>&2
 exit %d
-`, cfg.subcommandPreamble(modelsPath, errPath), cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
+`, cfg.subcommandPreamble(modelsPath, agentsPath, errPath), cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake agy: %v", err)
 	}

@@ -34,6 +34,7 @@ var wantAnnotations = map[string]mcp.ToolAnnotations{
 	toolAgyWait:      {ReadOnlyHint: true, OpenWorldHint: new(false)},
 	toolListSessions: {ReadOnlyHint: true, OpenWorldHint: new(false)},
 	toolListModels:   {ReadOnlyHint: true, OpenWorldHint: new(true)},
+	toolListAgents:   {ReadOnlyHint: true, OpenWorldHint: new(true)},
 }
 
 // eqBoolPtr compares two optional hints. Nil is distinct from false: the MCP
@@ -117,6 +118,7 @@ var wantSiblings = map[string][]string{
 	// pays for the same work twice.
 	toolAgyCancel:    {toolAgyRun, toolAgyStatus},
 	toolListModels:   {toolAgyRun, toolAgyRunSync},
+	toolListAgents:   {toolAgyRun, toolAgyRunSync},
 	toolListSessions: {toolAgyRun, toolAgyRunSync},
 }
 

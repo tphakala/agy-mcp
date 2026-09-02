@@ -54,7 +54,7 @@ func TestServeIntrospectsWithoutAgy(t *testing.T) {
 	for _, tool := range tools.Tools {
 		got[tool.Name] = true
 	}
-	for _, name := range []string{"agy_run", "agy_run_sync", "agy_status", "agy_wait", "agy_cancel", "list_models", "list_sessions"} {
+	for _, name := range []string{"agy_run", "agy_run_sync", "agy_status", "agy_wait", "agy_cancel", "list_models", "list_agents", "list_sessions"} {
 		if !got[name] {
 			t.Errorf("tool %q missing from a server started without agy", name)
 		}
@@ -108,8 +108,10 @@ func TestServeWarnsWhenAgyMissing(t *testing.T) {
 }
 
 // TestRunWithoutAgyFailsPerCall is the other half of the contract: tolerating a
-// missing agy at startup must not turn into a silent no-op later. The tool call
-// that actually needs the binary has to say so, and name the way to fix it.
+// missing agy at startup must not turn into a silent no-op later. Every tool that
+// actually needs the binary has to say so, and name the way to fix it. Both
+// agy-shelling read tools (list_models and list_agents) are exercised, since they
+// share the same deferred-lookup failure path.
 func TestRunWithoutAgyFailsPerCall(t *testing.T) {
 	bin, err := buildBinary()
 	if err != nil {
@@ -134,23 +136,27 @@ func TestRunWithoutAgyFailsPerCall(t *testing.T) {
 	}
 	defer func() { _ = cs.Close() }()
 
-	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "list_models",
-		Arguments: map[string]any{},
-	})
-	if err != nil {
-		t.Fatalf("call list_models: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("list_models must report an error when agy cannot be resolved")
-	}
-	var text strings.Builder
-	for _, c := range res.Content {
-		if tc, ok := c.(*mcp.TextContent); ok {
-			text.WriteString(tc.Text)
-		}
-	}
-	if !strings.Contains(text.String(), "AGY_MCP_AGY_PATH") {
-		t.Errorf("error should point at the fix, got: %s", text.String())
+	for _, tool := range []string{"list_models", "list_agents"} {
+		t.Run(tool, func(t *testing.T) {
+			res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+				Name:      tool,
+				Arguments: map[string]any{},
+			})
+			if err != nil {
+				t.Fatalf("call %s: %v", tool, err)
+			}
+			if !res.IsError {
+				t.Fatalf("%s must report an error when agy cannot be resolved", tool)
+			}
+			var text strings.Builder
+			for _, c := range res.Content {
+				if tc, ok := c.(*mcp.TextContent); ok {
+					text.WriteString(tc.Text)
+				}
+			}
+			if !strings.Contains(text.String(), "AGY_MCP_AGY_PATH") {
+				t.Errorf("error should point at the fix, got: %s", text.String())
+			}
+		})
 	}
 }
