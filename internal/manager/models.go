@@ -71,15 +71,23 @@ func modelID(v string) string {
 	return v
 }
 
-// ListModels lists agy's available models. It decodes the JSON envelope from
-// `agy --output-format json models` (agy 1.1.12+) rather than tab-splitting the
-// text rows, so the ids and labels come from a typed field instead of a guessed
-// column.
-func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
-	// Version-gated like the job path even though the models listing itself does
-	// not need stream-json: an agy too old to drive is a configuration problem,
-	// and one clear message about it beats a model list from a binary that cannot
-	// actually run a job.
+// runJSONListing execs `agy --output-format json <sub>` and returns its stdout,
+// applying the version gate, a bounded timeout, and the WaitDelay tolerance that
+// list_models and list_agents share. Only the subcommand, its timeout pair, and
+// (at the caller) the decoder differ between the two, so they run through here
+// rather than each carrying its own copy of this delicate ctx-and-error handling.
+//
+// This is NOT the sharing issue #160 item 7 weighed and rejected: that was about
+// folding the VERSION probe together with a listing, and the two genuinely differ
+// (readAgyVersion uses CombinedOutput and tolerates a non-zero exit because
+// --version's exit status is not a contract, while a listing uses Output and
+// treats any non-zero exit as a failure). The two JSON listings share every one
+// of those decisions, so nothing delicate is being generalized across a real
+// difference here; the version probe stays separate, as that note intends.
+func (m *Manager) runJSONListing(ctx context.Context, sub string, timeout, killGrace time.Duration) ([]byte, error) {
+	// Version-gated like the job path even though a listing itself does not need
+	// stream-json: an agy too old to drive is a configuration problem, and one
+	// clear message about it beats a listing from a binary that cannot run a job.
 	agy, err := m.agyBinaryChecked(ctx)
 	if err != nil {
 		return nil, err
@@ -89,25 +97,62 @@ func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
 	// agy holds the read open and parks this call for as long as the client keeps
 	// it. The caller's ctx alone is not a bound, since it is the raw request
 	// context and a client may hold that open indefinitely.
-	ctx, cancel := context.WithTimeout(ctx, listModelsTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// --output-format is agy's global print-mode flag, so it must precede the
-	// `models` subcommand; agy rejects `models --output-format json` outright
-	// (the subcommand flagset does not define it). The listing banner stays on
-	// stderr, so stdout is the envelope alone.
-	cmd := probeCmd(ctx, agy, outputFormatFlag, jsonOutputFormat, "models")
-	cmd.WaitDelay = listModelsKillGrace
+	// subcommand; agy rejects `<sub> --output-format json` outright (the subcommand
+	// flagset does not define it). The listing banner stays on stderr, so stdout is
+	// the envelope alone.
+	cmd := probeCmd(ctx, agy, outputFormatFlag, jsonOutputFormat, sub)
+	cmd.WaitDelay = killGrace
 	out, err := cmd.Output()
 	if err != nil {
-		// Output() captures stderr into (*exec.ExitError).Stderr; include it so a
-		// real cause (an auth prompt, a usage error) is visible instead of a bare
-		// "exit status 1".
-		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-			if stderr := strings.TrimSpace(string(ee.Stderr)); stderr != "" {
-				return nil, fmt.Errorf("agy models: %w: %s", err, stderr)
+		// Check the deadline BEFORE classifying the exec error, exactly as
+		// readAgyVersion does. A ctx-killed process surfaces as *exec.ExitError,
+		// indistinguishable from a binary that merely exited non-zero, so without
+		// this a timeout this call imposed would surface as "agy <sub>: signal:
+		// killed" and blame agy for a deadline it set (issue #160). Name the real
+		// cause instead.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.Canceled) {
+				// The caller gave up; say so rather than blaming a binary that was
+				// answering fine.
+				return nil, fmt.Errorf("agy %s was cancelled: %w", sub, ctxErr)
 			}
+			return nil, fmt.Errorf("agy %s did not complete within %s: %w", sub, timeout, ctxErr)
 		}
-		return nil, fmt.Errorf("agy models: %w", err)
+		// WaitDelay fired while the deadline had NOT: agy answered and exited, but a
+		// descendant kept the output pipe open, so exec abandoned the copy. The
+		// envelope it printed is already buffered in out, and it is the whole point
+		// of the call. Refusing here would reject a working agy for the exact reason
+		// WaitDelay was set, so return the buffer and let the caller's decoder decide;
+		// a genuinely truncated envelope then fails at the parse with a message that
+		// says so. This mirrors readAgyVersion, which carries the same reasoning for
+		// the version probe (issue #161). Unlike --version, a non-zero exit is still
+		// a failure here, so every other error (ExitError included) is returned.
+		if !errors.Is(err, exec.ErrWaitDelay) {
+			// Output() captures stderr into (*exec.ExitError).Stderr; include it so a
+			// real cause (an auth prompt, a usage error) is visible instead of a bare
+			// "exit status 1".
+			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+				if stderr := strings.TrimSpace(string(ee.Stderr)); stderr != "" {
+					return nil, fmt.Errorf("agy %s: %w: %s", sub, err, stderr)
+				}
+			}
+			return nil, fmt.Errorf("agy %s: %w", sub, err)
+		}
+	}
+	return out, nil
+}
+
+// ListModels lists agy's available models. It decodes the JSON envelope from
+// `agy --output-format json models` (agy 1.1.12+) rather than tab-splitting the
+// text rows, so the ids and labels come from a typed field instead of a guessed
+// column.
+func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
+	out, err := m.runJSONListing(ctx, "models", listModelsTimeout, listModelsKillGrace)
+	if err != nil {
+		return nil, err
 	}
 	return decodeModelsEnvelope(out)
 }

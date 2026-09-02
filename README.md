@@ -33,6 +33,7 @@ Every job runs `agy --output-format stream-json`, and the supervisor decodes tha
 - `agy_run_sync`: start a prompt and wait for it inline (bounded, with MCP progress notifications); returns the `job_id` to wait on or poll if it outlives the wait cap.
 - `agy_wait`: block until an already-started job finishes (bounded, with MCP progress notifications); one call replaces an `agy_status` poll loop.
 - `list_models`: enumerate available `agy` models, as the ids the `model` parameter accepts plus their display labels.
+- `list_agents`: enumerate available `agy` agents, as the names the `agent` parameter accepts. Unlike `list_models` there is no id/label split, because `agy` takes an agent name verbatim; an empty list just means no agents are configured.
 - `list_sessions`: list known conversations so review threads can be continued.
 
 `agy_run` and `agy_run_sync` also take optional per-run controls, each forwarded to `agy` only when set: pick the `model`, reasoning `effort` (`low`/`medium`/`high`), execution `mode` (including a `plan`-only pass), a named `agent`, `sandbox` terminal restrictions, and a `json_schema` to constrain the result to structured output.
@@ -46,8 +47,8 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 `cwd` and under every directory passed in `dirs`, without prompting. For a review that must
 not touch the repo, say so explicitly in the prompt. The tools declare this on the wire: `agy_run` and
 `agy_run_sync` are annotated `destructiveHint: true` / `openWorldHint: true`, `agy_cancel` is
-`destructiveHint: true` / `idempotentHint: true`, and `agy_status`, `agy_wait`, `list_models`
-and `list_sessions` are `readOnlyHint: true`. Annotations are hints, so a client is free to
+`destructiveHint: true` / `idempotentHint: true`, and `agy_status`, `agy_wait`, `list_models`,
+`list_agents` and `list_sessions` are `readOnlyHint: true`. Annotations are hints, so a client is free to
 ignore them; one that does gate confirmation on them may stop prompting for the four
 read-only tools.
 
@@ -62,7 +63,7 @@ Two transports run the same core:
 
   The version is checked once per process, the first time a tool actually needs agy, and the verdict is cached. A binary that is too old is reported as `agy 1.1.15 or newer is required ...; found 1.1.7 at /usr/local/bin/agy`. A failed check is deliberately not cached, so upgrading agy is picked up without restarting the server.
 
-  A missing `agy` does not stop the server from starting. `initialize`, `tools/list`, and `list_sessions` never exec it, so the lookup is deferred: the server starts, logs a warning to stderr, serves discovery normally, and the tools that do need the binary (`agy_run`, `agy_run_sync`, `list_models`) fail per call with `agy not found on PATH; set AGY_MCP_AGY_PATH`. An `agy` installed later is picked up without restarting the server. An explicit `AGY_MCP_AGY_PATH` is treated differently: it is a claim about one specific binary, so a typo or a non-executable target still fails fast at startup.
+  A missing `agy` does not stop the server from starting. `initialize`, `tools/list`, and `list_sessions` never exec it, so the lookup is deferred: the server starts, logs a warning to stderr, serves discovery normally, and the tools that do need the binary (`agy_run`, `agy_run_sync`, `list_models`, `list_agents`) fail per call with `agy not found on PATH; set AGY_MCP_AGY_PATH`. An `agy` installed later is picked up without restarting the server. An explicit `AGY_MCP_AGY_PATH` is treated differently: it is a claim about one specific binary, so a typo or a non-executable target still fails fast at startup.
 - Go 1.27+ to build.
 - The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_run_sync` / `agy_status` / `agy_cancel`) is implemented on **Linux** and **macOS** (process groups, SIGTERM cancel, an advisory flock) and on **Windows** (Job Objects, `OpenProcess` + process creation time, `LockFileEx`); stdio/HTTP serving, `list_models`, and `list_sessions` work identically everywhere.
 
@@ -118,6 +119,7 @@ Or add to your MCP client config:
 - `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`
 - `list_models()` -> `{ models, model_details }`
+- `list_agents()` -> `{ agents }`
 - `list_sessions(dir?)` -> `{ sessions }`
 
 `models` holds ids alone, so its entries can be passed straight to `model`; `model_details` pairs each id with the display label `agy` prints for it, in the same order, for showing a readable name. Through v2.1.0 `models` carried each `agy models` row whole, which was a tab-joined `id<TAB>label` string that `agy` does not accept as a model at all, so a client had to split it and pick a column ([#135](https://github.com/tphakala/agy-mcp/issues/135)).
@@ -222,7 +224,13 @@ Two related subcommands, useful beyond Claude Code:
 - `agy-mcp wait-job [-timeout 1h] <job_id>` blocks until the job is terminal and prints the final state word (`done`, `failed`, or `cancelled`) to stdout. Exit codes: 0 terminal, 1 error, 2 usage, 3 timeout, 130 interrupted. It needs only the job state directory, not the agy binary, so it works in minimal environments.
 - `agy-mcp hook-wait [-timeout 1h]` is the hook entrypoint described above: it reads the PostToolUse payload from stdin, so it is not useful to invoke by hand, but it is a single self-contained binary call, no shell wrapper or jq required, and it works on Linux, macOS, and Windows. The file-based wake contract is exercised by tests on all three platforms; the signal-interrupt wake (SIGINT/SIGTERM) is a POSIX behavior and is tested there.
 
-On POSIX, both subcommands install their SIGINT/SIGTERM handler only after parsing flags, resolving the job state directory and building the wait manager (and hook-wait also reads its payload from stdin first), so a signal sent immediately after launch can land before the handler exists and kill the process outright, losing the interrupt exit code. A parent that intends to interrupt a wait can close that window by setting `AGY_MCP_WAIT_READY_FILE`: the subcommand creates that file the moment the handler is in place, so waiting for it to appear makes the signal deliverable. Leave it unset and nothing is written. Three caveats, because existence is the entire signal: the path must be absolute (a relative one resolves against each process's own working directory, and hook-wait runs from the session cwd), it must be fresh and unique per invocation (a file left from an earlier run satisfies the wait immediately and hands back the race), and the parent still needs its own timeout, since both subcommands have exit paths that return before any handler is armed. An existing file at that path is refused rather than overwritten, so pointing the variable at something that matters destroys nothing; that protects the file, not the handshake, which is why the path has to be fresh.
+## Preflight (`agy-mcp doctor`)
+
+`agy-mcp doctor` runs the read-only checks a run depends on and prints a one-line verdict for each, so a broken setup names its own cause instead of surfacing as a downstream tool error (for example `list_models` failing when `agy` is missing from PATH or not authenticated). It checks that the `agy` binary resolves, meets the version floor, and is reachable and authenticated (a model listing); that the state directory is writable; names where each effective setting came from (an environment variable or the default) without printing any secret value; and reports any stale jobs a prior crash left behind. It never starts a job or mutates job state.
+
+The exit code is meant for a setup script or CI: `0` when nothing is broken (a stale-job warning does not count, and a fresh install with no jobs passes), `1` when a check failed, `2` on a usage error. A `WARN` line (leftover jobs the periodic GC will reap) is information, not a failure.
+
+On POSIX, both wait subcommands install their SIGINT/SIGTERM handler only after parsing flags, resolving the job state directory and building the wait manager (and hook-wait also reads its payload from stdin first), so a signal sent immediately after launch can land before the handler exists and kill the process outright, losing the interrupt exit code. A parent that intends to interrupt a wait can close that window by setting `AGY_MCP_WAIT_READY_FILE`: the subcommand creates that file the moment the handler is in place, so waiting for it to appear makes the signal deliverable. Leave it unset and nothing is written. Three caveats, because existence is the entire signal: the path must be absolute (a relative one resolves against each process's own working directory, and hook-wait runs from the session cwd), it must be fresh and unique per invocation (a file left from an earlier run satisfies the wait immediately and hands back the race), and the parent still needs its own timeout, since both subcommands have exit paths that return before any handler is armed. An existing file at that path is refused rather than overwritten, so pointing the variable at something that matters destroys nothing; that protects the file, not the handshake, which is why the path has to be fresh.
 
 MCP clients other than Claude Code get the same no-polling benefit in-protocol: call `agy_wait` with a `job_id` from `agy_run` (or from an `agy_run_sync` that outlived its inline wait) and the tool blocks (bounded by `wait`, default 2m, max 10m) until the job finishes.
 

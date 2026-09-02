@@ -50,6 +50,10 @@ func main() {
 		os.Exit(hookWaitMain(os.Args[2:], os.Stdin, os.Stderr))
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "doctor" {
+		os.Exit(doctorMain(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	if err := serve(); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
@@ -84,7 +88,7 @@ func serve() error {
 		// that means. Without this the server looks healthy and every run fails, which
 		// is a worse diagnostic than the startup refusal this replaced. log goes to
 		// stderr; stdout is the JSON-RPC stream in stdio mode and must stay clean.
-		log.Print("agy not found on PATH: the server will serve tool discovery, but agy_run, agy_run_sync, and list_models fail until agy is installed or AGY_MCP_AGY_PATH is set")
+		log.Print("agy not found on PATH: the server will serve tool discovery, but agy_run, agy_run_sync, list_models, and list_agents fail until agy is installed or AGY_MCP_AGY_PATH is set")
 	}
 	mgr := manager.New(cfg)
 	// Run startup garbage collection and concurrency-gate restoration in one

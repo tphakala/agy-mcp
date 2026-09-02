@@ -97,6 +97,53 @@ func TestListModelsEmptyCatalogReturnsArrays(t *testing.T) {
 	}
 }
 
+// TestListAgentsOverMCP exercises the list_agents tool end to end: the handler
+// decodes the JSON envelope from `agy --output-format json agents` (the fake
+// renders two plain names) and returns them on the wire, in order. Unlike models
+// there is no id/label split, because agy takes an agent name verbatim.
+func TestListAgentsOverMCP(t *testing.T) {
+	mgr, _ := newTestManager(t, testutil.FakeAgy{Agents: []string{"reviewer", "researcher"}})
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_agents"})
+	if err != nil || res.IsError {
+		t.Fatalf("list_agents: err=%v res=%+v", err, res)
+	}
+	out := structMap(t, res.StructuredContent)
+	want := []string{"reviewer", "researcher"}
+	agents, _ := out["agents"].([]any)
+	if len(agents) != len(want) {
+		t.Fatalf("agents = %v, want %d names", agents, len(want))
+	}
+	for i := range want {
+		if agents[i] != want[i] {
+			t.Errorf("agents[%d] = %v, want %q", i, agents[i], want[i])
+		}
+	}
+}
+
+// TestListAgentsEmptyCatalogReturnsArray: no agents configured is the common
+// state, so the field must be an empty JSON array rather than null, letting a
+// client index the result without a null check. The handler forces a non-nil
+// slice; dropping that marshals the field as null and breaks such a client.
+func TestListAgentsEmptyCatalogReturnsArray(t *testing.T) {
+	mgr, _ := newTestManager(t, testutil.FakeAgy{})
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_agents"})
+	if err != nil || res.IsError {
+		t.Fatalf("list_agents: err=%v res=%+v", err, res)
+	}
+	out := structMap(t, res.StructuredContent)
+	got, ok := out["agents"].([]any)
+	if !ok {
+		t.Fatalf("agents = %v, want an empty array, not null", out["agents"])
+	}
+	if len(got) != 0 {
+		t.Errorf("agents = %v, want empty for an empty catalog", got)
+	}
+}
+
 // TestListSessionsOverMCP exercises the list_sessions tool: with an empty cache
 // the handler must return a non-nil empty array on the wire (not null), and the
 // tool must be registered and wired. This handler had no MCP-layer test.

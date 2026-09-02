@@ -31,6 +31,19 @@ const (
 // progress information but do not contribute to the response text.
 const StepTypeAgentResponse = "agent_response"
 
+// Step lifecycle states carried on StepUpdate.State: agy reports ACTIVE for each
+// successive update of a step as it runs and DONE on the final one. For an
+// agent_response step that marks its intermediate text_delta chunks (ACTIVE) apart
+// from the completing one (DONE). agy-mcp's own stream reader does not branch on
+// this (internal/supervisor/stream.go accumulates every agent_response delta by
+// step type, in arrival order, regardless of state); the constants are named beside
+// the other stream vocabulary so the fixtures and the fake agy carry the values as
+// a shared constant rather than a bare literal.
+const (
+	StateActive = "ACTIVE"
+	StateDone   = "DONE"
+)
+
 // Usage is the token accounting agy attaches to steps and to the result.
 type Usage struct {
 	InputTokens     int `json:"input_tokens"`

@@ -94,10 +94,10 @@ func TestClassifyAgyError(t *testing.T) {
 // to a valid UTF-8 boundary rather than emitting a split multi-byte rune.
 func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	dir := createJob(t, m, "j")
 	// 3-byte runes so the last errTailBytes window starts mid-rune (2000 % 3 != 0).
 	content := strings.Repeat("€", 1000) // 3000 bytes
-	if err := os.WriteFile(filepath.Join(dir, "err"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(jobstore.ErrPath(dir), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_ = m.store.WriteExitCode("j", 5)
@@ -147,10 +147,7 @@ func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
-			dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-			if err != nil {
-				t.Fatalf("Create: %v", err)
-			}
+			dir := createJob(t, m, "j")
 			switch {
 			case tc.errIsDir:
 				// A directory reads as an error on POSIX, but not on Windows: there a
@@ -190,7 +187,7 @@ func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
 // matters while the unit test above still passes.
 func TestStatusFailedWithMissingStderrNamesTheAbsence(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	_, _ = m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	createJob(t, m, "j")
 	_ = m.store.WriteExitCode("j", 1)
 
 	st, err := m.Status("j")
@@ -207,7 +204,7 @@ func TestStatusFailedWithMissingStderrNamesTheAbsence(t *testing.T) {
 
 func TestStatusDone(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	dir := createJob(t, m, "j")
 	writeResultPayload(t, dir, streamjson.Result{
 		ConversationID: "cid-1",
 		Status:         streamjson.StatusSuccess,
@@ -584,7 +581,7 @@ func TestStatusTerminalContract(t *testing.T) {
 // thread it started can still be continued.
 func TestStatusCancelledKeepsConversationID(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	dir := createJob(t, m, "j")
 	if err := jobstore.WriteProgressDir(dir, jobstore.Progress{ConversationID: "cid-mid-run"}); err != nil {
 		t.Fatal(err)
 	}
@@ -604,8 +601,8 @@ func TestStatusCancelledKeepsConversationID(t *testing.T) {
 
 func TestStatusFailed(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-	_ = os.WriteFile(filepath.Join(dir, "err"), []byte("boom"), 0o644)
+	dir := createJob(t, m, "j")
+	_ = os.WriteFile(jobstore.ErrPath(dir), []byte("boom"), 0o644)
 	_ = m.store.WriteExitCode("j", 5)
 
 	st, _ := m.Status("j")
@@ -616,8 +613,8 @@ func TestStatusFailed(t *testing.T) {
 
 func TestStatusTimedOut(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-	_ = os.WriteFile(filepath.Join(dir, "err"), []byte("partial"), 0o644)
+	dir := createJob(t, m, "j")
+	_ = os.WriteFile(jobstore.ErrPath(dir), []byte("partial"), 0o644)
 	_ = m.store.WriteExitCode("j", jobstore.ExitTimeout)
 
 	st, _ := m.Status("j")
@@ -666,7 +663,7 @@ func TestTailFileShorterThanRequested(t *testing.T) {
 // readFile that collapsed every IO error into "".
 func TestStatusDoneButOutputUnreadable(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	dir := createJob(t, m, "j")
 	if err := os.Mkdir(filepath.Join(dir, "out"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -713,8 +710,8 @@ func TestStatusInterruptedOutputUnreadable(t *testing.T) {
 // gets a dedicated message instead of a bare "exit 127:".
 func TestStatusSpawnFail(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-	_ = os.WriteFile(filepath.Join(dir, "err"), []byte(""), 0o644)
+	dir := createJob(t, m, "j")
+	_ = os.WriteFile(jobstore.ErrPath(dir), []byte(""), 0o644)
 	_ = m.store.WriteExitCode("j", jobstore.ExitSpawnFail)
 
 	st, _ := m.Status("j")
@@ -742,10 +739,7 @@ func TestStatusSpawnFailNamesUnreadableStderr(t *testing.T) {
 		t.Skip("a directory does not make tailFile's read fail on Windows")
 	}
 	m := newManager(t, managerOpts{})
-	dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	dir := createJob(t, m, "j")
 	if err := os.Mkdir(jobstore.ErrPath(dir), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -769,8 +763,8 @@ func TestStatusSpawnFailNamesUnreadableStderr(t *testing.T) {
 
 func TestStatusExit127SurfacesStderr(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
-	_ = os.WriteFile(filepath.Join(dir, "err"), []byte("agy: internal tool not found\n"), 0o644)
+	dir := createJob(t, m, "j")
+	_ = os.WriteFile(jobstore.ErrPath(dir), []byte("agy: internal tool not found\n"), 0o644)
 	_ = m.store.WriteExitCode("j", jobstore.ExitSpawnFail)
 
 	st, _ := m.Status("j")
@@ -916,7 +910,7 @@ func TestStateMatchesStatusState(t *testing.T) {
 // Making out a directory lets os.Open succeed while the read fails.
 func TestStateMatchesStatusOnUnreadableCleanExit(t *testing.T) {
 	m := newManager(t, managerOpts{})
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), BootID: readBootID()})
+	dir := createJob(t, m, "j")
 	if err := os.Mkdir(filepath.Join(dir, "out"), 0o755); err != nil {
 		t.Fatal(err)
 	}

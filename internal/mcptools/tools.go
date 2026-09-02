@@ -69,6 +69,7 @@ const (
 	toolAgyRunSync   = ToolAgyRunSync
 	toolAgyWait      = "agy_wait"
 	toolListModels   = "list_models"
+	toolListAgents   = "list_agents"
 	toolListSessions = "list_sessions"
 )
 
@@ -297,6 +298,14 @@ type modelsOutput struct {
 	ModelDetails []modelDetail `json:"model_details" jsonschema:"the same models paired with their display labels, in the same order as models. Use it to show a readable name; keep passing the id"`
 }
 
+// agentsOutput is the list_agents result: the agent names accepted by the agent
+// parameter of agy_run and agy_run_sync. Unlike modelsOutput there is no
+// id-vs-label split, because agy prints an agent as a single name and takes it
+// verbatim as --agent.
+type agentsOutput struct {
+	Agents []string `json:"agents" jsonschema:"agent names accepted by the agent parameter of agy_run and agy_run_sync, e.g. reviewer. Pass one verbatim. Empty when no agents are configured, which is a common state, not an error"`
+}
+
 type sessionsInput struct {
 	Dir string `json:"dir,omitempty" jsonschema:"absolute path of a workspace directory to filter to; omit to list every known conversation. The filter is canonicalized (made absolute against the server's working directory, symlinks resolved) before matching, so a path agy cached in some other spelling may not match"`
 }
@@ -333,7 +342,7 @@ Choosing a tool:
 - agy_run_sync starts a run and waits inline (bounded by the wait argument). Use it when you need the answer before your next step and the task is bounded enough to finish within that wait.
 - agy_run returns a job_id in under a couple of seconds (it waits briefly for agy to name the conversation); block on it with agy_wait or poll it with agy_status. Use these for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), or to fan several tasks out in parallel.
 - Outliving the inline wait is not a failure: the job keeps running under its own supervisor and the returned job_id still resolves to its outcome. Wait on it or poll it; do not re-send the prompt.
-- list_models enumerates models; call it only if you want to override the default. list_sessions lists known conversations.
+- list_models enumerates models and list_agents enumerates agents; call them only if you want to override the default model or pick a specific agent. list_sessions lists known conversations.
 
 Notes:
 - Continue a prior thread with conversation_id or continue_latest instead of restating context.
@@ -428,6 +437,24 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 			out.ModelDetails = append(out.ModelDetails, modelDetail{ID: mo.ID, Label: mo.Label})
 		}
 		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        toolListAgents,
+		Title:       "List agy agents",
+		Annotations: annReadExternal,
+		Description: "List the agy agent names accepted by the agent parameter of agy_run and agy_run_sync. Pass a value from agents verbatim; there is no separate id and label, unlike list_models, because agy takes an agent name directly. Call it only when you intend to select a specific agent; omitting agent uses agy's default, so most runs need no call here. An empty list means no agents are configured, which is common and not an error. Shells out to the agy CLI, so it fails if agy is missing from PATH or not authenticated.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, agentsOutput, error) {
+		agents, err := mgr.ListAgents(ctx)
+		if err != nil {
+			return nil, agentsOutput{}, err
+		}
+		// Always an array, never null: a client that indexes the result should see
+		// an empty list rather than have to special-case null.
+		if agents == nil {
+			agents = []string{}
+		}
+		return nil, agentsOutput{Agents: agents}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{

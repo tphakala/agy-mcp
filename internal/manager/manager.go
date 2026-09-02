@@ -361,7 +361,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// Job supervision is implemented on Linux (process groups, /proc) and Windows
 	// (Job Objects, OpenProcess). On other platforms refuse before doing any work, so
 	// the failure is a clear error rather than a half-spawned job. stdio/HTTP serve,
-	// list_models, and list_sessions still work everywhere.
+	// list_models, list_agents, and list_sessions still work everywhere.
 	if !proc.Supported {
 		return Job{}, proc.ErrUnsupported
 	}
