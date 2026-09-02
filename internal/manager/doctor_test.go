@@ -119,6 +119,49 @@ func TestDoctorStateDirFreshInstallPasses(t *testing.T) {
 // filesystem semantics that Windows does not share, so they live in
 // doctor_posix_test.go. The cross-platform healthy fresh-install case is above.
 
+// TestCheckStatusString pins the label each status renders, including the
+// out-of-range default that guards against a new CheckStatus printed as a bare
+// integer in the report.
+func TestCheckStatusString(t *testing.T) {
+	for _, tc := range []struct {
+		s    CheckStatus
+		want string
+	}{
+		{CheckPass, "PASS"},
+		{CheckWarn, "WARN"},
+		{CheckFail, "FAIL"},
+		{CheckStatus(99), "????"},
+	} {
+		if got := tc.s.String(); got != tc.want {
+			t.Errorf("CheckStatus(%d).String() = %q, want %q", tc.s, got, tc.want)
+		}
+	}
+}
+
+// TestDoctorConfigSourcesFromEnv covers the env-override branches of
+// checkConfigSources: when the AGY_MCP_* variables are set, each setting's source
+// is named by its variable rather than the default label, still without a value
+// for the token.
+func TestDoctorConfigSourcesFromEnv(t *testing.T) {
+	t.Setenv("AGY_MCP_AGY_PATH", "/env/agy")
+	t.Setenv("AGY_MCP_STATE_DIR", "/env/state")
+	t.Setenv("AGY_MCP_DEFAULT_MODEL", "gemini-x")
+	const secret = "s3cr3t-http-value"
+	m := New(config.Config{AgyPath: "/env/agy", StateDir: "/env/state", DefaultModel: "gemini-x", HTTPToken: secret})
+	got := m.checkConfigSources()
+	if got.Status != CheckPass {
+		t.Fatalf("status = %v (%s), want PASS", got.Status, got.Detail)
+	}
+	for _, want := range []string{"AGY_MCP_AGY_PATH", "AGY_MCP_STATE_DIR", "AGY_MCP_DEFAULT_MODEL"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail should name source %s, got: %s", want, got.Detail)
+		}
+	}
+	if strings.Contains(got.Detail, secret) {
+		t.Errorf("detail leaked the token value:\n%s", got.Detail)
+	}
+}
+
 // findCheck returns the named check or fails the test if the report lacks it.
 func findCheck(t *testing.T, r DoctorReport, name string) CheckResult {
 	t.Helper()
