@@ -278,7 +278,13 @@ func (m *Manager) checkConfigSources() CheckResult {
 func (m *Manager) checkStaleJobs() CheckResult {
 	ids, err := m.store.List()
 	if err != nil {
-		return CheckResult{checkJobsName, CheckWarn, "cannot list job store: " + err.Error()}
+		// A List() error is not a stale-jobs warning: the store root is unreadable
+		// (permissions, IO), the same condition startup RestoreAndCollect and
+		// RestoreGate fail closed on, so the server itself would refuse to start.
+		// Fail the check so doctor exits non-zero rather than reporting a healthy
+		// exit 0 for an unusable state directory. A missing jobs dir is NOT this
+		// case: Store.List returns an empty list and no error for a fresh install.
+		return CheckResult{checkJobsName, CheckFail, "cannot list job store (state dir unreadable): " + err.Error()}
 	}
 	var stale []string
 	for _, id := range ids {

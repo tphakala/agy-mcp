@@ -14,7 +14,8 @@ import (
 // runs the read-only checks a run depends on (agy binary, version, auth,
 // state dir, config sources, stale jobs), prints one line per check, and returns
 // an exit code a setup script or CI can branch on: 0 when nothing is broken
-// (warnings included), 1 when a check failed.
+// (warnings included), 1 when a check failed, and 2 on a usage error (an
+// unexpected argument or a bad flag).
 //
 // It takes its writers rather than using os.Stdout/os.Stderr directly so a test
 // can capture the report. It never starts a job or mutates job state; the only

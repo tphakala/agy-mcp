@@ -1,7 +1,6 @@
 package manager
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -115,50 +114,10 @@ func TestDoctorStateDirFreshInstallPasses(t *testing.T) {
 	}
 }
 
-// TestDoctorStateDirFreshInstallParentUnwritable: the fresh-install path FAILs when
-// the nearest existing ancestor cannot be written, because creation would fail. It
-// reaches the same os.IsNotExist arm as the passing case but takes the probe-fails
-// branch. Skipped as root, which bypasses the mode bits the probe relies on.
-func TestDoctorStateDirFreshInstallParentUnwritable(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses directory write permissions, so the probe would succeed")
-	}
-	parent := filepath.Join(t.TempDir(), "ro")
-	if err := os.Mkdir(parent, 0o500); err != nil { // r-x, not writable
-		t.Fatal(err)
-	}
-	m := New(config.Config{AgyPath: "/nonexistent/agy", StateDir: filepath.Join(parent, "jobs")})
-	got := m.checkStateDir()
-	if got.Status != CheckFail {
-		t.Fatalf("state dir check = %v (%s), want FAIL when the parent is not writable", got.Status, got.Detail)
-	}
-	// Pin the branch: this must be the fresh-install (IsNotExist) arm reporting an
-	// unwritable parent, not some other FAIL.
-	if !strings.Contains(got.Detail, "not writable") {
-		t.Errorf("detail should name the unwritable parent, got: %s", got.Detail)
-	}
-}
-
-// TestDoctorStateDirStatError: a state dir path whose parent is a regular file (so
-// os.Stat returns ENOTDIR, which os.IsNotExist does NOT treat as "not exist") lands
-// on the catch-all stat-error arm and fails. This pins that arm separately from the
-// fresh-install one above.
-func TestDoctorStateDirStatError(t *testing.T) {
-	blocker := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m := New(config.Config{AgyPath: "/nonexistent/agy", StateDir: filepath.Join(blocker, "agy-mcp", "jobs")})
-	got := m.checkStateDir()
-	if got.Status != CheckFail {
-		t.Fatalf("state dir check = %v (%s), want FAIL when the path's parent is a file", got.Status, got.Detail)
-	}
-	// Pin the branch: a stat error that is NOT os.IsNotExist lands on the catch-all
-	// "cannot stat" arm, distinct from the fresh-install arm above.
-	if !strings.Contains(got.Detail, "cannot stat") {
-		t.Errorf("detail should come from the stat-error arm, got: %s", got.Detail)
-	}
-}
+// The FAIL branches of checkStateDir (an unwritable parent on the fresh-install
+// arm, and a stat error under a regular file on the catch-all arm) depend on Unix
+// filesystem semantics that Windows does not share, so they live in
+// doctor_posix_test.go. The cross-platform healthy fresh-install case is above.
 
 // findCheck returns the named check or fails the test if the report lacks it.
 func findCheck(t *testing.T, r DoctorReport, name string) CheckResult {
