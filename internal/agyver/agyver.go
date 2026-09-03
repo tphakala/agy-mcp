@@ -49,6 +49,19 @@ import (
 //     silently as success, so agy-mcp's exit-code-driven state reports that
 //     failure as failed rather than an empty done.
 //
+// Two later releases (above this floor) hardened behaviors agy-mcp already
+// guards against itself, so neither raises the floor. They are noted so a
+// maintainer knows the guards are now belt-and-suspenders, not the only defense:
+//   - 1.1.23 fixed subcommands (such as `models`) hanging on an inherited,
+//     unclosed stdin pipe. agy-mcp never triggered this: the supervised run
+//     opens os.DevNull as stdin, and the --version/models probes leave cmd.Stdin
+//     unset so exec wires the child to the null device.
+//   - 1.1.24 set FD_CLOEXEC on agy's preserved stdout/stderr so descendants no
+//     longer keep the caller's pipes open on exit. That is the exact hang the
+//     version and models probes work around with WaitDelay (see probeCmd in
+//     internal/manager); the WaitDelay guard stays because the floor is 1.1.15,
+//     which predates the fix.
+//
 // All facts are from agy's own changelog (run `agy changelog`); the 1.1.15 line
 // reads "Fixed streamed text corrupting non-ASCII characters into replacement
 // characters, in both the interactive display and --output-format stream-json
