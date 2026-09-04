@@ -1,11 +1,13 @@
 package manager
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tphakala/agy-mcp/v2/internal/agyver"
 	"github.com/tphakala/agy-mcp/v2/internal/config"
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
@@ -159,6 +161,66 @@ func TestDoctorConfigSourcesFromEnv(t *testing.T) {
 	}
 	if strings.Contains(got.Detail, secret) {
 		t.Errorf("detail leaked the token value:\n%s", got.Detail)
+	}
+}
+
+// TestDoctorVersionCheckFailsBelowFloor: an agy whose version parses cleanly but
+// sits below the required floor makes the version check FAIL and drags the whole
+// report non-OK, even though the binary itself resolves. Driven through the
+// readAgyVersion seam so no real outdated agy is needed. This covers a branch of
+// checkAgyVersion that previously had no test.
+func TestDoctorVersionCheckFailsBelowFloor(t *testing.T) {
+	m := New(config.Config{AgyPath: "/nonexistent/agy", StateDir: t.TempDir(), MaxConcurrency: 4})
+	m.readAgyVersion = func(context.Context, string) (string, error) {
+		return "1.1.7", nil // well-formed, but below the floor
+	}
+
+	report := m.Doctor(t.Context())
+	ver := findCheck(t, report, checkAgyVersionName)
+	if ver.Status != CheckFail {
+		t.Fatalf("version check = %v (%s), want FAIL for an agy below the floor", ver.Status, ver.Detail)
+	}
+	// The detail must name both the found and required versions so the reader can
+	// tell which half of the mismatch to act on.
+	if !strings.Contains(ver.Detail, "1.1.7") || !strings.Contains(ver.Detail, agyver.Required.String()) {
+		t.Errorf("version detail should name the found and required versions, got: %s", ver.Detail)
+	}
+	if report.OK() {
+		t.Fatal("report is OK despite a below-floor version; the command would wrongly exit zero")
+	}
+}
+
+// TestDoctorReachableFailsWhenListingUnavailable: the version gate passes but the
+// model listing (checkAgyReachable) fails because the binary cannot be execed.
+// This covers checkAgyReachable's FAIL branch, previously untested. The version
+// probe is stubbed to a current version, so the failure can only come from the
+// models exec against the unresolvable path, which the detail assertion pins.
+// (The single-probe cache hit is TestDoctorProbesAgyVersionOnce's job; this test
+// does not pin it, since it fails identically whether checkAgyReachable re-probes
+// the version or reuses a primed cache.)
+func TestDoctorReachableFailsWhenListingUnavailable(t *testing.T) {
+	m := New(config.Config{AgyPath: "/nonexistent/agy", StateDir: t.TempDir(), MaxConcurrency: 4})
+	m.readAgyVersion = func(context.Context, string) (string, error) {
+		return agyver.Required.String(), nil // version gate passes; the models exec is what fails
+	}
+
+	report := m.Doctor(t.Context())
+	if ver := findCheck(t, report, checkAgyVersionName); ver.Status != CheckPass {
+		t.Fatalf("version check = %v (%s), want PASS (the seam reports a current version)", ver.Status, ver.Detail)
+	}
+	reach := findCheck(t, report, checkAgyReachableName)
+	if reach.Status != CheckFail {
+		t.Fatalf("reachable check = %v (%s), want FAIL when agy cannot be listed", reach.Status, reach.Detail)
+	}
+	// Pin the failure reason to the models exec against the unresolvable binary,
+	// not some other reachable failure: the exec error names the path, whereas a
+	// decode failure would name the envelope. This keeps the test from passing on
+	// a future change that made checkAgyReachable fail for a different reason.
+	if !strings.Contains(reach.Detail, "/nonexistent/agy") {
+		t.Errorf("reachable detail should name the unresolvable binary, got: %s", reach.Detail)
+	}
+	if report.OK() {
+		t.Fatal("report is OK despite an unreachable agy")
 	}
 }
 

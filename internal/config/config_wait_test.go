@@ -42,3 +42,24 @@ func TestResolveWaitNeedsNoAgy(t *testing.T) {
 		t.Fatal("SupervisorExe = \"\", want the wait config's own executable path")
 	}
 }
+
+// TestEnvVarNameConstants pins the exported environment-variable names to their
+// wire values. They are the user-facing configuration contract, now shared with
+// the doctor command's source labels, so a rename is a deliberate change a user
+// would feel, not an incidental refactor: this test forces renaming one to be a
+// conscious edit here rather than a silent break. Pinning each to a distinct
+// reviewed literal also rules out a copy-paste that aimed two settings at the same
+// variable, since two equal constants cannot both match their distinct wants.
+func TestEnvVarNameConstants(t *testing.T) {
+	cases := []struct{ got, want string }{
+		{EnvAgyPath, "AGY_MCP_AGY_PATH"},
+		{EnvDefaultModel, "AGY_MCP_DEFAULT_MODEL"},
+		{EnvStateDir, "AGY_MCP_STATE_DIR"},
+		{EnvHTTPToken, "AGY_MCP_HTTP_TOKEN"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("env var constant = %q, want %q", tc.got, tc.want)
+		}
+	}
+}

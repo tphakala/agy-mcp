@@ -168,6 +168,19 @@ func (m *Manager) agyBinaryChecked(ctx context.Context) (string, error) {
 	return agy, nil
 }
 
+// markAgyVerified records that the agy at path has already passed the version
+// floor in this process, so the next agyBinaryChecked returns it without a fresh
+// `agy --version` probe. Doctor uses it: checkAgyVersion runs the same
+// read+parse+floor check agyBinaryChecked would, so priming the cache after it
+// passes collapses the two probes one Doctor run would otherwise make into one.
+// Priming a path that a later AgyBinary resolves differently is harmless:
+// agyBinaryChecked re-probes on a cache miss.
+func (m *Manager) markAgyVerified(agy string) {
+	m.verifyMu.Lock()
+	defer m.verifyMu.Unlock()
+	m.verifiedAgy = agy
+}
+
 // probeCmd builds the command for one of the manager's short-lived agy probes.
 // It exists so the console-window suppression both probes need is applied in one
 // place a test can inspect, rather than being remembered separately at each site.
