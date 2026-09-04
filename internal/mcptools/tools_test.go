@@ -140,6 +140,18 @@ func TestToStartRequestPassesJSONSchema(t *testing.T) {
 	}
 }
 
+func TestToStartRequestPassesIdempotencyKey(t *testing.T) {
+	t.Parallel()
+	const key = "retry-123"
+	req, err := runInput{Prompt: "x", IdempotencyKey: key}.toStartRequest()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.IdempotencyKey != key {
+		t.Fatalf("IdempotencyKey = %q, want %q", req.IdempotencyKey, key)
+	}
+}
+
 // TestToStartRequestPassesRunOptions: the effort/mode/agent/sandbox inputs are
 // threaded into the start request so buildAgyArgs can forward them to agy. A
 // dropped field here would silently ignore a caller's run-shaping request.

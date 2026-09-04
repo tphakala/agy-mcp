@@ -577,6 +577,20 @@ func TestStatusTerminalContract(t *testing.T) {
 	}
 }
 
+func TestArgsSelectJSONSchemaAcceptsBothFlagSpellings(t *testing.T) {
+	for _, args := range [][]string{
+		{jsonSchemaFlag, `{"type":"object"}`},
+		{jsonSchemaFlag + `={"type":"object"}`},
+	} {
+		if !argsSelectJSONSchema(args) {
+			t.Fatalf("argsSelectJSONSchema(%q) = false, want true", args)
+		}
+	}
+	if argsSelectJSONSchema([]string{"--not-json-schema", "x"}) {
+		t.Fatal("unrelated flag was classified as json-schema")
+	}
+}
+
 func TestStatusJSONSchemaResultSelection(t *testing.T) {
 	schemaArgs := []string{outputFormatFlag, streamJSONFormat, jsonSchemaFlag, `{"type":"object"}`, "-p", "hi"}
 	responseWithToolMetadata := `{"business":"ok","toolAction":"Finishing task","toolSummary":"Task completion"}`
@@ -658,6 +672,31 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 				t.Fatalf("status = %+v, want done result %q partial false", st, raw)
 			}
 		})
+	}
+}
+
+func TestStatusHistoricalSchemaJobWithoutStructuredOutputFailsClosed(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir, err := m.store.Create(jobstore.Meta{
+		ID: "old-schema", StartedAt: time.Now(), BootID: readBootID(),
+		Args: []string{outputFormatFlag, streamJSONFormat, jsonSchemaFlag, `{"type":"object"}`, "-p", "hi"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeResultPayload(t, dir, streamjson.Result{Status: streamjson.StatusSuccess, Response: `{"legacy":"response"}`})
+	if err := m.store.WriteExitCode("old-schema", 0); err != nil {
+		t.Fatal(err)
+	}
+	st, err := m.Status("old-schema")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateFailed || st.FailureReason != ReasonAgyError || !st.Partial {
+		t.Fatalf("historical schema status = %+v, want failed/agy_error/partial", st)
+	}
+	if st.Result != `{"legacy":"response"}` || !strings.Contains(st.Error, "without structured_output") {
+		t.Fatalf("historical schema diagnostic = %+v", st)
 	}
 }
 

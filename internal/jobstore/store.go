@@ -32,6 +32,7 @@ type Meta struct {
 	Cwd            string        `json:"cwd"`
 	Model          string        `json:"model,omitempty"`
 	ConversationID string        `json:"conversation_id,omitempty"`
+	IdempotencyKey string        `json:"idempotency_key,omitempty"`
 	Prompt         string        `json:"prompt"`
 	StartedAt      time.Time     `json:"started_at"`
 	PID            int           `json:"pid"`

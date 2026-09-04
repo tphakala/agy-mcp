@@ -31,6 +31,7 @@ type runInput struct {
 	Cwd            string   `json:"cwd,omitempty" jsonschema:"absolute path of the directory the agent runs in and may edit files under; also scopes continue_latest. Fresh runs sharing a cwd run concurrently. A relative path is resolved against the server's working directory, which is not necessarily yours, so pass an absolute one. Symlinks are resolved. Defaults to the server's own working directory"`
 	Timeout        string   `json:"timeout,omitempty" jsonschema:"max wall-clock duration for the whole run (Go duration, e.g. 20m); a value over 24h is rejected. On expiry the agy process tree is killed mid-run and the job ends in state failed. The kill is hard: any answer already streamed is offered back as a partial result, but work still in the model's reasoning or a tool call has produced no recoverable text yet, so a run killed before it streams its answer recovers nothing. To carry on, start a fresh agy_run with this run's conversation_id so the thread continues without restating the task; the killed turn's own reasoning is not recoverable. Omit to use the server's default"`
 	JSONSchema     string   `json:"json_schema,omitempty" jsonschema:"optional JSON Schema to enforce on the run's structured result: pass either an inline schema string or a path to a schema file, and agy constrains the final result to it (in stream-json mode the schema applies to the terminal result event). Omit for an unconstrained free-text result. Useful when the result is consumed programmatically, e.g. extraction, classification, or structured summaries"`
+	IdempotencyKey string   `json:"idempotency_key,omitempty" jsonschema:"optional retry token for agy-mcp job creation. Reusing the same key with the same normalized run request returns the existing job instead of starting another; reusing it with a different request is rejected. Keys are remembered while the job remains in the job store (24h by default). Use this when a transport failure could leave it ambiguous whether a run already started"`
 }
 
 // maxJobTimeout caps a client-supplied per-job timeout. It bounds both the agy
@@ -93,7 +94,8 @@ const (
 var (
 	// annDelegate: spawns a full agy agent under --dangerously-skip-permissions,
 	// so it can edit files under cwd and under every dir passed in, and may reach
-	// the network. Each call starts a distinct job, so it is not idempotent.
+	// the network. Without an explicit idempotency_key each call starts a distinct
+	// job, so the tool itself cannot be annotated idempotent.
 	// destructiveHint is stated rather than left to default because the delegated
 	// agent really can overwrite the repo; the SDK notes annotations are hints a
 	// client need not honour, so this documents intent rather than enforcing it.
@@ -137,11 +139,12 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 	req := manager.StartRequest{
 		Prompt: in.Prompt, Model: in.Model, Dirs: in.Dirs,
 		ConversationID: in.ConversationID, ContinueLatest: in.ContinueLatest, Cwd: in.Cwd,
-		JSONSchema: in.JSONSchema,
-		Effort:     in.Effort,
-		Mode:       in.Mode,
-		Agent:      in.Agent,
-		Sandbox:    in.Sandbox,
+		JSONSchema:     in.JSONSchema,
+		Effort:         in.Effort,
+		Mode:           in.Mode,
+		Agent:          in.Agent,
+		Sandbox:        in.Sandbox,
+		IdempotencyKey: in.IdempotencyKey,
 	}
 	if in.Effort != "" && in.Effort != agyEffortLow && in.Effort != agyEffortMedium && in.Effort != agyEffortHigh {
 		return manager.StartRequest{}, fmt.Errorf("invalid effort %q: want %s, %s or %s", in.Effort, agyEffortLow, agyEffortMedium, agyEffortHigh)
@@ -171,7 +174,7 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 type runOutput struct {
 	JobID          string `json:"job_id" jsonschema:"handle for this run; pass it to agy_wait, agy_status or agy_cancel"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Rarely empty on a fresh run, when agy had not yet named the conversation; agy_status reports it moments later"`
-	State          string `json:"state" jsonschema:"always running: the state at hand-off, not a live check. A short run can already have finished by the time this is returned and still reports running here. Block with agy_wait or check agy_status for the outcome"`
+	State          string `json:"state" jsonschema:"running for a newly-created job; when idempotency_key replays an existing job, its current running, done, failed or cancelled state. Use agy_wait or agy_status when you need the full terminal result"`
 }
 
 type statusInput struct {
@@ -199,7 +202,7 @@ type statusOutput struct {
 	Model string `json:"model,omitempty" jsonschema:"the model id agy-mcp resolved for this run and passed to agy: the model you set, or AGY_MCP_DEFAULT_MODEL, reduced to the id column. Absent when the server pinned no model and agy ran on its own default"`
 	// Partial marks a result that is not a verified final answer; see
 	// manager.Status.Partial.
-	Partial bool `json:"partial,omitempty" jsonschema:"true when result is not the verified final answer, so treat it as incomplete. It follows from where the text came from: true when the text was reconstructed from the streamed events, because agy never reported a terminal result or the one it reported carried no text, and true when agy reported a terminal result that was not a success, so its text is only what the run had produced when it stopped. A response agy itself marked successful is never partial, even on a job that was then cancelled or killed"`
+	Partial bool `json:"partial,omitempty" jsonschema:"true when result is not the verified final answer, so treat it as incomplete. It follows from provenance: streamed fallback text is partial; a non-schema SUCCESS response is complete; for a json_schema run only SUCCESS structured_output is complete, while response retained because structured_output is missing is diagnostic and partial. An authoritative result stays complete even if the process is then cancelled or killed"`
 	// NumTurns and Usage are agy's own accounting, present once the run reported
 	// a terminal result.
 	NumTurns int          `json:"num_turns,omitempty" jsonschema:"how many turns the conversation has taken, as reported by agy"`
@@ -342,6 +345,7 @@ Choosing a tool:
 - agy_run_sync starts a run and waits inline (bounded by the wait argument). Use it when you need the answer before your next step and the task is bounded enough to finish within that wait.
 - agy_run returns a job_id in under a couple of seconds (it waits briefly for agy to name the conversation); block on it with agy_wait or poll it with agy_status. Use these for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), or to fan several tasks out in parallel.
 - Outliving the inline wait is not a failure: the job keeps running under its own supervisor and the returned job_id still resolves to its outcome. Wait on it or poll it; do not re-send the prompt.
+- When a transport failure could make it ambiguous whether a run started, supply idempotency_key and reuse that same key on the retry. The same normalized request returns the existing job; a different request with that key is refused.
 - list_models enumerates models and list_agents enumerates agents; call them only if you want to override the default model or pick a specific agent. list_sessions lists known conversations.
 
 Notes:
@@ -362,7 +366,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolAgyRun,
 		Title:       "Delegate to agy (async)",
 		Annotations: annDelegate,
-		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id; block on it with agy_wait or poll it with agy_status. Prefer this over agy_run_sync for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), and to fan several tasks out in parallel; use agy_run_sync instead when you need the answer before your next step. The delegated agent runs with permission checks disabled: it can edit files under cwd and under any dirs, and may reach the network. Say so in the prompt if the run must not touch the repo.",
+		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id; block on it with agy_wait or poll it with agy_status. Prefer this over agy_run_sync for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), and to fan several tasks out in parallel; use agy_run_sync instead when you need the answer before your next step. If a transport failure could make job creation ambiguous, supply idempotency_key and reuse it on the retry. The delegated agent runs with permission checks disabled: it can edit files under cwd and under any dirs, and may reach the network. Say so in the prompt if the run must not touch the repo.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
 		req, err := in.toStartRequest()
 		if err != nil {

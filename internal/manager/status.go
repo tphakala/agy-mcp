@@ -103,9 +103,11 @@ type Status struct {
 	//     ERROR, an outcome this build does not recognize, or none at all. The
 	//     text is whatever the run had produced when it stopped.
 	//
-	// A response agy marked SUCCESS is never partial, even when the job then
-	// ended as cancelled or failed: the answer was already complete when that
-	// happened.
+	// For a non-schema run, a response agy marked SUCCESS is authoritative. For
+	// a schema run, only SUCCESS structured_output is authoritative; response is
+	// diagnostic and partial when that structured result is missing. Either kind
+	// of authoritative result stays complete even if the process then exits via
+	// cancel or timeout.
 	Partial bool
 	// NumTurns and Usage are agy's own accounting, present only once a terminal
 	// result event has been recorded.
@@ -457,23 +459,22 @@ func argsSelectJSONSchema(args []string) bool {
 // There are exactly two sources of text, and which one supplied it is the whole
 // of the Partial decision:
 //
-//   - agy's terminal payload. It is authoritative, so a response agy itself
-//     marked SUCCESS is the complete answer even when the job then ended badly:
-//     agy prints its result and hangs, or is cancelled a moment later, so the
-//     run is killed with a finished answer already on disk, and preferring the
-//     stream there would discard the very thing the caller asked for. Any other
-//     status (ERROR, an outcome this build has never heard of, or none at all)
-//     is agy declining to vouch for the text, so it is handed back and flagged
-//     rather than discarded.
+//   - agy's terminal payload. For a non-schema run, a SUCCESS response is
+//     authoritative. For a schema run, a SUCCESS structured_output is the
+//     authoritative result instead; a response is retained only as partial
+//     diagnostics when that structured result is missing. An authoritative
+//     result remains complete even when the process then exits badly: agy can
+//     print its result and hang, or be cancelled a moment later. Any other
+//     terminal status is agy declining to vouch for the text, so it is handed
+//     back and flagged rather than discarded.
 //   - the streamed out file, reached when there is no payload or the payload
 //     carried no text. It is reconstructed from a stream that stopped, so it may
 //     be truncated or hold intermediate turns, and is partial.
 //
-// Note that the second case can follow a SUCCESS payload: agy vouched for the
-// run but its response was empty, so the text handed back is the stream's, not
-// agy's, and it is flagged accordingly. "A response agy marked SUCCESS is never
-// partial" is a statement about agy's RESPONSE, not about every result reported
-// for a run agy marked successful.
+// Note that the second case can follow a SUCCESS payload: a non-schema response
+// can be empty, or a schema run can lack structured_output, leaving only fallback
+// text. In both cases the text handed back is not the authoritative final result
+// for that run and is flagged accordingly.
 //
 // Provenance, not state, is what decides Partial. State cannot tell the two
 // apart: a cancelled run holds a complete answer in the first case and a

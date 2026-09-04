@@ -33,6 +33,41 @@ func (m *Manager) admit(key string) (acquireOutcome, error) {
 	return acquireOK, nil
 }
 
+// acquireIdempotency takes a short-lived creation claim for one retry token. It
+// is independent of the conversation gate: a request can need both locks at once.
+// The in-process map prevents crossLock's duplicate-held-key guard from surfacing
+// as an internal error, while the hashed cross-process lock excludes sibling MCP
+// server processes that share the state directory.
+func (m *Manager) acquireIdempotency(key string) (bool, error) {
+	lockKey := "idem:" + key
+	m.idemMu.Lock()
+	if m.idemKeys[lockKey] {
+		m.idemMu.Unlock()
+		return false, nil
+	}
+	m.idemKeys[lockKey] = true
+	m.idemMu.Unlock()
+
+	locked, err := m.xlock.tryLock(lockKey)
+	if err != nil || !locked {
+		m.idemMu.Lock()
+		delete(m.idemKeys, lockKey)
+		m.idemMu.Unlock()
+	}
+	return locked, err
+}
+
+func (m *Manager) releaseIdempotency(key string) {
+	lockKey := "idem:" + key
+	// Release the cross-process lock first, matching releaseKey's ordering: a
+	// local waiter must not observe the key as free while this process still owns
+	// the underlying flock.
+	m.xlock.unlock(lockKey)
+	m.idemMu.Lock()
+	delete(m.idemKeys, lockKey)
+	m.idemMu.Unlock()
+}
+
 // releaseKey releases both the in-process gate slot/key and the cross-process lock
 // for key. It pairs with admit and forceAdmit. The cross-process unlock is a no-op
 // for a key this process does not hold (a restored job whose lock a sibling held),
