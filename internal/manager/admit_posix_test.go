@@ -21,6 +21,25 @@ func twoManagers(t *testing.T) (m1, m2 *Manager) {
 // TestAdmitExcludesAcrossManagers: a fresh-run key admitted by one manager must be
 // refused to a sibling manager sharing the state dir, then admittable once released.
 // This is the cross-process serialization the in-process gate alone cannot provide.
+func TestIdempotencyClaimExcludesAcrossManagers(t *testing.T) {
+	state := t.TempDir()
+	m1 := newManager(t, managerOpts{stateDir: state, maxConcurrency: 4})
+	m2 := newManager(t, managerOpts{stateDir: state, maxConcurrency: 4})
+
+	ok, err := m1.acquireIdempotency("retry-1")
+	if err != nil || !ok {
+		t.Fatalf("first acquireIdempotency = (%v, %v), want (true, nil)", ok, err)
+	}
+	if ok, err := m2.acquireIdempotency("retry-1"); err != nil || ok {
+		t.Fatalf("sibling acquireIdempotency = (%v, %v), want (false, nil)", ok, err)
+	}
+	m1.releaseIdempotency("retry-1")
+	if ok, err := m2.acquireIdempotency("retry-1"); err != nil || !ok {
+		t.Fatalf("acquire after release = (%v, %v), want (true, nil)", ok, err)
+	}
+	m2.releaseIdempotency("retry-1")
+}
+
 func TestAdmitExcludesAcrossManagers(t *testing.T) {
 	m1, m2 := twoManagers(t)
 

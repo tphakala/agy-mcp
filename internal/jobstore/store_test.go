@@ -155,6 +155,9 @@ func TestStartTimeTicksRoundTripAndBackCompat(t *testing.T) {
 	if lm.StartTimeTicks != 0 {
 		t.Fatalf("legacy meta StartTimeTicks = %d, want 0", lm.StartTimeTicks)
 	}
+	if lm.IdempotencyKey != "" {
+		t.Fatalf("legacy meta IdempotencyKey = %q, want empty", lm.IdempotencyKey)
+	}
 }
 
 func TestUpdateMetaRoundTrip(t *testing.T) {

@@ -103,9 +103,11 @@ type Status struct {
 	//     ERROR, an outcome this build does not recognize, or none at all. The
 	//     text is whatever the run had produced when it stopped.
 	//
-	// A response agy marked SUCCESS is never partial, even when the job then
-	// ended as cancelled or failed: the answer was already complete when that
-	// happened.
+	// For a non-schema run, a response agy marked SUCCESS is authoritative. For
+	// a schema run, only SUCCESS structured_output is authoritative; response is
+	// diagnostic and partial when that structured result is missing. Either kind
+	// of authoritative result stays complete even if the process then exits via
+	// cancel or timeout.
 	Partial bool
 	// NumTurns and Usage are agy's own accounting, present only once a terminal
 	// result event has been recorded.
@@ -170,7 +172,7 @@ func (m *Manager) Status(id string) (Status, error) {
 	// left to write one), so freeze elapsed at the best available end time before
 	// classifying the outcome, so a recovered job's elapsed does not keep growing.
 	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
-	return recoverInterrupted(dir, st), nil
+	return recoverInterrupted(dir, meta, st), nil
 }
 
 // recoverInterrupted classifies a job whose supervisor vanished without writing
@@ -187,9 +189,9 @@ func (m *Manager) Status(id string) (Status, error) {
 // and then the streamed text is partial. It reads out here rather than through
 // carryText because it needs the read ERROR: an out file that exists and cannot
 // be read is a failure to report, not an absent answer to pass over.
-func recoverInterrupted(dir string, st Status) Status {
+func recoverInterrupted(dir string, meta jobstore.Meta, st Status) Status {
 	if res, ok := readResultPayload(dir); ok {
-		return applyResult(dir, st, res)
+		return applyResult(dir, meta, st, res)
 	}
 	out, rerr := readFile(jobstore.OutPath(dir))
 	switch {
@@ -232,7 +234,7 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		if !hasResult {
 			return cleanExitWithoutPayload(dir, meta, st)
 		}
-		return applyResult(dir, st, res)
+		return applyResult(dir, meta, st, res)
 	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
 		st.State = StateCancelled
 	case jobstore.ExitTimeout:
@@ -263,7 +265,7 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	// failed exec. Whatever text they produced is the only answer they will ever
 	// have, so they all carry it rather than giving a timed-out run its partial
 	// answer and a crashed or 127'd one nothing.
-	st = carryText(dir, st, hasResult, res)
+	st = carryText(dir, st, hasResult, res, argsSelectJSONSchema(meta.Args))
 	// A cancelled or timed-out run still has a conversation worth continuing, so
 	// carry the id (and the accounting) from any payload that did get written.
 	if hasResult {
@@ -284,6 +286,14 @@ func cleanExitWithoutPayload(dir string, meta jobstore.Meta, st Status) Status {
 		st.FailureReason = ReasonUnknown
 		return st
 	}
+	if argsSelectJSONSchema(meta.Args) {
+		st.State = StateFailed
+		st.Error = "agy completed a json-schema run without a terminal structured_output"
+		st.FailureReason = ReasonAgyError
+		st.Result = out
+		st.Partial = out != ""
+		return st
+	}
 	st.State = StateDone
 	st.Result = out
 	// A run that produced an event stream but no terminal payload really was cut
@@ -302,8 +312,9 @@ func cleanExitWithoutPayload(dir string, meta jobstore.Meta, st Status) Status {
 // whatever the outcome (via carryResultMetadata). The answer itself, and
 // whether this build can vouch for it, are left to carryText so that a payload
 // is read the same way here as on every other terminal path.
-func applyResult(dir string, st Status, res streamjson.Result) Status {
+func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Result) Status {
 	st = carryResultMetadata(st, res)
+	strictSchema := argsSelectJSONSchema(meta.Args)
 	switch {
 	case res.Status == streamjson.StatusError:
 		st.State = StateFailed
@@ -317,7 +328,13 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 			st.Error = "agy reported an error without a message"
 		}
 	case res.Status == streamjson.StatusSuccess:
-		st.State = StateDone
+		if strictSchema && len(res.StructuredOutput) == 0 {
+			st.State = StateFailed
+			st.Error = "agy reported SUCCESS for a json-schema run without structured_output"
+			st.FailureReason = ReasonAgyError
+		} else {
+			st.State = StateDone
+		}
 	// An ABSENT status is only treated as success when the payload actually
 	// carries an answer. `omitempty` is agy-mcp's own struct tag, so it is
 	// evidence about this decoder, not a statement about agy's wire format;
@@ -330,11 +347,15 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 	// renames or restructures the status field while keeping a response would
 	// otherwise have a run cut short by MAX_TURNS reported as a clean, complete
 	// answer, which is the exact failure this branch exists to prevent.
-	case res.Status == "" && res.Response != "":
+	case res.Status == "" && res.Response != "" && !strictSchema:
 		st.State = StateDone
 	case res.Status == "":
 		st.State = StateFailed
-		st.Error = "agy's result payload carried no status and no response"
+		if strictSchema {
+			st.Error = "agy's json-schema result payload carried no SUCCESS structured_output"
+		} else {
+			st.Error = "agy's result payload carried no status and no response"
+		}
 		st.FailureReason = ReasonAgyError
 	// A named status this build has never heard of. agyver sets a version floor
 	// and no ceiling, so a newer agy may report an outcome such as CANCELLED or
@@ -346,7 +367,7 @@ func applyResult(dir string, st Status, res streamjson.Result) Status {
 		st.Error = fmt.Sprintf("agy reported an unrecognized result status %q", res.Status)
 		st.FailureReason = ReasonAgyError
 	}
-	return carryText(dir, st, true, res)
+	return carryText(dir, st, true, res, strictSchema)
 }
 
 // streamJSONRun reports whether a job dir carries evidence that this build, or
@@ -414,6 +435,26 @@ func argsSelectOutputFormat(args []string) bool {
 	})
 }
 
+// argsSelectJSONSchema reports whether persisted args enable --json-schema, in
+// either spelling. It scans only option tokens: the token after -p is the
+// caller's free-text prompt, so a prompt that is literally "--json-schema" (or
+// begins with "--json-schema=") must not be read as selecting a schema run. That
+// misread would wrongly reject the run's normal successful response for lacking
+// structured_output, since buildAgyArgs persists the prompt into the same arg
+// vector this scans.
+func argsSelectJSONSchema(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		if args[i] == promptFlag {
+			i++ // skip the prompt value; it is caller text, not an option
+			continue
+		}
+		if args[i] == jsonSchemaFlag || strings.HasPrefix(args[i], jsonSchemaFlag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 // carryText attaches the answer a run produced and records whether this build
 // can vouch for it as the final one.
 //
@@ -432,23 +473,22 @@ func argsSelectOutputFormat(args []string) bool {
 // There are exactly two sources of text, and which one supplied it is the whole
 // of the Partial decision:
 //
-//   - agy's terminal payload. It is authoritative, so a response agy itself
-//     marked SUCCESS is the complete answer even when the job then ended badly:
-//     agy prints its result and hangs, or is cancelled a moment later, so the
-//     run is killed with a finished answer already on disk, and preferring the
-//     stream there would discard the very thing the caller asked for. Any other
-//     status (ERROR, an outcome this build has never heard of, or none at all)
-//     is agy declining to vouch for the text, so it is handed back and flagged
-//     rather than discarded.
+//   - agy's terminal payload. For a non-schema run, a SUCCESS response is
+//     authoritative. For a schema run, a SUCCESS structured_output is the
+//     authoritative result instead; a response is retained only as partial
+//     diagnostics when that structured result is missing. An authoritative
+//     result remains complete even when the process then exits badly: agy can
+//     print its result and hang, or be cancelled a moment later. Any other
+//     terminal status is agy declining to vouch for the text, so it is handed
+//     back and flagged rather than discarded.
 //   - the streamed out file, reached when there is no payload or the payload
 //     carried no text. It is reconstructed from a stream that stopped, so it may
 //     be truncated or hold intermediate turns, and is partial.
 //
-// Note that the second case can follow a SUCCESS payload: agy vouched for the
-// run but its response was empty, so the text handed back is the stream's, not
-// agy's, and it is flagged accordingly. "A response agy marked SUCCESS is never
-// partial" is a statement about agy's RESPONSE, not about every result reported
-// for a run agy marked successful.
+// Note that the second case can follow a SUCCESS payload: a non-schema response
+// can be empty, or a schema run can lack structured_output, leaving only fallback
+// text. In both cases the text handed back is not the authoritative final result
+// for that run and is flagged accordingly.
 //
 // Provenance, not state, is what decides Partial. State cannot tell the two
 // apart: a cancelled run holds a complete answer in the first case and a
@@ -458,7 +498,11 @@ func argsSelectOutputFormat(args []string) bool {
 // A read failure is not surfaced as an error because the job's state is already
 // decided by its exit code or its payload; the absent text is simply not
 // reported.
-func carryText(dir string, st Status, hasResult bool, res streamjson.Result) Status {
+func carryText(dir string, st Status, hasResult bool, res streamjson.Result, strictSchema bool) Status {
+	if hasResult && strictSchema && res.Status == streamjson.StatusSuccess && len(res.StructuredOutput) > 0 {
+		st.Result = string(res.StructuredOutput)
+		return st
+	}
 	if hasResult && res.Response != "" {
 		// Match readFile's trimming so a result reads identically whether it came
 		// from the payload or from the streamed fallback.
@@ -469,7 +513,7 @@ func carryText(dir string, st Status, hasResult bool, res streamjson.Result) Sta
 		// that learns the text is untrustworthy for its own reason (skipped
 		// lines in the stream, say) must not have that silently cleared by a
 		// payload agy happened to mark SUCCESS.
-		st.Partial = st.Partial || res.Status != streamjson.StatusSuccess
+		st.Partial = st.Partial || res.Status != streamjson.StatusSuccess || strictSchema
 		return st
 	}
 	out, err := readFile(jobstore.OutPath(dir))

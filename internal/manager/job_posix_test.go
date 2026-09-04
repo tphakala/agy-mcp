@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
@@ -83,6 +84,172 @@ func TestStartJobWiresConversationID(t *testing.T) {
 	if !hasArg(meta.Args, "--conversation", convID) {
 		t.Errorf("args missing --conversation %s: %v", convID, meta.Args)
 	}
+}
+
+func TestStartJobIdempotencyReusesExistingJob(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "done", Sleep: 30 * time.Second})
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	cwd := t.TempDir()
+	req := StartRequest{Prompt: "review", Cwd: cwd, IdempotencyKey: "retry-1"}
+
+	first, err := m.StartJob(req)
+	if err != nil {
+		t.Fatalf("first StartJob: %v", err)
+	}
+	killJob(t, m, first.ID)
+	second, err := m.StartJob(req)
+	if err != nil {
+		t.Fatalf("retry StartJob: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("retry created job %s, want existing %s", second.ID, first.ID)
+	}
+	ids, err := m.store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("job ids = %v, want exactly one", ids)
+	}
+	meta, err := m.store.Load(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.IdempotencyKey != "retry-1" {
+		t.Fatalf("persisted idempotency_key = %q, want retry-1", meta.IdempotencyKey)
+	}
+}
+
+func TestStartJobIdempotencyReplaysTerminalState(t *testing.T) {
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	req := StartRequest{Prompt: "review", Cwd: t.TempDir(), IdempotencyKey: "retry-done"}
+	first, err := m.StartJob(req)
+	if err != nil {
+		t.Fatalf("first StartJob: %v", err)
+	}
+	testutil.WaitFor(t, 15*time.Second, func() bool {
+		_, ok := m.store.ExitCode(first.ID)
+		return ok
+	}, "first idempotent job did not finish")
+
+	replay, err := m.StartJob(req)
+	if err != nil {
+		t.Fatalf("terminal replay StartJob: %v", err)
+	}
+	if replay.ID != first.ID || replay.State != StateDone {
+		t.Fatalf("terminal replay = %+v, want same job %s in state done", replay, first.ID)
+	}
+}
+
+func TestStartJobIdempotencyFailsClosedWhileCreatorHoldsClaim(t *testing.T) {
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	ok, err := m.acquireIdempotency("retry-starting")
+	if err != nil || !ok {
+		t.Fatalf("pre-acquire idempotency claim = (%v, %v), want (true, nil)", ok, err)
+	}
+	defer m.releaseIdempotency("retry-starting")
+
+	_, err = m.StartJob(StartRequest{Prompt: "review", Cwd: t.TempDir(), IdempotencyKey: "retry-starting"})
+	if err == nil || !strings.Contains(err.Error(), "is starting; retry with the same key") {
+		t.Fatalf("StartJob during creation claim error = %v, want retry-safe starting refusal", err)
+	}
+	ids, lerr := m.store.List()
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("refused retry created jobs: %v", ids)
+	}
+}
+
+func TestStartJobIdempotencyRejectsDifferentRequest(t *testing.T) {
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	cwd := t.TempDir()
+	first, err := m.StartJob(StartRequest{Prompt: "one", Cwd: cwd, IdempotencyKey: "retry-1"})
+	if err != nil {
+		t.Fatalf("first StartJob: %v", err)
+	}
+	deferJobDone(t, m, first.ID)
+	_, err = m.StartJob(StartRequest{Prompt: "two", Cwd: cwd, IdempotencyKey: "retry-1"})
+	if err == nil || !strings.Contains(err.Error(), "different normalized request") {
+		t.Fatalf("mismatched retry error = %v, want fail-closed idempotency rejection", err)
+	}
+	ids, lerr := m.store.List()
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("mismatched retry created another job: %v", ids)
+	}
+}
+
+// TestStartJobIdempotencySkipsFailedCreationRemnant pins the PID==0 guard in
+// findIdempotentJob: a record bound to the key that never persisted a supervisor
+// PID is a failed-creation remnant (what an ignored store.Remove error during
+// teardown leaves behind), so a retry must start a fresh job rather than replay a
+// run that never started.
+func TestStartJobIdempotencySkipsFailedCreationRemnant(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "done", Sleep: 30 * time.Second})
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	req := StartRequest{Prompt: "review", Cwd: t.TempDir(), IdempotencyKey: "retry-orphan"}
+
+	// Seed the remnant with the SAME normalized cwd+args StartJob will derive, so it
+	// gets past the different-request check and exercises the PID==0 skip. No PID and
+	// no exit sentinel is exactly the leaked-record state.
+	nreq, err := m.normalizeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.store.Create(jobstore.Meta{
+		ID:             "orphan",
+		IdempotencyKey: req.IdempotencyKey,
+		Cwd:            nreq.Cwd,
+		Args:           buildAgyArgs(nreq),
+		Prompt:         nreq.Prompt,
+		StartedAt:      time.Now().UTC(),
+		BootID:         readBootID(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := m.StartJob(req)
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	if job.ID == "orphan" {
+		t.Fatal("replayed the failed-creation remnant instead of starting a fresh job")
+	}
+	killJob(t, m, job.ID)
 }
 
 func TestStartJobCleansUpDirOnSpawnFailure(t *testing.T) {

@@ -80,6 +80,26 @@ func TestReadsRealCapture(t *testing.T) {
 	}
 }
 
+func TestResultPreservesStructuredOutputShapes(t *testing.T) {
+	for _, raw := range []string{
+		`{"business":"ok"}`,
+		`[1,"two"]`,
+		`"scalar"`,
+		`null`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			in := `{"event":"result","result":{"status":"SUCCESS","response":"diagnostic","structured_output":` + raw + `}}`
+			evs := readAll(t, NewReader(strings.NewReader(in)))
+			if len(evs) != 1 || evs[0].Result == nil {
+				t.Fatalf("events = %+v", evs)
+			}
+			if got := string(evs[0].Result.StructuredOutput); got != raw {
+				t.Fatalf("structured_output = %q, want %q", got, raw)
+			}
+		})
+	}
+}
+
 // Every event kind must surface the conversation, wherever it puts it: the init
 // event at the top level, the others inside their payload.
 func TestConversationIDOf(t *testing.T) {

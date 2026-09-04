@@ -577,6 +577,146 @@ func TestStatusTerminalContract(t *testing.T) {
 	}
 }
 
+func TestArgsSelectJSONSchemaAcceptsBothFlagSpellings(t *testing.T) {
+	for _, args := range [][]string{
+		{jsonSchemaFlag, `{"type":"object"}`},
+		{jsonSchemaFlag + `={"type":"object"}`},
+	} {
+		if !argsSelectJSONSchema(args) {
+			t.Fatalf("argsSelectJSONSchema(%q) = false, want true", args)
+		}
+	}
+	if argsSelectJSONSchema([]string{"--not-json-schema", "x"}) {
+		t.Fatal("unrelated flag was classified as json-schema")
+	}
+	// The prompt value after -p is caller free text, not an option: a prompt that
+	// is (or begins with) the flag must NOT be read as selecting a schema run,
+	// which would wrongly fail the run's normal response for lacking structured_output.
+	for _, args := range [][]string{
+		{promptFlag, jsonSchemaFlag},
+		{promptFlag, jsonSchemaFlag + "={}"},
+		{outputFormatFlag, streamJSONFormat, promptFlag, jsonSchemaFlag},
+	} {
+		if argsSelectJSONSchema(args) {
+			t.Fatalf("argsSelectJSONSchema(%q) = true, want false: a prompt value must not be classified as an option", args)
+		}
+	}
+	// A genuine --json-schema option before the prompt is still detected even when
+	// the prompt itself happens to look like the flag.
+	if !argsSelectJSONSchema([]string{jsonSchemaFlag, "{}", promptFlag, jsonSchemaFlag}) {
+		t.Fatal("real --json-schema option before the prompt was not detected")
+	}
+}
+
+func TestStatusJSONSchemaResultSelection(t *testing.T) {
+	schemaArgs := []string{outputFormatFlag, streamJSONFormat, jsonSchemaFlag, `{"type":"object"}`, "-p", "hi"}
+	responseWithToolMetadata := `{"business":"ok","toolAction":"Finishing task","toolSummary":"Task completion"}`
+
+	for _, tc := range []terminalCase{
+		{
+			name: "schema success returns structured output instead of response metadata",
+			code: 0,
+			args: schemaArgs,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				Response:         responseWithToolMetadata,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+			},
+			wantState: StateDone, wantResult: `{"business":"ok"}`,
+		}, {
+			name:      "schema success without structured output fails closed",
+			code:      0,
+			args:      schemaArgs,
+			res:       &streamjson.Result{Status: streamjson.StatusSuccess, Response: responseWithToolMetadata},
+			wantState: StateFailed, wantResult: responseWithToolMetadata, wantPartial: true,
+			wantErrSub: "without structured_output", wantReason: ReasonAgyError,
+		}, {
+			name: "non schema success keeps response behavior",
+			code: 0,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				Response:         responseWithToolMetadata,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+			},
+			wantState: StateDone, wantResult: responseWithToolMetadata,
+		}, {
+			name: "schema clean exit without terminal event fails closed",
+			code: 0, args: schemaArgs, out: "streamed diagnostic",
+			wantState: StateFailed, wantResult: "streamed diagnostic", wantPartial: true,
+			wantErrSub: "without a terminal structured_output", wantReason: ReasonAgyError,
+		}, {
+			name: "cancel after schema success keeps complete structured output",
+			code: jobstore.ExitSIGTERM, args: schemaArgs,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				Response:         responseWithToolMetadata,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+			},
+			wantState: StateCancelled, wantResult: `{"business":"ok"}`,
+		}, {
+			name: "timeout after schema success keeps complete structured output",
+			code: jobstore.ExitTimeout, args: schemaArgs,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				Response:         responseWithToolMetadata,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+			},
+			wantState: StateFailed, wantResult: `{"business":"ok"}`,
+			wantErrSub: "timeout", wantReason: ReasonTimeout,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := stageTerminalJob(t, tc)
+			if st.State != tc.wantState || st.Result != tc.wantResult || st.Partial != tc.wantPartial {
+				t.Fatalf("status = %+v, want state %q result %q partial %v", st, tc.wantState, tc.wantResult, tc.wantPartial)
+			}
+			if tc.wantErrSub != "" && !strings.Contains(st.Error, tc.wantErrSub) {
+				t.Fatalf("error = %q, want substring %q", st.Error, tc.wantErrSub)
+			}
+			if st.FailureReason != tc.wantReason {
+				t.Fatalf("failure_reason = %q, want %q", st.FailureReason, tc.wantReason)
+			}
+		})
+	}
+
+	for _, raw := range []string{`{"k":1}`, `[1,2]`, `"scalar"`, `null`} {
+		t.Run("shape "+raw, func(t *testing.T) {
+			st := stageTerminalJob(t, terminalCase{
+				name: "shape", code: 0, args: schemaArgs,
+				res: &streamjson.Result{Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(raw)},
+			})
+			if st.State != StateDone || st.Result != raw || st.Partial {
+				t.Fatalf("status = %+v, want done result %q partial false", st, raw)
+			}
+		})
+	}
+}
+
+func TestStatusHistoricalSchemaJobWithoutStructuredOutputFailsClosed(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir, err := m.store.Create(jobstore.Meta{
+		ID: "old-schema", StartedAt: time.Now(), BootID: readBootID(),
+		Args: []string{outputFormatFlag, streamJSONFormat, jsonSchemaFlag, `{"type":"object"}`, "-p", "hi"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeResultPayload(t, dir, streamjson.Result{Status: streamjson.StatusSuccess, Response: `{"legacy":"response"}`})
+	if err := m.store.WriteExitCode("old-schema", 0); err != nil {
+		t.Fatal(err)
+	}
+	st, err := m.Status("old-schema")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateFailed || st.FailureReason != ReasonAgyError || !st.Partial {
+		t.Fatalf("historical schema status = %+v, want failed/agy_error/partial", st)
+	}
+	if st.Result != `{"legacy":"response"}` || !strings.Contains(st.Error, "without structured_output") {
+		t.Fatalf("historical schema diagnostic = %+v", st)
+	}
+}
+
 // A cancelled job carries no result, but it does carry the conversation, so the
 // thread it started can still be continued.
 func TestStatusCancelledKeepsConversationID(t *testing.T) {

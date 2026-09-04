@@ -80,13 +80,14 @@ type StepUpdate struct {
 
 // Result is the payload of the terminal result event.
 type Result struct {
-	ConversationID  string  `json:"conversation_id,omitempty"`
-	Status          string  `json:"status,omitempty"`
-	Response        string  `json:"response,omitempty"`
-	Error           string  `json:"error,omitempty"`
-	DurationSeconds float64 `json:"duration_seconds,omitempty"`
-	NumTurns        int     `json:"num_turns,omitempty"`
-	Usage           *Usage  `json:"usage,omitempty"`
+	ConversationID   string          `json:"conversation_id,omitempty"`
+	Status           string          `json:"status,omitempty"`
+	Response         string          `json:"response,omitempty"`
+	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
+	Error            string          `json:"error,omitempty"`
+	DurationSeconds  float64         `json:"duration_seconds,omitempty"`
+	NumTurns         int             `json:"num_turns,omitempty"`
+	Usage            *Usage          `json:"usage,omitempty"`
 }
 
 // Event is one decoded line of the stream. agy sets exactly one payload pointer,

@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,6 +31,8 @@ type Manager struct {
 	gate      *gate      // serializes conflicting jobs and caps total concurrency within this process
 	xlock     *crossLock // serializes same-key jobs across sibling processes sharing the state dir
 	cacheFile string     // agy conversation cache (last_conversations.json); injectable for tests
+	idemMu    sync.Mutex
+	idemKeys  map[string]bool // short-lived in-process idempotency claims; cross-process half lives in xlock
 
 	// verifiedAgy is the agy path whose version has been checked and accepted in
 	// this process; verifyMu guards it. Caching the path (rather than a bare
@@ -83,6 +86,7 @@ func New(c config.Config) *Manager {
 		gate:                 newGate(c.MaxConcurrency),
 		xlock:                newCrossLock(c.StateDir),
 		cacheFile:            cacheFile,
+		idemKeys:             map[string]bool{},
 		conversationIDWait:   c.ConversationIDWait,
 		restoredPollInterval: 2 * time.Second,
 		readStartTimeTicks:   readStartTimeTicks,
@@ -101,6 +105,7 @@ type StartRequest struct {
 	Dirs           []string // repeated --add-dir
 	ConversationID string   // optional; --conversation <id>
 	JSONSchema     string   // optional; --json-schema <inline schema or path>, constrains the final stream-json result
+	IdempotencyKey string   // optional; retry token used only by agy-mcp, never forwarded to agy
 	ContinueLatest bool     // resolve cwd's latest conversation before the run
 	Cwd            string   // optional; defaults to process cwd
 	Timeout        time.Duration
@@ -348,6 +353,143 @@ func (m *Manager) conversationLive(convID string) (bool, error) {
 	return false, nil
 }
 
+// findIdempotentJob returns the existing job bound to req.IdempotencyKey. The
+// key is an at-most-once creation token, not an agy argument: request identity is
+// the normalized cwd plus the exact argument vector agy-mcp would execute. Any
+// unreadable job makes the lookup fail closed because it could be the binding
+// this retry needs to find.
+func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool, error) {
+	if req.IdempotencyKey == "" {
+		return Job{}, false, nil
+	}
+	ids, err := m.store.List()
+	if err != nil {
+		return Job{}, false, fmt.Errorf("scan jobs for idempotency_key %q: %w", req.IdempotencyKey, err)
+	}
+	for _, id := range ids {
+		meta, err := m.store.Load(id)
+		if err != nil {
+			return Job{}, false, fmt.Errorf("read job %s while resolving idempotency_key %q: %w", id, req.IdempotencyKey, err)
+		}
+		if meta.IdempotencyKey != req.IdempotencyKey {
+			continue
+		}
+		if meta.Cwd != req.Cwd || !slices.Equal(meta.Args, args) {
+			return Job{}, false, fmt.Errorf("idempotency_key %q is already bound to job %s with a different normalized request", req.IdempotencyKey, id)
+		}
+		// A persisted record that never recorded a supervisor PID is a
+		// failed-creation remnant, not a job to replay. StartJob records PID>0 (via
+		// UpdateMeta) before it returns and releases the claim, so any claim-free
+		// record still at PID 0 is one whose creation failed and whose asynchronous
+		// cleanup could not remove it (an ignored store.Remove error leaves it
+		// behind). It represents a run that never started, and processAlive is false
+		// for PID<=0 so Status would report it as interrupted; replaying it would
+		// hand the caller a job that never ran. Skip it and let the caller start
+		// fresh; a GarbageCollect pass reaps the orphan later.
+		if meta.PID == 0 {
+			continue
+		}
+		st, err := m.Status(id)
+		if err != nil {
+			return Job{}, false, fmt.Errorf("read job %s status for idempotency_key %q: %w", id, req.IdempotencyKey, err)
+		}
+		return Job{ID: id, ConversationID: st.ConversationID, State: st.State}, true, nil
+	}
+	return Job{}, false, nil
+}
+
+// normalizeRequest resolves every value that feeds the gate key, agy args, and
+// persisted meta - cwd, model, timeout, and continue_latest - back into req, so
+// all three derive from one normalized request. Keeping a resolved value in a
+// separate local while req stays stale risks a later read of req.Model/req.Timeout
+// silently bypassing the default fallback.
+func (m *Manager) normalizeRequest(req StartRequest) (StartRequest, error) {
+	cwd := req.Cwd
+	if cwd == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			// An empty cwd would run agy in whatever directory this process
+			// inherited, and would be persisted as the job's cwd. Fail instead.
+			// (The cwd itself has no bearing on serialization: conversation locking
+			// uses only a resolved conversation id.)
+			return StartRequest{}, fmt.Errorf("determine working directory: %w", err)
+		}
+		cwd = wd
+	}
+	// Canonicalize the cwd once so the gate key, cache lookups, cmd.Dir, and
+	// persisted meta all share one spelling (see normalizeCwd). Report the
+	// pre-normalization input on failure (normalizeCwd returns "" on error).
+	normalized, err := normalizeCwd(cwd)
+	if err != nil {
+		return StartRequest{}, fmt.Errorf("normalize working directory %q: %w", cwd, err)
+	}
+	req.Cwd = normalized
+	if req.Model == "" {
+		req.Model = m.cfg.DefaultModel
+	}
+	// Reduce a whole `agy models` row to its id (see modelID). Applied after the
+	// fallback above so it covers a configured AGY_MCP_DEFAULT_MODEL too, and
+	// before the args and meta below, which are the two readers of req.Model.
+	req.Model = modelID(req.Model)
+	if req.Timeout <= 0 {
+		req.Timeout = m.cfg.DefaultTimeout
+	}
+	// Resolve continue_latest to a concrete conversation id before computing the
+	// gate key and args, so serialization, the agy --conversation flag, and the
+	// returned conversation id are all deterministic and consistent.
+	if req.ContinueLatest {
+		if cid, ok := resolveLatest(m.cacheFile, req.Cwd); ok {
+			req.ConversationID = cid
+		}
+	}
+	return req, nil
+}
+
+// claimIdempotency runs the creation-claim prelude for a run that carries an
+// idempotency key. It takes the short cross-process claim, then resolves any job
+// already bound to the key. It returns:
+//
+//   - an empty key: no claim, found=false, and a no-op release.
+//   - a key already bound to a matching job: that job with found=true and no held
+//     claim (release already run); the caller replays it.
+//   - a new key: found=false and a non-nil release that holds the claim. The
+//     caller owns it and must run it once the job is durably created or its
+//     failed-creation cleanup has completed.
+//
+// On any error the claim, if it was taken, is released before returning.
+func (m *Manager) claimIdempotency(req StartRequest, args []string) (existing Job, found bool, release func(), err error) {
+	if req.IdempotencyKey == "" {
+		return Job{}, false, func() {}, nil
+	}
+	locked, err := m.acquireIdempotency(req.IdempotencyKey)
+	if err != nil {
+		return Job{}, false, nil, fmt.Errorf("acquire idempotency_key %q: %w", req.IdempotencyKey, err)
+	}
+	if !locked {
+		// The other creator may already have written meta.json but has not yet
+		// finished the reliable-start sequence, or is still tearing a failed
+		// creation down. Do not return that in-flight record; tell the caller to
+		// retry the same key after the short claim clears.
+		return Job{}, false, nil, fmt.Errorf("another agy job with idempotency_key %q is starting; retry with the same key", req.IdempotencyKey)
+	}
+	release = func() { m.releaseIdempotency(req.IdempotencyKey) }
+	// Once the claim is ours, any matching meta belongs to a prior StartJob that
+	// completed its creation path (or its failed-creation cleanup) and released the
+	// claim, so its current status can be reported accurately, including terminal
+	// replays.
+	job, found, ferr := m.findIdempotentJob(req, args)
+	err = ferr
+	if err != nil {
+		release()
+		return Job{}, false, nil, err
+	}
+	if found {
+		release()
+		return job, true, nil, nil
+	}
+	return Job{}, false, release, nil
+}
+
 // StartJob persists meta and spawns the detached supervisor.
 func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// conversation_id and continue_latest are mutually exclusive: continue_latest
@@ -365,65 +507,43 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if !proc.Supported {
 		return Job{}, proc.ErrUnsupported
 	}
-	// Resolve agy before anything reservable is taken. config.Resolve tolerates a
-	// missing agy so the server can still serve introspection, which makes this
-	// the first point that genuinely needs the binary; doing it after admit would
-	// burn a concurrency slot and strand the conversation key on a run that cannot start.
-	// The version gate lives here too: the whole job pipeline decodes agy's
-	// stream-json events, so an agy that cannot emit them must be refused before
-	// a job dir exists, not diagnosed from a confusing empty result later.
-	agy, err := m.agyBinaryChecked(context.Background())
+	req, err := m.normalizeRequest(req)
 	if err != nil {
 		return Job{}, err
 	}
-	id, err := newID()
-	if err != nil {
-		return Job{}, fmt.Errorf("generate job id: %w", err)
-	}
-	cwd := req.Cwd
-	if cwd == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			// An empty cwd would run agy in whatever directory this process
-			// inherited, and would be persisted as the job's cwd. Fail instead.
-			// (It has no bearing on serialization: keyFor reads only the
-			// conversation id, so every fresh run keys on nothing regardless.)
-			return Job{}, fmt.Errorf("determine working directory: %w", err)
-		}
-		cwd = wd
-	}
-	// Canonicalize the cwd once so the gate key, cache lookups, cmd.Dir, and
-	// persisted meta all share one spelling (see normalizeCwd). Report the
-	// pre-normalization input on failure (normalizeCwd returns "" on error).
-	normalized, err := normalizeCwd(cwd)
-	if err != nil {
-		return Job{}, fmt.Errorf("normalize working directory %q: %w", cwd, err)
-	}
-	cwd = normalized
 
-	// Resolve every value that feeds the gate key, agy args, and persisted meta
-	// back into req, so all three derive from one normalized request; keeping a
-	// resolved value in a separate local while req stays stale risks a later read
-	// of req.Model/req.Timeout silently bypassing the default fallback.
-	req.Cwd = cwd
-	if req.Model == "" {
-		req.Model = m.cfg.DefaultModel
-	}
-	// Reduce a whole `agy models` row to its id (see modelID). Applied after the
-	// fallback above so it covers a configured AGY_MCP_DEFAULT_MODEL too, and
-	// before the args and meta below, which are the two readers of req.Model.
-	req.Model = modelID(req.Model)
-	if req.Timeout <= 0 {
-		req.Timeout = m.cfg.DefaultTimeout
-	}
+	args := buildAgyArgs(req)
 
-	// Resolve continue_latest to a concrete conversation id before computing the
-	// gate key and args, so serialization, the agy --conversation flag, and the
-	// returned conversation id are all deterministic and consistent.
-	if req.ContinueLatest {
-		if cid, ok := resolveLatest(m.cacheFile, cwd); ok {
-			req.ConversationID = cid
+	// The idempotency claim is a short creation lock, independent of the
+	// conversation gate below. Holding both dimensions separately is what makes
+	// same-key/different-conversation and different-key/same-conversation races
+	// safe at the same time. On the success path and the synchronous-cleanup
+	// failure paths the claim is released when StartJob returns, and the persisted
+	// meta becomes the durable retry record. An asynchronous-cleanup failure path
+	// instead transfers releaseIdem to its cleanup goroutine (see the
+	// releaseIdemOnReturn handoffs below) and releases the claim only after the
+	// failed record is removed, so a retry that lands mid-cleanup is told to retry
+	// ("is starting") rather than handed a job that is being torn down.
+	existing, found, releaseIdem, err := m.claimIdempotency(req, args)
+	if err != nil {
+		return Job{}, err
+	}
+	if found {
+		return existing, nil
+	}
+	releaseIdemOnReturn := true
+	defer func() {
+		if releaseIdemOnReturn {
+			releaseIdem()
 		}
+	}()
+
+	// A retry that resolved to an existing job above needs no agy binary at all.
+	// A genuinely new run does, and still checks the binary before reserving a
+	// concurrency slot or creating a job directory.
+	agy, err := m.agyBinaryChecked(context.Background())
+	if err != nil {
+		return Job{}, err
 	}
 
 	// Refuse a continuation of a conversation some running job already drives.
@@ -445,12 +565,12 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if err != nil {
 		// The cross-process lock could not be established (e.g. the locks dir is
 		// unwritable). Fail closed: starting without it could let a sibling process
-		// run a conflicting same-key job and re-expose the session-lock hang.
+		// run a conflicting same-conversation job.
 		return Job{}, fmt.Errorf("acquire cross-process lock for this conversation: %w", err)
 	}
 	switch outcome {
 	case acquireOK:
-		// Slot and cross-process lock reserved; proceed to spawn below.
+		// Slot and conversation lock reserved; proceed below.
 	case acquireKeyBusy:
 		return Job{}, fmt.Errorf("another agy job is already running on conversation %s; wait for it to finish or start a fresh run instead", req.ConversationID)
 	case acquireAtCap:
@@ -461,7 +581,11 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		return Job{}, fmt.Errorf("internal admission error: unknown acquire outcome %d", outcome)
 	}
 
-	args := buildAgyArgs(req)
+	id, err := newID()
+	if err != nil {
+		m.releaseKey(key)
+		return Job{}, fmt.Errorf("generate job id: %w", err)
+	}
 	meta := jobstore.Meta{
 		ID:             id,
 		AgyPath:        agy,
@@ -469,6 +593,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		Cwd:            req.Cwd,
 		Model:          req.Model,
 		ConversationID: req.ConversationID,
+		IdempotencyKey: req.IdempotencyKey,
 		Prompt:         req.Prompt,
 		StartedAt:      time.Now().UTC(),
 		BootID:         readBootID(),
@@ -521,10 +646,15 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// there is no group handle to terminate; the direct process Kill is all that
 		// is available.
 		_ = cmd.Process.Kill()
+		// The record is removed asynchronously (after cmd.Wait), so keep the
+		// idempotency claim held until then: a retry that lands before the record is
+		// gone must be told to retry, not handed this dying job.
+		releaseIdemOnReturn = false
 		go func() {
 			_ = cmd.Wait()
 			_ = m.store.Remove(id)
 			m.releaseKey(key)
+			releaseIdem()
 		}()
 		return Job{}, fmt.Errorf("track supervisor: %w", err)
 	}
@@ -540,15 +670,18 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		// closed without a recorded start time; a job must never persist a 0. The
 		// read is a local lookup of a child we just forked, so a failure (after the
 		// retries in readStartTimeTicks) means it almost certainly died instantly.
-		// Tear it down and release the gate.
-		m.abortSpawn(cmd, grp, id, key)
+		// Tear it down and release the gate. abortSpawn removes the record and
+		// releases the idempotency claim asynchronously, so hand it ownership.
+		releaseIdemOnReturn = false
+		m.abortSpawn(cmd, grp, id, key, releaseIdem)
 		return Job{}, fmt.Errorf("record supervisor start time for pid %d", cmd.Process.Pid)
 	}
 	if err := m.store.UpdateMeta(meta); err != nil {
 		// Without a persisted PID the supervisor would be untrackable
 		// (uncancellable, and reported as not-alive). Fail closed: tear it down and
 		// release the gate once it has fully exited (see abortSpawn).
-		m.abortSpawn(cmd, grp, id, key)
+		releaseIdemOnReturn = false
+		m.abortSpawn(cmd, grp, id, key, releaseIdem)
 		return Job{}, fmt.Errorf("record supervisor pid: %w", err)
 	}
 	// Wait for the supervisor in the background. cmd.Wait returns exactly when
@@ -576,13 +709,18 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 // process group is gone keeps a conflicting same-key run from starting while the
 // dying agy still holds its session lock. Both spawn-failure paths (start time
 // unreadable on darwin, and UpdateMeta failure) share it so they cannot diverge.
-func (m *Manager) abortSpawn(cmd *exec.Cmd, grp *proc.Group, id, key string) {
+//
+// releaseIdem is the caller's idempotency-claim release (a no-op when the run
+// carried no key). It runs only after the record is removed, so a retry that
+// lands during cleanup is told to retry rather than handed this dying job.
+func (m *Manager) abortSpawn(cmd *exec.Cmd, grp *proc.Group, id, key string, releaseIdem func()) {
 	_ = grp.Terminate(syscall.SIGTERM)
 	go func() {
 		_ = cmd.Wait()
 		_ = grp.Close()
 		_ = m.store.Remove(id)
 		m.releaseKey(key)
+		releaseIdem()
 	}()
 }
 
@@ -901,6 +1039,7 @@ const (
 	addDirFlag                     = "--add-dir"
 	conversationFlag               = "--conversation"
 	jsonSchemaFlag                 = "--json-schema"
+	promptFlag                     = "-p"
 	outputFormatFlag               = "--output-format"
 	disableSlashCommandsFlag       = "--disable-slash-commands"
 	// streamJSONFormat is the only format agy-mcp drives. It is what makes the
@@ -952,7 +1091,7 @@ func buildAgyArgs(req StartRequest) []string {
 	if req.JSONSchema != "" {
 		args = append(args, jsonSchemaFlag, req.JSONSchema)
 	}
-	args = append(args, "-p", req.Prompt)
+	args = append(args, promptFlag, req.Prompt)
 	return args
 }
 
