@@ -35,10 +35,11 @@ func startRunningJobForWait(t *testing.T, sleep time.Duration, convLabel string,
 	if err := os.WriteFile(cachePath, []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	cacheJSON := fmt.Sprintf(`{%q:%q}`, cwd, convLabel)
 	sup := testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{
 		AgyPath:   agy,
 		CachePath: cachePath,
-		CacheJSON: fmt.Sprintf(`{%q:%q}`, cwd, convLabel),
+		CacheJSON: cacheJSON,
 	})
 	stateDir := t.TempDir()
 	// No ConversationIDWait: this fixture starts jobs through StartJob, which does
@@ -53,12 +54,19 @@ func startRunningJobForWait(t *testing.T, sleep time.Duration, convLabel string,
 		t.Fatal(err)
 	}
 	// Drain the started job once the test is done, so the slow fake agy never
-	// outlives the test.
+	// outlives the test. The fake supervisor writes exit_code before its final
+	// cache copy, so State becoming terminal is not enough: TempDir cleanup can
+	// otherwise race that trailing write under the race detector. Waiting for the
+	// expected cache payload proves the fake has completed its last file write.
 	t.Cleanup(func() {
 		testutil.WaitFor(t, drainTimeout, func() bool {
 			st, err := mgr.State(job.ID)
 			return err == nil && st != manager.StateRunning
 		}, "job did not finish before test cleanup")
+		testutil.WaitFor(t, drainTimeout, func() bool {
+			b, err := os.ReadFile(cachePath)
+			return err == nil && string(b) == cacheJSON
+		}, "fake supervisor did not finish its trailing cache write before test cleanup")
 	})
 
 	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
