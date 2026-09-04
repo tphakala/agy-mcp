@@ -589,6 +589,23 @@ func TestArgsSelectJSONSchemaAcceptsBothFlagSpellings(t *testing.T) {
 	if argsSelectJSONSchema([]string{"--not-json-schema", "x"}) {
 		t.Fatal("unrelated flag was classified as json-schema")
 	}
+	// The prompt value after -p is caller free text, not an option: a prompt that
+	// is (or begins with) the flag must NOT be read as selecting a schema run,
+	// which would wrongly fail the run's normal response for lacking structured_output.
+	for _, args := range [][]string{
+		{promptFlag, jsonSchemaFlag},
+		{promptFlag, jsonSchemaFlag + "={}"},
+		{outputFormatFlag, streamJSONFormat, promptFlag, jsonSchemaFlag},
+	} {
+		if argsSelectJSONSchema(args) {
+			t.Fatalf("argsSelectJSONSchema(%q) = true, want false: a prompt value must not be classified as an option", args)
+		}
+	}
+	// A genuine --json-schema option before the prompt is still detected even when
+	// the prompt itself happens to look like the flag.
+	if !argsSelectJSONSchema([]string{jsonSchemaFlag, "{}", promptFlag, jsonSchemaFlag}) {
+		t.Fatal("real --json-schema option before the prompt was not detected")
+	}
 }
 
 func TestStatusJSONSchemaResultSelection(t *testing.T) {

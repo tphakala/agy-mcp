@@ -435,10 +435,24 @@ func argsSelectOutputFormat(args []string) bool {
 	})
 }
 
+// argsSelectJSONSchema reports whether persisted args enable --json-schema, in
+// either spelling. It scans only option tokens: the token after -p is the
+// caller's free-text prompt, so a prompt that is literally "--json-schema" (or
+// begins with "--json-schema=") must not be read as selecting a schema run. That
+// misread would wrongly reject the run's normal successful response for lacking
+// structured_output, since buildAgyArgs persists the prompt into the same arg
+// vector this scans.
 func argsSelectJSONSchema(args []string) bool {
-	return slices.ContainsFunc(args, func(a string) bool {
-		return a == jsonSchemaFlag || strings.HasPrefix(a, jsonSchemaFlag+"=")
-	})
+	for i := 0; i < len(args); i++ {
+		if args[i] == promptFlag {
+			i++ // skip the prompt value; it is caller text, not an option
+			continue
+		}
+		if args[i] == jsonSchemaFlag || strings.HasPrefix(args[i], jsonSchemaFlag+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // carryText attaches the answer a run produced and records whether this build

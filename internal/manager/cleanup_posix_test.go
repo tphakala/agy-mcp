@@ -119,3 +119,81 @@ func isRetryableGateRefusal(err error) bool {
 	return strings.Contains(msg, "already running on conversation") ||
 		strings.Contains(msg, "concurrency cap")
 }
+
+// blockRemoveStore drives the async abortSpawn cleanup (UpdateMeta always fails)
+// and then blocks in Remove until release is closed, so a test can pin the
+// failed-creation cleanup mid-flight and observe that the idempotency claim is
+// still held while the failed record is being torn down.
+type blockRemoveStore struct {
+	jobStore
+	entered chan struct{} // signaled (non-blocking) when Remove is first entered
+	release chan struct{} // Remove blocks until this is closed
+}
+
+func (b *blockRemoveStore) UpdateMeta(jobstore.Meta) error {
+	return errors.New("injected UpdateMeta failure")
+}
+
+func (b *blockRemoveStore) Remove(id string) error {
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	<-b.release
+	return b.jobStore.Remove(id)
+}
+
+// TestStartJobIdempotencyHeldUntilFailedCleanup pins the retry-safety contract for
+// a post-create failure: the idempotency claim must stay held until the failed
+// record is removed, so a retry landing mid-cleanup is told to retry rather than
+// handed the job that is being torn down.
+func TestStartJobIdempotencyHeldUntilFailedCleanup(t *testing.T) {
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	store := &blockRemoveStore{jobStore: m.store, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	m.store = store
+	req := StartRequest{Prompt: "x", Cwd: t.TempDir(), IdempotencyKey: "retry-cleanup"}
+
+	// Create and spawn succeed, UpdateMeta fails, and abortSpawn's goroutine runs
+	// its cleanup until it blocks in Remove.
+	_, err := m.StartJob(req)
+	if err == nil || !strings.Contains(err.Error(), "record supervisor pid") {
+		t.Fatalf("first StartJob error = %v, want a record-supervisor-pid failure", err)
+	}
+	select {
+	case <-store.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("failed-creation cleanup did not reach Remove")
+	}
+
+	// The record still exists and the claim is still held, so a retry must be
+	// refused with the retry-safe "is starting" error, not handed a job id.
+	if _, retryErr := m.StartJob(req); retryErr == nil ||
+		!strings.Contains(retryErr.Error(), "is starting; retry with the same key") {
+		t.Fatalf("retry during cleanup error = %v, want retry-safe starting refusal", retryErr)
+	}
+
+	// Once cleanup completes, the claim releases (after Remove) and the failed
+	// record is gone, so a retry gets past the idempotency prelude and attempts a
+	// genuinely new run (which fails again at UpdateMeta with this same store).
+	close(store.release)
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		_, e := m.StartJob(req)
+		switch {
+		case e != nil && strings.Contains(e.Error(), "is starting"):
+			return false // claim not released yet; keep polling
+		case e != nil && strings.Contains(e.Error(), "record supervisor pid"):
+			return true // got past the prelude and started a fresh creation
+		default:
+			t.Fatalf("unexpected post-cleanup retry error: %v", e)
+			return false
+		}
+	}, "idempotency claim not released after failed-creation cleanup")
+
+	waitForEmptyStore(t, m)
+}
