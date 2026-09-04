@@ -36,19 +36,6 @@ func waitManager(t *testing.T, fake testutil.FakeAgy) *Manager {
 	return m
 }
 
-// drainJob waits for a still-running job to finish, so the test's TempDir
-// StateDir is not removed out from under a supervisor still writing into it.
-func drainJob(t *testing.T, m *Manager, id string) {
-	t.Helper()
-	testutil.WaitFor(t, 5*time.Second, func() bool {
-		st, err := m.Status(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return st.State == StateDone
-	}, "job never finished")
-}
-
 // A job that is already done when WaitTerminal is called must return its
 // terminal status without waiting.
 func TestWaitTerminalReturnsDoneJob(t *testing.T) {
@@ -114,6 +101,13 @@ func TestWaitTerminalDeadlineOverrun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
+	// Kill the job's process group at cleanup instead of draining it to
+	// completion. The fake sleeps 2s, and polling for that under a loaded -race
+	// run raced the old 5s drain budget (issue #163). killJob only registers a
+	// t.Cleanup, so the job keeps running through the deadline assertion below; by
+	// the time that cleanup fires the still-running job only needs to stop writing
+	// into the TempDir state dir before it is removed, which SIGKILL does.
+	killJob(t, m, job.ID)
 	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(100*time.Millisecond), nil)
 	if err != nil {
 		t.Fatalf("WaitTerminal: %v", err)
@@ -124,7 +118,6 @@ func TestWaitTerminalDeadlineOverrun(t *testing.T) {
 	if st.State != StateRunning {
 		t.Fatalf("state = %q, want running", st.State)
 	}
-	drainJob(t, m, job.ID)
 }
 
 // A cancelled context must end the wait with context.Canceled and a
@@ -135,6 +128,12 @@ func TestWaitTerminalContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
+	// Kill the job's process group at cleanup rather than draining it. The fake
+	// sleeps 2s, and polling for that under a loaded -race run raced the old 5s
+	// drain budget (issue #163). The cancel assertion below is what the test is
+	// about; the still-running job only needs to stop writing into the TempDir
+	// state dir before it is removed, which SIGKILL does.
+	killJob(t, m, job.ID)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	// Cancel only once WaitTerminal is observably polling, so the cancellation
@@ -148,7 +147,6 @@ func TestWaitTerminalContextCancel(t *testing.T) {
 	if terminal {
 		t.Fatal("terminal = true, want false on cancel")
 	}
-	drainJob(t, m, job.ID)
 }
 
 // An unknown job id must surface the store load failure, not a terminal result.

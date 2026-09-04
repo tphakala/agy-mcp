@@ -162,11 +162,10 @@ const (
 	// models listing: the single-object envelope, distinct from the stream-json
 	// format the job pipeline drives (streamJSONFormat).
 	jsonOutputFormat = "json"
-	// modelsEnvelopeStatusOK and modelsCommandName are the envelope framing
-	// decodeModelsEnvelope requires before it trusts the listing. They are the
-	// literals agy prints, mirrored in internal/testutil/fakeagy.go.
-	modelsEnvelopeStatusOK = "SUCCESS"
-	modelsCommandName      = "models"
+	// modelsCommandName is the command name decodeModelsEnvelope requires before it
+	// trusts the listing (see validateListingFraming). It is the literal agy prints,
+	// mirrored in internal/testutil/fakeagy.go.
+	modelsCommandName = "models"
 )
 
 // modelsEnvelope is the subset of agy's `--output-format json models` output that
@@ -192,6 +191,28 @@ type modelsEnvelope struct {
 	} `json:"command"`
 }
 
+// listingEnvelopeStatusOK is the status agy stamps on a successful listing
+// envelope (models or agents); both decoders require it before trusting the
+// payload. It is the literal agy prints, mirrored in internal/testutil/fakeagy.go.
+const listingEnvelopeStatusOK = "SUCCESS"
+
+// validateListingFraming checks the status and command framing shared by agy's
+// `--output-format json <command>` listing envelopes, so decodeModelsEnvelope and
+// decodeAgentsEnvelope cannot describe the same framing failure two different
+// ways. command is both the expected command.name and the error prefix. The
+// per-decoder json.Unmarshal and the absent-array nil check stay in each decoder,
+// since the payload types differ (a []Model vs a []string), which is the one part
+// the two genuinely do not share.
+func validateListingFraming(command, status, name string) error {
+	if status != listingEnvelopeStatusOK {
+		return fmt.Errorf("agy %s: envelope status %q, want %q", command, status, listingEnvelopeStatusOK)
+	}
+	if name != command {
+		return fmt.Errorf("agy %s: envelope command %q, want %q", command, name, command)
+	}
+	return nil
+}
+
 // decodeModelsEnvelope turns agy's JSON models envelope into Models, validating
 // the framing before it trusts the list. It is an error, not a silently empty
 // catalog, when the status is not SUCCESS, the command is not `models`, or the
@@ -207,11 +228,8 @@ func decodeModelsEnvelope(raw []byte) ([]Model, error) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("agy models: parse json envelope: %w", err)
 	}
-	if env.Status != modelsEnvelopeStatusOK {
-		return nil, fmt.Errorf("agy models: envelope status %q, want %q", env.Status, modelsEnvelopeStatusOK)
-	}
-	if env.Command.Name != modelsCommandName {
-		return nil, fmt.Errorf("agy models: envelope command %q, want %q", env.Command.Name, modelsCommandName)
+	if err := validateListingFraming(modelsCommandName, env.Status, env.Command.Name); err != nil {
+		return nil, err
 	}
 	// nil, not empty: an absent or null command.data.models (a renamed or dropped
 	// field), as opposed to a present "models":[] which is a real empty catalog.

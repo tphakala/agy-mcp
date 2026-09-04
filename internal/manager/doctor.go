@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tphakala/agy-mcp/v2/internal/agyver"
+	"github.com/tphakala/agy-mcp/v2/internal/config"
 )
 
 // Check names, shared by each check and its tests (see doctor_test.go, which
@@ -113,6 +114,12 @@ func (m *Manager) checkAgyBinary() CheckResult {
 // reusing agyver rather than duplicating the comparison. It reports the version
 // it found so an operator sees how far off an outdated binary is, not just that
 // it is outdated.
+//
+// On success it primes the version cache (markAgyVerified): this ran the same
+// read+parse+floor check agyBinaryChecked would, so the checkAgyReachable that
+// follows in the same Doctor run reuses the verdict instead of spawning a second
+// `agy --version`. It primes only on the PASS branch, so a binary below the floor
+// is never marked verified and checkAgyReachable re-probes and fails the same way.
 func (m *Manager) checkAgyVersion(ctx context.Context) CheckResult {
 	agy, err := m.cfg.AgyBinary()
 	if err != nil {
@@ -131,6 +138,7 @@ func (m *Manager) checkAgyVersion(ctx context.Context) CheckResult {
 	if !v.AtLeast(agyver.Required) {
 		return CheckResult{checkAgyVersionName, CheckFail, fmt.Sprintf("%s is below the required %s; upgrade agy", v, agyver.Required)}
 	}
+	m.markAgyVerified(agy)
 	return CheckResult{checkAgyVersionName, CheckPass, fmt.Sprintf("%s (>= required %s)", v, agyver.Required)}
 }
 
@@ -230,27 +238,31 @@ func (m *Manager) checkConfigSources() CheckResult {
 			fmt.Fprintf(&b, " (%s)", value)
 		}
 	}
+	// The AGY_MCP_* labels come from config's exported constants, the same
+	// identifiers config reads each setting from, so a rename cannot leave doctor
+	// naming a variable config no longer honours.
+	//
 	// agy path: an explicit override vs a PATH lookup.
-	if p := os.Getenv("AGY_MCP_AGY_PATH"); p != "" {
-		line("agy path", "AGY_MCP_AGY_PATH", m.cfg.AgyPath)
+	if p := os.Getenv(config.EnvAgyPath); p != "" {
+		line("agy path", config.EnvAgyPath, m.cfg.AgyPath)
 	} else {
 		line("agy path", "PATH lookup", m.cfg.AgyPath)
 	}
 	// default model: env override vs agy's own default (an empty DefaultModel).
-	if os.Getenv("AGY_MCP_DEFAULT_MODEL") != "" {
-		line("default model", "AGY_MCP_DEFAULT_MODEL", m.cfg.DefaultModel)
+	if os.Getenv(config.EnvDefaultModel) != "" {
+		line("default model", config.EnvDefaultModel, m.cfg.DefaultModel)
 	} else {
 		line("default model", "agy default (unset)", "")
 	}
 	// state dir: env override vs the XDG fallback.
-	if os.Getenv("AGY_MCP_STATE_DIR") != "" {
-		line("state dir", "AGY_MCP_STATE_DIR", m.cfg.StateDir)
+	if os.Getenv(config.EnvStateDir) != "" {
+		line("state dir", config.EnvStateDir, m.cfg.StateDir)
 	} else {
 		line("state dir", "XDG default", m.cfg.StateDir)
 	}
 	// HTTP token: reported as set/unset only, never the value.
 	if m.cfg.HTTPToken != "" {
-		line("http token", "AGY_MCP_HTTP_TOKEN", "set")
+		line("http token", config.EnvHTTPToken, "set")
 	} else {
 		line("http token", "unset (HTTP mode unauthenticated)", "")
 	}

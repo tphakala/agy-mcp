@@ -3,11 +3,14 @@
 package manager
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/tphakala/agy-mcp/v2/internal/agyver"
 	"github.com/tphakala/agy-mcp/v2/internal/config"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
@@ -34,6 +37,42 @@ func TestDoctorHealthy(t *testing.T) {
 	reach := findCheck(t, report, checkAgyReachableName)
 	if reach.Status != CheckPass {
 		t.Errorf("reachability check = %v (%s), want PASS", reach.Status, reach.Detail)
+	}
+}
+
+// TestDoctorProbesAgyVersionOnce: a healthy Doctor run probes `agy --version`
+// exactly once. checkAgyVersion primes the version cache on success, so the
+// checkAgyReachable that follows reuses the verdict instead of spawning a second
+// probe. Without the priming the two checks would probe independently (count 2),
+// so the count-of-one assertion pins the optimization, and the two PASS assertions
+// prove both checks actually ran the happy path rather than the count passing
+// vacuously. Posix-gated because checkAgyReachable execs the fake agy for the
+// model listing, like the other WriteFakeAgy tests.
+func TestDoctorProbesAgyVersionOnce(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{
+		Models: []testutil.FakeModel{{ID: "gemini-3.1-pro-high", Label: "Gemini 3.1 Pro (High)"}},
+	})
+	m := newManager(t, managerOpts{agyPath: agy})
+	// Count probes through the seam. newManager installs a plain FakeVersion stub;
+	// replace it with one that both satisfies the floor and tallies each call. The
+	// model listing still execs the real fake binary, so checkAgyReachable is
+	// unaffected by the swap.
+	var probes atomic.Int32
+	m.readAgyVersion = func(context.Context, string) (string, error) {
+		probes.Add(1)
+		return agyver.Required.String(), nil
+	}
+
+	report := m.Doctor(t.Context())
+
+	if c := findCheck(t, report, checkAgyVersionName); c.Status != CheckPass {
+		t.Fatalf("version check = %v (%s), want PASS", c.Status, c.Detail)
+	}
+	if c := findCheck(t, report, checkAgyReachableName); c.Status != CheckPass {
+		t.Fatalf("reachable check = %v (%s), want PASS", c.Status, c.Detail)
+	}
+	if n := probes.Load(); n != 1 {
+		t.Fatalf("agy --version probed %d times in one Doctor run, want 1 (checkAgyVersion should prime the cache checkAgyReachable reuses)", n)
 	}
 }
 

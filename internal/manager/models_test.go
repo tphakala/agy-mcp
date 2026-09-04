@@ -114,6 +114,25 @@ func TestDecodeModelsEnvelope(t *testing.T) {
 	}
 }
 
+// TestValidateListingFraming pins the shared framing validator that both listing
+// decoders delegate to: a matching SUCCESS envelope passes, while a non-SUCCESS
+// status and a mismatched command name each error with the command as the message
+// prefix (so a failure names the listing it came from). decodeModelsEnvelope and
+// decodeAgentsEnvelope exercise it through real payloads; this pins it directly.
+func TestValidateListingFraming(t *testing.T) {
+	if err := validateListingFraming("models", "SUCCESS", "models"); err != nil {
+		t.Fatalf("a SUCCESS models envelope must validate, got: %v", err)
+	}
+	if err := validateListingFraming("agents", "ERROR", "agents"); err == nil ||
+		!strings.Contains(err.Error(), "agy agents:") || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("a non-SUCCESS status must error with the command prefix, got: %v", err)
+	}
+	if err := validateListingFraming("models", "SUCCESS", "run"); err == nil ||
+		!strings.Contains(err.Error(), "agy models:") || !strings.Contains(err.Error(), "command") {
+		t.Fatalf("a mismatched command name must error with the command prefix, got: %v", err)
+	}
+}
+
 // TestModelID pins which part of a model value reaches agy: the id column only,
 // with anything that is not a whole `agy models` row forwarded untouched because
 // agy owns the model namespace (issue #135).

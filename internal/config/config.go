@@ -10,6 +10,18 @@ import (
 	"time"
 )
 
+// Environment variable names agy-mcp reads for its runtime configuration. They
+// are exported so other packages (the doctor command, which names where each
+// setting came from) reference the same identifier config resolves the setting
+// from, rather than a second copy of the literal that could drift out of sync on
+// a rename with no compile error.
+const (
+	EnvAgyPath      = "AGY_MCP_AGY_PATH"
+	EnvDefaultModel = "AGY_MCP_DEFAULT_MODEL"
+	EnvStateDir     = "AGY_MCP_STATE_DIR"
+	EnvHTTPToken    = "AGY_MCP_HTTP_TOKEN"
+)
+
 // Config holds resolved runtime settings.
 type Config struct {
 	AgyPath        string        // path to the agy binary
@@ -57,8 +69,8 @@ const DefaultConversationIDWait = 2 * time.Second
 // Resolve builds a Config from environment variables and defaults.
 func Resolve() (Config, error) {
 	c := baseConfig()
-	c.DefaultModel = os.Getenv("AGY_MCP_DEFAULT_MODEL")
-	c.HTTPToken = os.Getenv("AGY_MCP_HTTP_TOKEN")
+	c.DefaultModel = os.Getenv(EnvDefaultModel)
+	c.HTTPToken = os.Getenv(EnvHTTPToken)
 
 	// The two lookup branches fail differently, on purpose.
 	//
@@ -72,10 +84,10 @@ func Resolve() (Config, error) {
 	// would make the server unrunnable in a container that has no agy at all.
 	// AgyPath is left empty and AgyBinary retries the lookup at exec time, where a
 	// genuinely missing agy becomes a clear per-call error instead.
-	if p := os.Getenv("AGY_MCP_AGY_PATH"); p != "" {
+	if p := os.Getenv(EnvAgyPath); p != "" {
 		resolved, err := lookupAgy(p)
 		if err != nil {
-			return Config{}, fmt.Errorf("AGY_MCP_AGY_PATH %q: %w", p, err)
+			return Config{}, fmt.Errorf("%s %q: %w", EnvAgyPath, p, err)
 		}
 		c.AgyPath = resolved
 	} else if resolved, err := lookupAgy("agy"); err == nil {
@@ -153,16 +165,16 @@ func lookupAgy(name string) (string, error) {
 // an installation that is already there.
 func pathLookupGuidance(err error) error {
 	if errors.Is(err, exec.ErrDot) {
-		return fmt.Errorf("agy is on PATH only through a relative entry, which cannot be used because each job runs in its own working directory; set AGY_MCP_AGY_PATH to an absolute path: %w", err)
+		return fmt.Errorf("agy is on PATH only through a relative entry, which cannot be used because each job runs in its own working directory; set %s to an absolute path: %w", EnvAgyPath, err)
 	}
-	return fmt.Errorf("agy not found on PATH; set AGY_MCP_AGY_PATH: %w", err)
+	return fmt.Errorf("agy not found on PATH; set %s: %w", EnvAgyPath, err)
 }
 
 // resolveStateDir returns the job-state root: AGY_MCP_STATE_DIR (made absolute)
 // or the XDG state-home fallback. Shared by Resolve and ResolveWait so the two
 // cannot drift.
 func resolveStateDir() (string, error) {
-	stateRoot := os.Getenv("AGY_MCP_STATE_DIR")
+	stateRoot := os.Getenv(EnvStateDir)
 	if stateRoot == "" {
 		xdg := os.Getenv("XDG_STATE_HOME")
 		if xdg == "" {
@@ -220,8 +232,8 @@ func ResolveWait() (Config, error) {
 	c.SupervisorExe = self
 	// Cheap env reads carried for uniformity with Resolve; the wait paths do not
 	// consume them today.
-	c.DefaultModel = os.Getenv("AGY_MCP_DEFAULT_MODEL")
-	c.HTTPToken = os.Getenv("AGY_MCP_HTTP_TOKEN")
+	c.DefaultModel = os.Getenv(EnvDefaultModel)
+	c.HTTPToken = os.Getenv(EnvHTTPToken)
 	// One AGY_MCP_ variable is read nowhere in this package at all:
 	// AGY_MCP_WAIT_READY_FILE, which the wait subcommands read in package main (see
 	// waitReadyFileEnv). It is consumed at the instant their signal handler is

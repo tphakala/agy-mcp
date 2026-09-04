@@ -34,13 +34,10 @@ func (m *Manager) ListAgents(ctx context.Context) ([]string, error) {
 	return decodeAgentsEnvelope(out)
 }
 
-const (
-	// agentsEnvelopeStatusOK and agentsCommandName are the envelope framing
-	// decodeAgentsEnvelope requires before it trusts the listing. They are the
-	// literals agy prints, mirrored in internal/testutil/fakeagy.go.
-	agentsEnvelopeStatusOK = "SUCCESS"
-	agentsCommandName      = "agents"
-)
+// agentsCommandName is the command name decodeAgentsEnvelope requires before it
+// trusts the listing (see validateListingFraming). It is the literal agy prints,
+// mirrored in internal/testutil/fakeagy.go.
+const agentsCommandName = "agents"
 
 // agentsEnvelope is the subset of agy's `--output-format json agents` output that
 // list_agents needs: the status/command framing that proves the payload is the
@@ -79,11 +76,8 @@ func decodeAgentsEnvelope(raw []byte) ([]string, error) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("agy agents: parse json envelope: %w", err)
 	}
-	if env.Status != agentsEnvelopeStatusOK {
-		return nil, fmt.Errorf("agy agents: envelope status %q, want %q", env.Status, agentsEnvelopeStatusOK)
-	}
-	if env.Command.Name != agentsCommandName {
-		return nil, fmt.Errorf("agy agents: envelope command %q, want %q", env.Command.Name, agentsCommandName)
+	if err := validateListingFraming(agentsCommandName, env.Status, env.Command.Name); err != nil {
+		return nil, err
 	}
 	// nil, not empty: an absent or null command.data.agents (a renamed or dropped
 	// field), as opposed to a present "agents":[] which is a real empty catalog.
