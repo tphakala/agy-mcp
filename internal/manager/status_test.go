@@ -577,6 +577,90 @@ func TestStatusTerminalContract(t *testing.T) {
 	}
 }
 
+func TestStatusJSONSchemaResultSelection(t *testing.T) {
+	schemaArgs := []string{outputFormatFlag, streamJSONFormat, jsonSchemaFlag, `{"type":"object"}`, "-p", "hi"}
+	responseWithToolMetadata := `{"business":"ok","toolAction":"Finishing task","toolSummary":"Task completion"}`
+
+	for _, tc := range []terminalCase{
+		{
+			name: "schema success returns structured output instead of response metadata",
+			code: 0,
+			args: schemaArgs,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				Response:         responseWithToolMetadata,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+			},
+			wantState: StateDone, wantResult: `{"business":"ok"}`,
+		}, {
+			name:      "schema success without structured output fails closed",
+			code:      0,
+			args:      schemaArgs,
+			res:       &streamjson.Result{Status: streamjson.StatusSuccess, Response: responseWithToolMetadata},
+			wantState: StateFailed, wantResult: responseWithToolMetadata, wantPartial: true,
+			wantErrSub: "without structured_output", wantReason: ReasonAgyError,
+		}, {
+			name: "non schema success keeps response behavior",
+			code: 0,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				Response:         responseWithToolMetadata,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+			},
+			wantState: StateDone, wantResult: responseWithToolMetadata,
+		}, {
+			name: "schema clean exit without terminal event fails closed",
+			code: 0, args: schemaArgs, out: "streamed diagnostic",
+			wantState: StateFailed, wantResult: "streamed diagnostic", wantPartial: true,
+			wantErrSub: "without a terminal structured_output", wantReason: ReasonAgyError,
+		}, {
+			name: "cancel after schema success keeps complete structured output",
+			code: jobstore.ExitSIGTERM, args: schemaArgs,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				Response:         responseWithToolMetadata,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+			},
+			wantState: StateCancelled, wantResult: `{"business":"ok"}`,
+		}, {
+			name: "timeout after schema success keeps complete structured output",
+			code: jobstore.ExitTimeout, args: schemaArgs,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				Response:         responseWithToolMetadata,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+			},
+			wantState: StateFailed, wantResult: `{"business":"ok"}`,
+			wantErrSub: "timeout", wantReason: ReasonTimeout,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := stageTerminalJob(t, tc)
+			if st.State != tc.wantState || st.Result != tc.wantResult || st.Partial != tc.wantPartial {
+				t.Fatalf("status = %+v, want state %q result %q partial %v", st, tc.wantState, tc.wantResult, tc.wantPartial)
+			}
+			if tc.wantErrSub != "" && !strings.Contains(st.Error, tc.wantErrSub) {
+				t.Fatalf("error = %q, want substring %q", st.Error, tc.wantErrSub)
+			}
+			if st.FailureReason != tc.wantReason {
+				t.Fatalf("failure_reason = %q, want %q", st.FailureReason, tc.wantReason)
+			}
+		})
+	}
+
+	for _, raw := range []string{`{"k":1}`, `[1,2]`, `"scalar"`, `null`} {
+		t.Run("shape "+raw, func(t *testing.T) {
+			st := stageTerminalJob(t, terminalCase{
+				name: "shape", code: 0, args: schemaArgs,
+				res: &streamjson.Result{Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(raw)},
+			})
+			if st.State != StateDone || st.Result != raw || st.Partial {
+				t.Fatalf("status = %+v, want done result %q partial false", st, raw)
+			}
+		})
+	}
+}
+
 // A cancelled job carries no result, but it does carry the conversation, so the
 // thread it started can still be continued.
 func TestStatusCancelledKeepsConversationID(t *testing.T) {
