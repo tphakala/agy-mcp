@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -250,6 +251,143 @@ func TestStartJobIdempotencySkipsFailedCreationRemnant(t *testing.T) {
 		t.Fatal("replayed the failed-creation remnant instead of starting a fresh job")
 	}
 	killJob(t, m, job.ID)
+}
+
+// TestStartJobIdempotencyConcurrentSameKeyCreatesOneJob pins the core anti-double-start
+// guarantee under real concurrency: many goroutines racing StartJob with one key must
+// create exactly one job. Each caller either creates or replays that single job, or
+// loses the creation race and gets the retry-safe "is starting" error - never a second
+// job and never some other failure. Run under -race, it also exercises the claim's
+// mutual exclusion directly rather than through a hand-held claim.
+func TestStartJobIdempotencyConcurrentSameKeyCreatesOneJob(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "done", Sleep: 30 * time.Second})
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 8,
+		withCacheFile:  true,
+	})
+	// A fresh run (no conversation id) does not engage the conversation gate, so the
+	// idempotency claim is the ONLY thing serializing these callers.
+	req := StartRequest{Prompt: "review", Cwd: t.TempDir(), IdempotencyKey: "retry-race"}
+
+	const n = 8
+	type outcome struct {
+		job Job
+		err error
+	}
+	outcomes := make([]outcome, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release all callers together to widen the race
+			job, err := m.StartJob(req)
+			outcomes[i] = outcome{job, err}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	// Exactly one job may exist for the key: no caller double-created.
+	ids, err := m.store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("concurrent same-key StartJob created %d jobs, want exactly 1: %v", len(ids), ids)
+	}
+	created := ids[0]
+	killJob(t, m, created) // register teardown now, so an assertion failure below still reaps it
+
+	sawCreatedJob := false
+	for i, o := range outcomes {
+		switch {
+		case o.err == nil:
+			if o.job.ID != created {
+				t.Fatalf("caller %d returned job %s, want the single created job %s", i, o.job.ID, created)
+			}
+			sawCreatedJob = true
+		case strings.Contains(o.err.Error(), "is starting; retry with the same key"):
+			// Acceptable: this caller lost the creation race while another held the claim.
+		default:
+			t.Fatalf("caller %d unexpected error: %v", i, o.err)
+		}
+	}
+	if !sawCreatedJob {
+		t.Fatal("no caller observed the created job; expected at least the winner to return it")
+	}
+}
+
+// TestStartJobDifferentKeySameConversationStillSerializes proves the idempotency claim
+// and same-conversation serialization are independent: a DIFFERENT idempotency key does
+// not let a second run bypass conversation serialization while the first run holds that
+// conversation. Both runs name the conversation up front, so the refusal here is enforced
+// by the conversationLive pre-check (with the held per-conversation gate key as a second
+// layer); it is the end-to-end guarantee, not surgical to one layer. See
+// TestStartJobRefusesContinuationCollidingWithLiveFreshRun for surgical coverage of
+// conversationLive's progress-scan path.
+func TestStartJobDifferentKeySameConversationStillSerializes(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "done", Sleep: 30 * time.Second})
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	cwd := t.TempDir()
+	first, err := m.StartJob(StartRequest{Prompt: "one", Cwd: cwd, ConversationID: "conv-1", IdempotencyKey: "k1"})
+	if err != nil {
+		t.Fatalf("first StartJob: %v", err)
+	}
+	killJob(t, m, first.ID) // register teardown now, so an assertion failure below still reaps it
+
+	// A different idempotency key must not slip past conversation serialization: the
+	// second run on conv-1 is still refused while the first holds it.
+	_, err = m.StartJob(StartRequest{Prompt: "two", Cwd: cwd, ConversationID: "conv-1", IdempotencyKey: "k2"})
+	if err == nil || !strings.Contains(err.Error(), "already running on conversation") {
+		t.Fatalf("different-key same-conversation error = %v, want a conversation-serialization refusal", err)
+	}
+}
+
+// TestStartJobRefusesContinuationCollidingWithLiveFreshRun isolates conversationLive's
+// progress-scan path (manager.go conversationLive, the ReadProgressDir branch). Run 1 is
+// a FRESH run, so its conversation id lives only in progress.json, never in meta, and it
+// holds an EMPTY gate key - so the per-conversation gate key cannot backstop the refusal.
+// A continuation naming that same id must therefore be refused by conversationLive alone,
+// which makes this the surgical test for that branch: break the progress scan and the
+// second run is admitted instead of refused.
+func TestStartJobRefusesContinuationCollidingWithLiveFreshRun(t *testing.T) {
+	const convID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	m := waitManager(t, testutil.FakeAgy{Stdout: "OK", Sleep: 30 * time.Second, ConversationID: convID})
+	cwd := t.TempDir()
+
+	first, err := m.StartJob(StartRequest{Prompt: "one", Cwd: cwd})
+	if err != nil {
+		t.Fatalf("first StartJob: %v", err)
+	}
+	killJob(t, m, first.ID) // register teardown now, so an assertion failure below still reaps it
+	dir, err := m.store.Dir(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wait until the supervisor has staged the fresh run's conversation id into
+	// progress.json; until the marker lands, a continuation would race ahead of it and
+	// be admitted. meta.ConversationID stays empty for a fresh run, so conversationLive
+	// can only match through the progress scan.
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		p, ok := jobstore.ReadProgressDir(dir)
+		return ok && p.ConversationID == convID
+	}, "fresh run did not stage its conversation id into progress.json")
+
+	_, err = m.StartJob(StartRequest{Prompt: "two", Cwd: cwd, ConversationID: convID})
+	if err == nil || !strings.Contains(err.Error(), "already running on conversation") {
+		t.Fatalf("continuation colliding with a live fresh run: error = %v, want a conversation-serialization refusal", err)
+	}
 }
 
 func TestStartJobCleansUpDirOnSpawnFailure(t *testing.T) {
