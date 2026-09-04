@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
@@ -204,6 +205,51 @@ func TestStartJobIdempotencyRejectsDifferentRequest(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("mismatched retry created another job: %v", ids)
 	}
+}
+
+// TestStartJobIdempotencySkipsFailedCreationRemnant pins the PID==0 guard in
+// findIdempotentJob: a record bound to the key that never persisted a supervisor
+// PID is a failed-creation remnant (what an ignored store.Remove error during
+// teardown leaves behind), so a retry must start a fresh job rather than replay a
+// run that never started.
+func TestStartJobIdempotencySkipsFailedCreationRemnant(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "done", Sleep: 30 * time.Second})
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	req := StartRequest{Prompt: "review", Cwd: t.TempDir(), IdempotencyKey: "retry-orphan"}
+
+	// Seed the remnant with the SAME normalized cwd+args StartJob will derive, so it
+	// gets past the different-request check and exercises the PID==0 skip. No PID and
+	// no exit sentinel is exactly the leaked-record state.
+	nreq, err := m.normalizeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.store.Create(jobstore.Meta{
+		ID:             "orphan",
+		IdempotencyKey: req.IdempotencyKey,
+		Cwd:            nreq.Cwd,
+		Args:           buildAgyArgs(nreq),
+		Prompt:         nreq.Prompt,
+		StartedAt:      time.Now().UTC(),
+		BootID:         readBootID(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := m.StartJob(req)
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	if job.ID == "orphan" {
+		t.Fatal("replayed the failed-creation remnant instead of starting a fresh job")
+	}
+	killJob(t, m, job.ID)
 }
 
 func TestStartJobCleansUpDirOnSpawnFailure(t *testing.T) {

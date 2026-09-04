@@ -377,6 +377,18 @@ func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool,
 		if meta.Cwd != req.Cwd || !slices.Equal(meta.Args, args) {
 			return Job{}, false, fmt.Errorf("idempotency_key %q is already bound to job %s with a different normalized request", req.IdempotencyKey, id)
 		}
+		// A persisted record that never recorded a supervisor PID is a
+		// failed-creation remnant, not a job to replay. StartJob records PID>0 (via
+		// UpdateMeta) before it returns and releases the claim, so any claim-free
+		// record still at PID 0 is one whose creation failed and whose asynchronous
+		// cleanup could not remove it (an ignored store.Remove error leaves it
+		// behind). It represents a run that never started, and processAlive is false
+		// for PID<=0 so Status would report it as interrupted; replaying it would
+		// hand the caller a job that never ran. Skip it and let the caller start
+		// fresh; a GarbageCollect pass reaps the orphan later.
+		if meta.PID == 0 {
+			continue
+		}
 		st, err := m.Status(id)
 		if err != nil {
 			return Job{}, false, fmt.Errorf("read job %s status for idempotency_key %q: %w", id, req.IdempotencyKey, err)
