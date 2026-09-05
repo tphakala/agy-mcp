@@ -62,6 +62,24 @@ import (
 //     internal/manager); the WaitDelay guard stays because the floor is 1.1.15,
 //     which predates the fix.
 //
+// A further pair of releases hardens the durability of agy's on-disk
+// conversation store rather than the output format, so they do not raise the
+// floor either. Unlike the pair above, this is not a guard agy-mcp duplicates:
+// it is a data-integrity fix agy-mcp cannot substitute for.
+//   - 1.1.26 checkpoints the SQLite WAL on CLI exit, flushing a run's trailing
+//     session metadata to disk before shutdown.
+//   - 1.1.27 stops print mode (-p) exiting before the session has finished
+//     shutting down, which could drop the run's trailing conversation history
+//     before it reached disk.
+//
+// Both matter only for continuation, a later run passing --conversation <id>:
+// agy-mcp writes each job's result from the stream-json it captures itself, so a
+// job's own answer is unaffected, but on an agy below 1.1.27 a follow-up turn
+// could resume a conversation missing its last exchange. Fully durable
+// continuation therefore wants 1.1.27; the floor stays at 1.1.15 because a
+// single run still reads back intact and nothing agy-mcp does can flush agy's
+// store on its behalf.
+//
 // All facts are from agy's own changelog (run `agy changelog`); the 1.1.15 line
 // reads "Fixed streamed text corrupting non-ASCII characters into replacement
 // characters, in both the interactive display and --output-format stream-json
