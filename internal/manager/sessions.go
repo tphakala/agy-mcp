@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Session pairs a workspace path with its most recent agy conversation UUID.
@@ -32,6 +33,10 @@ func agyCachePath() string {
 // ListSessions returns known conversations, optionally filtered to one dir. It
 // reads m.cacheFile so it shares the manager's single source of truth for the agy
 // cache path (and is injectable in tests), as resolveLatest does.
+//
+// An unfiltered listing omits the ephemeral agy-openai-shim per-call workspaces
+// (see isTransientWorkspace); passing dir returns whatever matches it, transient
+// or not.
 func (m *Manager) ListSessions(dir string) ([]Session, error) {
 	return readSessions(m.cacheFile, dir)
 }
@@ -63,8 +68,37 @@ func readSessions(cacheFile, filterDir string) ([]Session, error) {
 		if cleanFilter != "" && filepath.Clean(ws) != cleanFilter {
 			continue
 		}
+		// Drop the ephemeral agy-openai-shim per-call workspaces from an unfiltered
+		// listing (issue #167): agy-mcp never starts a run in one and they dominate
+		// the shared cache. An explicit dir filter is honored above, so a caller that
+		// asks for one specific transient dir still gets it.
+		if cleanFilter == "" && isTransientWorkspace(ws) {
+			continue
+		}
 		out = append(out, Session{Workspace: ws, ConversationID: id})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Workspace < out[j].Workspace })
 	return out, nil
+}
+
+// Transient agy-openai-shim workspaces are laid out as
+// <...>/agy-openai-shim/agy-call-<n>. agy-openai-shim is a separate tool, so
+// agy-mcp never starts a run in one of these per-call dirs, and on a live cache
+// they were over 99% of the entries (issue #167). That noise is why the
+// unfiltered listing drops them.
+const (
+	agyShimDir    = "agy-openai-shim"
+	agyCallPrefix = "agy-call-"
+)
+
+// isTransientWorkspace reports whether ws is one of the ephemeral per-call
+// workspaces agy-openai-shim creates. It requires BOTH signals, the
+// agy-openai-shim parent segment AND an agy-call- leaf, so a real workspace that
+// merely shares one of those names (for example a checkout of the shim repo
+// itself, agy-openai-shim/docs) is never dropped from the listing. ws is cleaned
+// first so a trailing separator cannot push Base onto the wrong segment.
+func isTransientWorkspace(ws string) bool {
+	ws = filepath.Clean(ws)
+	return filepath.Base(filepath.Dir(ws)) == agyShimDir &&
+		strings.HasPrefix(filepath.Base(ws), agyCallPrefix)
 }

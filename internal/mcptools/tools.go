@@ -310,7 +310,7 @@ type agentsOutput struct {
 }
 
 type sessionsInput struct {
-	Dir string `json:"dir,omitempty" jsonschema:"absolute path of a workspace directory to filter to; omit to list every known conversation. The filter is canonicalized (made absolute against the server's working directory, symlinks resolved) before matching, so a path agy cached in some other spelling may not match"`
+	Dir string `json:"dir,omitempty" jsonschema:"absolute path of a workspace directory to filter to; omit to list known conversations, minus the ephemeral agy-openai-shim per-call workspaces. The filter is canonicalized (made absolute against the server's working directory, with best-effort symlink resolution) before matching, so a path agy cached in some other spelling may not match"`
 }
 type sessionsOutput struct {
 	Sessions []manager.Session `json:"sessions" jsonschema:"one entry per workspace directory, each holding that directory's most recent conversation id"`
@@ -465,7 +465,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolListSessions,
 		Title:       "List agy conversations",
 		Annotations: annReadLocal,
-		Description: "List known agy conversations as workspace-directory to conversation-id pairs. Use it to recover a conversation_id to pass to agy_run or agy_run_sync when resuming an earlier thread, which beats restating context in a fresh prompt. To continue the latest thread for a directory you do not need this: set continue_latest instead. Reads agy's own conversation cache, so it also lists conversations this server never started, and it holds only the most recent id per workspace rather than full history.",
+		Description: "List known agy conversations as workspace-directory to conversation-id pairs. Use it to recover a conversation_id to pass to agy_run or agy_run_sync when resuming an earlier thread, which beats restating context in a fresh prompt. To continue the latest thread for a directory you do not need this: set continue_latest instead. Reads agy's own conversation cache, so it also lists conversations this server never started, and it holds only the most recent id per workspace rather than full history. An unfiltered listing omits the ephemeral per-call workspaces the agy-openai-shim helper creates (agy-mcp never starts a run in one and they can dominate the cache); pass dir to fetch a specific one anyway.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionsInput) (*mcp.CallToolResult, sessionsOutput, error) {
 		sessions, err := mgr.ListSessions(in.Dir)
 		if err != nil {

@@ -130,3 +130,101 @@ func TestListSessionsFilterMatchesRealDir(t *testing.T) {
 		t.Fatalf("directory filter did not match the real-dir cache key: got %+v", sessions)
 	}
 }
+
+// TestListSessionsFiltersTransientShimWorkspaces: an unfiltered listing must drop
+// the ephemeral agy-openai-shim/agy-call-<n> workspaces (issue #167) and keep the
+// real ones. Sabotage: delete the isTransientWorkspace skip in readSessions and
+// the two transient entries reappear (got 4, want 2).
+func TestListSessionsFiltersTransientShimWorkspaces(t *testing.T) {
+	root := t.TempDir()
+	real1 := filepath.Join(root, "proj")
+	real2 := filepath.Join(root, "other")
+	shim := filepath.Join(root, "agy-openai-shim")
+	cache := filepath.Join(t.TempDir(), "last_conversations.json")
+	data, err := json.Marshal(map[string]string{
+		real1:                             "uuid-1",
+		real2:                             "uuid-2",
+		filepath.Join(shim, "agy-call-1"): "uuid-shim-1",
+		filepath.Join(shim, "agy-call-2"): "uuid-shim-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := readSessions(cache, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2 real ones (transient shim entries must be dropped): %+v", len(sessions), sessions)
+	}
+	for _, s := range sessions {
+		if filepath.Base(filepath.Dir(s.Workspace)) == "agy-openai-shim" {
+			t.Errorf("transient shim workspace leaked into the unfiltered listing: %q", s.Workspace)
+		}
+	}
+}
+
+// TestListSessionsExplicitDirReturnsTransientWorkspace: an explicit dir filter is
+// honored verbatim, even when it points at a transient shim workspace, so the
+// exclusion is scoped to the unfiltered listing. Sabotage: drop the
+// cleanFilter=="" guard on the skip (filter transient unconditionally) and this
+// returns nothing.
+func TestListSessionsExplicitDirReturnsTransientWorkspace(t *testing.T) {
+	root := t.TempDir()
+	shimCall := filepath.Join(root, "agy-openai-shim", "agy-call-7")
+	// The filter canonicalizes with normalizeCwd, so store the entry under the same
+	// canonical spelling the filter resolves to (the dir does not exist, so this is
+	// the cleaned absolute form).
+	norm, err := normalizeCwd(shimCall)
+	if err != nil {
+		t.Fatalf("normalizeCwd: %v", err)
+	}
+	cache := filepath.Join(t.TempDir(), "last_conversations.json")
+	data, err := json.Marshal(map[string]string{norm: wantUUID1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := readSessions(cache, shimCall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ConversationID != wantUUID1 {
+		t.Fatalf("an explicit dir filter for a transient workspace must return it, got %+v", sessions)
+	}
+}
+
+// TestIsTransientWorkspace pins the detection boundary: both the agy-openai-shim
+// parent segment AND an agy-call- leaf are required, and only the immediate parent
+// counts, so a real workspace is never dropped and a deeper layout degrades to
+// "not transient" rather than over-matching.
+func TestIsTransientWorkspace(t *testing.T) {
+	root := t.TempDir()
+	shim := filepath.Join(root, "agy-openai-shim")
+	cases := []struct {
+		name string
+		ws   string
+		want bool
+	}{
+		{"shim call dir", filepath.Join(shim, "agy-call-42"), true},
+		{"shim call dir empty suffix", filepath.Join(shim, "agy-call-"), true},
+		{"shim call dir trailing separator", filepath.Join(shim, "agy-call-9") + string(filepath.Separator), true},
+		{"real project", filepath.Join(root, "proj"), false},
+		{"agy-call leaf not under shim", filepath.Join(root, "agy-call-9"), false},
+		{"non-call leaf under shim", filepath.Join(shim, "docs"), false},
+		{"call dir nested deeper under shim", filepath.Join(shim, "sub", "agy-call-1"), false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTransientWorkspace(tc.ws); got != tc.want {
+				t.Errorf("isTransientWorkspace(%q) = %v, want %v", tc.ws, got, tc.want)
+			}
+		})
+	}
+}
