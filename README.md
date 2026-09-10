@@ -34,7 +34,7 @@ Every job runs `agy --output-format stream-json`, and the supervisor decodes tha
 - `agy_wait`: block until an already-started job finishes (bounded, with MCP progress notifications); one call replaces an `agy_status` poll loop.
 - `list_models`: enumerate available `agy` models, as the ids the `model` parameter accepts plus their display labels.
 - `list_agents`: enumerate available `agy` agents, as the names the `agent` parameter accepts. Unlike `list_models` there is no id/label split, because `agy` takes an agent name verbatim; an empty list just means no agents are configured.
-- `list_sessions`: list known conversations so review threads can be continued.
+- `list_sessions`: list known conversations so review threads can be continued. An unfiltered call omits the ephemeral per-call workspaces the agy-openai-shim helper creates; pass a `dir` to fetch a specific one.
 
 `agy_run` and `agy_run_sync` also take optional per-run controls: pick the `model`, reasoning `effort` (`low`/`medium`/`high`), execution `mode` (including a `plan`-only pass), a named `agent`, `sandbox` terminal restrictions, and a `json_schema` to constrain the result to structured output. Those run-shaping values are forwarded to `agy`; `idempotency_key` is handled only by agy-mcp and is never forwarded.
 
@@ -125,6 +125,8 @@ Or add to your MCP client config:
 - `list_models()` -> `{ models, model_details }`
 - `list_agents()` -> `{ agents }`
 - `list_sessions(dir?)` -> `{ sessions }`
+
+`list_sessions` without `dir` omits the ephemeral per-call workspaces the agy-openai-shim helper creates: the server never starts a run in one and on a busy cache they can outnumber the real workspaces many times over ([#167](https://github.com/tphakala/agy-mcp/issues/167)). Pass a `dir` to fetch a specific workspace, transient or not; the filter is canonicalized (made absolute, with best-effort symlink resolution) before matching.
 
 `models` holds ids alone, so its entries can be passed straight to `model`; `model_details` pairs each id with the display label `agy` prints for it, in the same order, for showing a readable name. Through v2.1.0 `models` carried each `agy models` row whole, which was a tab-joined `id<TAB>label` string that `agy` does not accept as a model at all, so a client had to split it and pick a column ([#135](https://github.com/tphakala/agy-mcp/issues/135)).
 
