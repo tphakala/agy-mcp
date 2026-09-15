@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
