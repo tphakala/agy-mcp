@@ -44,10 +44,18 @@ func ConfigureGroup(cmd *exec.Cmd) {
 //
 // A session leader has pgid == pid, so the Track/Terminate group kill (kill -pgid)
 // still tears the whole tree down; Setsid alone therefore replaces the Setpgid that
-// ConfigureGroup sets. It preserves any other SysProcAttr fields a caller set first,
-// but it must not be paired with Setpgid: setpgid on a session leader fails EPERM.
+// ConfigureGroup sets. It clears the process-group request fields that conflict with
+// a new session (Setpgid, Pgid, Foreground) and preserves any other SysProcAttr a
+// caller set first, so it is safe to apply on top of a prior ConfigureGroup.
 func ConfigureSession(cmd *exec.Cmd) {
 	ensureSysProcAttr(cmd)
+	// A new session already makes the child a process-group leader (pgid == pid), so a
+	// pre-existing Setpgid/Pgid/Foreground request is redundant and, worse, fatal: Go's
+	// fork path runs setpgid after setsid, and setpgid on a session leader fails EPERM
+	// at Start. Clear them so ConfigureSession cannot break on top of another Configure.
+	cmd.SysProcAttr.Setpgid = false
+	cmd.SysProcAttr.Pgid = 0
+	cmd.SysProcAttr.Foreground = false
 	cmd.SysProcAttr.Setsid = true
 }
 

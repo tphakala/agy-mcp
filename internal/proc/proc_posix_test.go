@@ -23,13 +23,16 @@ func TestConfigureGroupRequestsNewProcessGroup(t *testing.T) {
 // leaving any SysProcAttr fields a caller configured first intact.
 func TestConfigureGroupPreservesExistingAttrs(t *testing.T) {
 	cmd := exec.Command("true")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Noctty (not Setsid) is the sentinel: Setsid alongside the Setpgid ConfigureGroup
+	// adds would model an un-startable combo (setpgid on a session leader is EPERM),
+	// even though this test never starts the command.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Noctty: true}
 	ConfigureGroup(cmd)
 	if !cmd.SysProcAttr.Setpgid {
 		t.Error("ConfigureGroup must set Setpgid")
 	}
-	if !cmd.SysProcAttr.Setsid {
-		t.Error("ConfigureGroup must preserve a pre-existing SysProcAttr field (Setsid)")
+	if !cmd.SysProcAttr.Noctty {
+		t.Error("ConfigureGroup must preserve a pre-existing SysProcAttr field (Noctty)")
 	}
 }
 
@@ -150,6 +153,29 @@ func TestConfigureSessionPreservesExistingAttrs(t *testing.T) {
 	}
 	if !cmd.SysProcAttr.Noctty {
 		t.Error("ConfigureSession must preserve a pre-existing SysProcAttr field (Noctty)")
+	}
+}
+
+// TestConfigureSessionClearsConflictingGroupAttrs: ConfigureSession must neutralize a
+// pre-existing process-group request so it is safe on top of another Configure call.
+// Setsid makes the child a session (and group) leader; Go's fork path then runs
+// setpgid, which fails EPERM on a session leader, so ConfigureGroup-then-ConfigureSession
+// would otherwise die at Start. The cleared Setpgid must let the command start and run.
+func TestConfigureSessionClearsConflictingGroupAttrs(t *testing.T) {
+	cmd := exec.Command("true")
+	ConfigureGroup(cmd)   // sets Setpgid = true
+	ConfigureSession(cmd) // must clear Setpgid and set Setsid
+	if cmd.SysProcAttr.Setpgid {
+		t.Error("ConfigureSession must clear a pre-existing Setpgid (setpgid on a session leader fails EPERM)")
+	}
+	if !cmd.SysProcAttr.Setsid {
+		t.Error("ConfigureSession must set Setsid")
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start after ConfigureGroup+ConfigureSession must succeed, got: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait: %v", err)
 	}
 }
 
