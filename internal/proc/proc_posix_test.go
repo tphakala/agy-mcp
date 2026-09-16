@@ -4,9 +4,11 @@ package proc
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestConfigureGroupRequestsNewProcessGroup(t *testing.T) {
@@ -115,6 +117,105 @@ func TestTrackTerminateKillsGroup(t *testing.T) {
 	}
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("expected the killed process to exit non-nil")
+	}
+	if err := g.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// TestConfigureSessionRequestsNewSession: the agy child must run in its own
+// session (Setsid), not merely its own process group. A new session has no
+// controlling terminal, so agy's startup open("/dev/tty")+tcsetattr (raw mode),
+// which it performs even under --output-format stream-json, finds no terminal
+// (ENXIO) instead of raising SIGTTOU from a background process group, which
+// would stop (state T) agy before it emits any output.
+func TestConfigureSessionRequestsNewSession(t *testing.T) {
+	cmd := exec.Command("true")
+	ConfigureSession(cmd)
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+		t.Fatal("ConfigureSession must request a new session (Setsid) so the child has no controlling terminal")
+	}
+}
+
+// TestConfigureSessionPreservesExistingAttrs: ConfigureSession adds Setsid without
+// clobbering a SysProcAttr field a caller configured first. The sentinel is Noctty
+// (not Setpgid), since Setsid combined with Setpgid would try setpgid on a session
+// leader and fail EPERM at spawn.
+func TestConfigureSessionPreservesExistingAttrs(t *testing.T) {
+	cmd := exec.Command("true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Noctty: true}
+	ConfigureSession(cmd)
+	if !cmd.SysProcAttr.Setsid {
+		t.Error("ConfigureSession must set Setsid")
+	}
+	if !cmd.SysProcAttr.Noctty {
+		t.Error("ConfigureSession must preserve a pre-existing SysProcAttr field (Noctty)")
+	}
+}
+
+// TestConfigureSessionGroupStillTerminable: Setsid makes the child a session and
+// process-group leader (pgid == pid), so the existing Track/Terminate group kill
+// (kill -pgid) still tears the whole TREE down, not just the leader. Guards against
+// the controlling-tty fix regressing cancel/timeout cleanup.
+//
+// A childless process cannot distinguish a group kill from a leader kill, so the
+// shell leader forks a grandchild and prints its PID. After Terminate the grandchild
+// must also be gone: it is reparented to init on the leader's death and reaped there,
+// so signalling it settles on ESRCH. A leader-only kill leaves the grandchild alive
+// (confirmed out of band), so this assertion genuinely exercises the group kill.
+func TestConfigureSessionGroupStillTerminable(t *testing.T) {
+	// `sleep 60 &` is the grandchild; `echo $!` reports its PID; `wait` keeps the
+	// leader alive until the group is killed.
+	cmd := exec.Command("sh", "-c", "sleep 60 & echo $! ; wait")
+	ConfigureSession(cmd)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Nuke the whole group in case an assertion failed early, so neither the
+		// leader nor a surviving grandchild leaks for the full 60s.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	var grandchild int
+	if _, err := fmt.Fscan(stdout, &grandchild); err != nil {
+		t.Fatalf("read grandchild pid: %v", err)
+	}
+	if grandchild <= 1 {
+		t.Fatalf("implausible grandchild pid %d", grandchild)
+	}
+	if err := syscall.Kill(grandchild, 0); err != nil {
+		t.Fatalf("grandchild %d should be alive before the kill: %v", grandchild, err)
+	}
+
+	g, err := Track(cmd, false)
+	if err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+	if err := g.Terminate(syscall.SIGKILL); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("expected the killed leader to exit non-nil")
+	}
+
+	// The group kill must reach the grandchild too; it settles on ESRCH once reaped.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		gerr := syscall.Kill(grandchild, 0)
+		if errors.Is(gerr, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("grandchild %d still present after the group kill (Kill(pid,0)=%v): a non-leader member survived", grandchild, gerr)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if err := g.Close(); err != nil {
 		t.Errorf("Close: %v", err)

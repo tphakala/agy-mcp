@@ -38,6 +38,16 @@ func ConfigureGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW
 }
 
+// ConfigureSession is the cross-platform entry point the supervisor uses for the
+// agy child. On POSIX it starts a new session to drop the controlling terminal
+// (agy stops on SIGTTOU otherwise); Windows has no POSIX session or SIGTTOU, so the
+// agy child needs only its own process group and no console window, which is
+// exactly what ConfigureGroup provides. It is therefore an alias here rather than a
+// second copy of the same flags.
+func ConfigureSession(cmd *exec.Cmd) {
+	ConfigureGroup(cmd)
+}
+
 // ConfigureNoWindow suppresses the console window of a short-lived child without
 // otherwise changing how it is spawned. It is for the short-lived probes the
 // manager runs directly, which want neither a new process group nor Job Object

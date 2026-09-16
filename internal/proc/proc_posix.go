@@ -12,15 +12,43 @@ import (
 // check it and refuse before spawning on platforms where the stubs apply.
 const Supported = true
 
-// ConfigureGroup puts the spawned process in its own process group, so the whole
-// group (the child and its descendants) can be terminated together via a Group
-// captured by Track. The supervisor uses it for agy. It sets only Setpgid,
-// preserving any other SysProcAttr fields a caller configured first.
-func ConfigureGroup(cmd *exec.Cmd) {
+// ensureSysProcAttr allocates cmd.SysProcAttr when a caller has not set one, so the
+// Configure* helpers can OR in their own field without clobbering attrs a caller
+// configured first. It mirrors the helper of the same name in proc_windows.go.
+func ensureSysProcAttr(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
+}
+
+// ConfigureGroup puts the spawned process in its own process group, so the whole
+// group (the child and its descendants) can be terminated together via a Group
+// captured by Track. The manager uses it (through StartDetached) for the detached
+// run-job supervisor; the agy child itself uses ConfigureSession instead, which
+// additionally drops the controlling terminal. It sets only Setpgid, preserving
+// any other SysProcAttr fields a caller configured first.
+func ConfigureGroup(cmd *exec.Cmd) {
+	ensureSysProcAttr(cmd)
 	cmd.SysProcAttr.Setpgid = true
+}
+
+// ConfigureSession puts the spawned process in a new session (Setsid), which gives
+// it its own process group AND, crucially, no controlling terminal. The supervisor
+// uses it for the agy child. agy opens /dev/tty and calls tcsetattr to put the
+// terminal in raw mode at startup even under --print / --output-format stream-json;
+// a process performing a terminal-modifying ioctl while in a background process
+// group is stopped by SIGTTOU (state T) before it emits any output, which is why a
+// run launched from a real terminal hangs until the print-timeout. Leading a new
+// session removes the controlling terminal, so agy's open("/dev/tty") returns ENXIO
+// and it skips the raw-mode setup instead of stopping.
+//
+// A session leader has pgid == pid, so the Track/Terminate group kill (kill -pgid)
+// still tears the whole tree down; Setsid alone therefore replaces the Setpgid that
+// ConfigureGroup sets. It preserves any other SysProcAttr fields a caller set first,
+// but it must not be paired with Setpgid: setpgid on a session leader fails EPERM.
+func ConfigureSession(cmd *exec.Cmd) {
+	ensureSysProcAttr(cmd)
+	cmd.SysProcAttr.Setsid = true
 }
 
 // ConfigureNoWindow is a no-op here. It exists so the manager's probe spawns can
