@@ -9,7 +9,7 @@ import (
 
 // Non-Linux, non-Windows, non-macOS stubs so the manager and supervisor packages
 // build on platforms (e.g. FreeBSD) without a supervision implementation. The
-// spawning entry points (ConfigureGroup, StartDetached, Track) are gated behind
+// spawning entry points (ConfigureGroup, ConfigureSession, StartDetached, Track) are gated behind
 // Supported by their callers, which refuse before spawning, so those never run
 // here. ConfigureNoWindow is the exception: the manager's probes call it
 // unconditionally, so it does run, and does nothing.
@@ -18,6 +18,8 @@ import (
 const Supported = false
 
 func ConfigureGroup(_ *exec.Cmd) {}
+
+func ConfigureSession(_ *exec.Cmd) {}
 
 func ConfigureNoWindow(_ *exec.Cmd) {}
 

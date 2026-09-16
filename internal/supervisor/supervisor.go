@@ -288,9 +288,14 @@ func run(jobDir string, grace, drainWait time.Duration) error {
 	}
 	defer func() { _ = pr.Close() }()
 	cmd.Stdout = pw
-	// Put agy in its own process group / job so the whole tree can be terminated
-	// together on cancel or timeout.
-	proc.ConfigureGroup(cmd)
+	// Put agy in its own session (POSIX) or process group / job (Windows) so the
+	// whole tree can be terminated together on cancel or timeout, and, on POSIX, so
+	// agy has no controlling terminal. agy opens /dev/tty and puts it in raw mode at
+	// startup even under --output-format stream-json; a background process group
+	// doing that terminal ioctl is stopped by SIGTTOU (state T) before it emits any
+	// output, so a run launched from a real terminal would otherwise hang until the
+	// timeout. A detached session removes the controlling terminal, so agy runs.
+	proc.ConfigureSession(cmd)
 
 	if selectsStreamJSON(args) {
 		markStreamJSON(jobDir, errF)
