@@ -787,20 +787,33 @@ func backgroundTasksAborted(dir string) bool {
 // (it relabels, never empties). Split out from backgroundTasksAborted so the
 // token matching is unit-testable without staging a job directory.
 //
+// Each marker's tokens must fall on a SINGLE line: matching them across the whole
+// tail would let an unrelated line carrying one token (a stray "idle" in some
+// other diagnostic) combine with a kill line to fake the idle-wait marker, which
+// is the false-positive direction this heuristic exists to avoid. The grace and
+// task count are still not matched, so wording variation in those stays tolerated.
+//
 // MEASURED against agy 1.2.7 (issue #173): the err file carried only agy's own
 // control lines, not the background command's output, ending with
 //
 //	root agent idle; waiting up to 5s for 2 background task(s)
 //	terminating 2 background task(s) on exit
 //
-// so both markers fall in the bounded tail, and only the stable tokens are
+// so both marker lines fall in the bounded tail, and only the stable tokens are
 // matched, not the variable grace or count.
 func matchesBackgroundAbort(stderr string) bool {
-	l := strings.ToLower(stderr)
-	idleWaiting := strings.Contains(l, "idle") && strings.Contains(l, "background task")
-	killedAtExit := strings.Contains(l, "terminating") &&
-		strings.Contains(l, "background task") &&
-		strings.Contains(l, "on exit")
+	var idleWaiting, killedAtExit bool
+	for line := range strings.Lines(stderr) {
+		l := strings.ToLower(line)
+		if strings.Contains(l, "idle") && strings.Contains(l, "background task") {
+			idleWaiting = true
+		}
+		if strings.Contains(l, "terminating") &&
+			strings.Contains(l, "background task") &&
+			strings.Contains(l, "on exit") {
+			killedAtExit = true
+		}
+	}
 	return idleWaiting && killedAtExit
 }
 

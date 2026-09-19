@@ -106,6 +106,11 @@ func TestMatchesBackgroundAbortRequiresBothMarkers(t *testing.T) {
 		{"idle line alone did not reach the exit kill", idleLine + "\n", false},
 		{"neither marker", "some unrelated agy chatter\n", false},
 		{"empty stderr", "", false},
+		// Near-miss: the tokens exist but split across unrelated lines. An idle line
+		// that is not about a background task must not combine with a stray-task kill
+		// line to fake the idle-wait marker (the false-positive direction). Matching
+		// the whole tail rather than per line would wrongly return true here.
+		{"tokens split across unrelated lines", "the session went idle for a while\nterminating 1 background task(s) on exit\n", false},
 		// Case-insensitive, and tolerant of a different grace and task count: the
 		// variable parts are not part of the match.
 		{"mixed case with a different grace and count", "ROOT AGENT IDLE; WAITING UP TO 30S FOR 1 BACKGROUND TASK(S)\nTERMINATING 1 BACKGROUND TASK(S) ON EXIT", true},
