@@ -92,6 +92,54 @@ func TestClassifyAgyError(t *testing.T) {
 // TestErrorSummaryTruncatesOnUTF8Boundary: when the trailing stderr is larger
 // than errTailBytes and the cut falls mid-rune, the reported error is advanced
 // to a valid UTF-8 boundary rather than emitting a split multi-byte rune.
+func TestMatchesBackgroundAbortRequiresBothMarkers(t *testing.T) {
+	// The idle-wait line and the kill-at-exit line, as measured against agy 1.2.7.
+	const idleLine = "root agent idle; waiting up to 5s for 2 background task(s)"
+	const killLine = "terminating 2 background task(s) on exit"
+	for _, tc := range []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{"both markers, the real abort", idleLine + "\n" + killLine + "\n", true},
+		{"kill line alone is a stray leaked task, not an abort", killLine + "\n", false},
+		{"idle line alone did not reach the exit kill", idleLine + "\n", false},
+		{"neither marker", "some unrelated agy chatter\n", false},
+		{"empty stderr", "", false},
+		// Near-miss: the tokens exist but split across unrelated lines. An idle line
+		// that is not about a background task must not combine with a stray-task kill
+		// line to fake the idle-wait marker (the false-positive direction). Matching
+		// the whole tail rather than per line would wrongly return true here.
+		{"tokens split across unrelated lines", "the session went idle for a while\nterminating 1 background task(s) on exit\n", false},
+		// Case-insensitive, and tolerant of a different grace and task count: the
+		// variable parts are not part of the match.
+		{"mixed case with a different grace and count", "ROOT AGENT IDLE; WAITING UP TO 30S FOR 1 BACKGROUND TASK(S)\nTERMINATING 1 BACKGROUND TASK(S) ON EXIT", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchesBackgroundAbort(tc.stderr); got != tc.want {
+				t.Errorf("matchesBackgroundAbort(%q) = %v, want %v", tc.stderr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBackgroundTasksAbortedFalseOnUnreadableStderr(t *testing.T) {
+	dir := t.TempDir()
+	// Stage the err path as a directory so cleanTail's read fails. This pins the
+	// observable contract (issue #173): an unreadable stderr must leave the derived
+	// state untouched (false), never guess a failure. The err-guard it exercises is
+	// defensive rather than behaviour-bearing: cleanTail returns "" on a read error,
+	// which matchesBackgroundAbort already rejects, so removing the guard would not
+	// change this result. The test still documents the contract and covers the
+	// read-error branch.
+	if err := os.Mkdir(jobstore.ErrPath(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if backgroundTasksAborted(dir) {
+		t.Error("backgroundTasksAborted = true on an unreadable stderr, want false")
+	}
+}
+
 func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	dir := createJob(t, m, "j")
@@ -362,6 +410,33 @@ func terminalCases() []terminalCase {
 			code: 0, res: &streamjson.Result{Status: "MAX_TURNS"},
 			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
 			wantErrSub: "unrecognized result status", wantReason: ReasonAgyError,
+		},
+		// --- clean exit, but agy killed its outstanding background tasks (#173) --
+		{
+			// Issue #173: agy exits 0 with a SUCCESS payload, but its stderr shows
+			// the root agent went idle and killed outstanding background shell tasks,
+			// so the "answer" is only progress narration. Reported as done, a caller
+			// trusting state consumes a phantom result, so it is downgraded to a
+			// failure that still carries the narration (partial) and the conversation
+			// to continue.
+			name: "an idle-killed background run is a failure, not a phantom success",
+			code: 0, res: &streamjson.Result{
+				Status: streamjson.StatusSuccess, Response: "I am waiting for the background task to complete.",
+				ConversationID: "cid-bg", NumTurns: 1,
+			},
+			errFile: "root agent idle; waiting up to 5s for 2 background task(s)\n" +
+				"terminating 2 background task(s) on exit\n",
+			wantState: StateFailed, wantResult: "I am waiting for the background task to complete.",
+			wantPartial: true, wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
+			wantConvID: "cid-bg", wantTurns: 1,
+		}, {
+			// The precision guard: a run that finished its answer and merely leaked a
+			// stray background process prints the kill line WITHOUT the idle-wait
+			// line, so it is a genuine success and must not be downgraded.
+			name: "a stray killed background task without the idle-wait marker stays done",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "the real answer"},
+			errFile:   "terminating 1 background task(s) on exit\n",
+			wantState: StateDone, wantResult: "the real answer",
 		},
 		// --- clean exit, no terminal payload ------------------------------------
 		{
@@ -663,6 +738,18 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 			},
 			wantState: StateFailed, wantResult: `{"business":"ok"}`,
 			wantErrSub: "timeout", wantReason: ReasonTimeout,
+		}, {
+			// Issue #173 for a schema run: structured_output produced before the
+			// agent's background verification was killed is likewise suspect, so a
+			// clean SUCCESS whose stderr shows the idle-kill downgrades too, carrying
+			// the now-partial JSON.
+			name: "idle-killed schema run downgrades and keeps its structured output",
+			code: 0, args: schemaArgs,
+			res: &streamjson.Result{Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(`{"business":"ok"}`)},
+			errFile: "root agent idle; waiting up to 5s for 1 background task(s)\n" +
+				"terminating 1 background task(s) on exit\n",
+			wantState: StateFailed, wantResult: `{"business":"ok"}`, wantPartial: true,
+			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

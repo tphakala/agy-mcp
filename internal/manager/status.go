@@ -41,9 +41,11 @@ const (
 // Failure reasons reported in Status.FailureReason. They classify a StateFailed
 // job so a caller can branch on the cause without scraping the free-text Error:
 // above all, tell a transient wall it can wait out (ReasonQuotaExhausted) from a
-// hard error. The set is small, stable and closed; an outcome that fits none of
-// the named reasons is ReasonUnknown rather than a new value, so a caller's
-// switch never has to grow to stay correct.
+// hard error. The set is small and closed, and grows only by a deliberate,
+// backward-compatible addition; an outcome that merely fits none of the existing
+// reasons collapses to ReasonUnknown rather than minting a value, and a caller
+// that treats an unrecognized reason as unknown (as the wire contract instructs)
+// stays correct across such additions.
 //
 // A reason is set only alongside StateFailed. A cancelled job needs none (its
 // state already is the reason), and a running or done job has no failure to
@@ -54,7 +56,12 @@ const (
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
 	ReasonInterrupted    = "interrupted"     // the job process vanished without writing a result
-	ReasonUnknown        = "unknown"         // a failure that fits none of the above (e.g. the output could not be read)
+	// ReasonBackgroundAborted: agy exited cleanly with a SUCCESS payload, but its
+	// stderr shows it went idle with outstanding background shell tasks and killed
+	// them at exit, so the "answer" is only progress narration, not usable work
+	// (issue #173). Actionable: re-run and keep verification in the foreground.
+	ReasonBackgroundAborted = "background_aborted"
+	ReasonUnknown           = "unknown" // a failure that fits none of the above (e.g. the output could not be read)
 )
 
 // Status is the observable state of a job.
@@ -231,10 +238,24 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	res, hasResult := readResultPayload(dir)
 	switch code {
 	case 0:
+		var done Status
 		if !hasResult {
-			return cleanExitWithoutPayload(dir, meta, st)
+			done = cleanExitWithoutPayload(dir, meta, st)
+		} else {
+			done = applyResult(dir, meta, st, res)
 		}
-		return applyResult(dir, meta, st, res)
+		// A clean exit agy vouched for can still be a run that did no usable work:
+		// in headless -p mode agy waits only ~5s after its root agent goes idle for
+		// outstanding background shell tasks, then kills them and exits 0 with a
+		// SUCCESS payload whose response is only progress narration (issue #173).
+		// Its stderr is the only record of the abort, so when the derived state is
+		// done but that marker is present, downgrade to a failure the caller can
+		// branch on rather than a phantom success. Confined to code 0 because every
+		// non-zero exit already reports a failure or a cancel.
+		if done.State == StateDone && backgroundTasksAborted(dir) {
+			return markBackgroundAborted(done)
+		}
+		return done
 	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
 		st.State = StateCancelled
 	case jobstore.ExitTimeout:
@@ -271,6 +292,28 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	if hasResult {
 		st = carryResultMetadata(st, res)
 	}
+	return st
+}
+
+// markBackgroundAborted downgrades a clean-exit "done" status that agy's stderr
+// reveals to be an idle-killed background run (issue #173). It keeps the text agy
+// did stream (the progress narration names what the agent launched) but flags it
+// partial, and states in Error how to recover. The generic issue #151 "continue
+// this conversation" hint is deliberately withheld for this reason, enforced in
+// toStatusOutput so it holds even in the rare case where the narration was empty:
+// a blind re-run just launches the same background command and aborts the same
+// way, so the guidance is to keep verification in the foreground.
+func markBackgroundAborted(st Status) Status {
+	st.State = StateFailed
+	st.FailureReason = ReasonBackgroundAborted
+	st.Partial = true
+	msg := "agy went idle with outstanding background shell task(s) and terminated them at exit, " +
+		"so its response is only progress narration, not completed work. " +
+		"Re-run and have the agent run any verification in the foreground rather than as a background task"
+	if st.ConversationID != "" {
+		msg += ", optionally continuing this conversation_id"
+	}
+	st.Error = msg + "."
 	return st
 }
 
@@ -714,6 +757,64 @@ func cleanTail(dir string) (string, error) {
 		tail = tail[1:]
 	}
 	return tail, nil
+}
+
+// backgroundTasksAborted reports whether a terminal job's captured stderr shows
+// agy aborting outstanding background shell tasks because its root agent went
+// idle (issue #173). It reads the same bounded stderr tail as errorSummary; an
+// unreadable stderr yields false, leaving the derived state untouched rather than
+// guessing a failure.
+func backgroundTasksAborted(dir string) bool {
+	tail, err := cleanTail(dir)
+	if err != nil {
+		return false
+	}
+	return matchesBackgroundAbort(tail)
+}
+
+// matchesBackgroundAbort tests stderr text for BOTH of agy's background-abort
+// markers. It is a heuristic, not an infallible signal: agy exits 0 either way,
+// so its stderr is the only record of the abort. Requiring both markers biases
+// toward precision, because the two failure directions are not equally costly. A
+// false negative (a marker absent, or pushed out of the bounded tail below by
+// verbose interleaved output) only leaves the pre-existing SUCCESS reporting in
+// place. A false positive downgrades a genuinely complete answer, so it is the
+// one to avoid; the inference behind requiring both is that a run which finished
+// its answer and merely leaked a stray background task need not also have gone
+// idle waiting on it, so demanding the idle-wait line as well as the kill line
+// rejects that case. That inference is not verified against agy, so even a false
+// positive is made safe by markBackgroundAborted, which preserves the run's text
+// (it relabels, never empties). Split out from backgroundTasksAborted so the
+// token matching is unit-testable without staging a job directory.
+//
+// Each marker's tokens must fall on a SINGLE line: matching them across the whole
+// tail would let an unrelated line carrying one token (a stray "idle" in some
+// other diagnostic) combine with a kill line to fake the idle-wait marker, which
+// is the false-positive direction this heuristic exists to avoid. The grace and
+// task count are still not matched, so wording variation in those stays tolerated.
+//
+// MEASURED against agy 1.2.7 (issue #173): the err file carried only agy's own
+// control lines, not the background command's output, ending with
+//
+//	root agent idle; waiting up to 5s for 2 background task(s)
+//	terminating 2 background task(s) on exit
+//
+// so both marker lines fall in the bounded tail, and only the stable tokens are
+// matched, not the variable grace or count.
+func matchesBackgroundAbort(stderr string) bool {
+	var idleWaiting, killedAtExit bool
+	for line := range strings.Lines(stderr) {
+		l := strings.ToLower(line)
+		if strings.Contains(l, "idle") && strings.Contains(l, "background task") {
+			idleWaiting = true
+		}
+		if strings.Contains(l, "terminating") &&
+			strings.Contains(l, "background task") &&
+			strings.Contains(l, "on exit") {
+			killedAtExit = true
+		}
+	}
+	return idleWaiting && killedAtExit
 }
 
 // classifyAgyError maps an error message agy produced (a terminal ERROR

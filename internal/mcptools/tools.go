@@ -188,7 +188,7 @@ type statusOutput struct {
 	Error   string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
 	// FailureReason classifies a failure so a caller can branch on the cause
 	// without scraping Error; see manager's Reason constants.
-	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota or rate-limit wall; this is transient, error carries the reset time, so wait for it before retrying, and recovery spells this out when no partial result was returned), timeout (agy-mcp killed the run for exceeding its timeout), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
+	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota or rate-limit wall; this is transient, error carries the reset time, so wait for it before retrying, and recovery spells this out when no partial result was returned), timeout (agy-mcp killed the run for exceeding its timeout), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), background_aborted (agy exited 0 with a SUCCESS payload, but its stderr shows it went idle with outstanding background shell tasks and killed them at exit, so the response is only progress narration rather than completed work; re-run with any verification in the foreground rather than as a background task), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
 	// Recovery is tool-facing advice, not a property of the job: it is present
 	// only when a run ended terminally with no text to offer but is still
 	// actionable (for example a timeout, a cancel, a crash, or an agy error
@@ -270,7 +270,13 @@ func toStatusOutput(st manager.Status) statusOutput {
 			advice += " the run."
 		}
 		out.Recovery = advice
+	// A background-aborted run is excluded even when its narration came back empty:
+	// its Error already carries the correct, different advice (re-run with any
+	// verification in the foreground), and the generic "continue this thread" hint
+	// would contradict it by inviting the very background command that aborted
+	// (issue #173).
 	case out.Result == "" && out.ConversationID != "" &&
+		out.FailureReason != manager.ReasonBackgroundAborted &&
 		(out.State == manager.StateFailed || out.State == manager.StateCancelled):
 		out.Recovery = "no result text was recovered. " +
 			"Start a fresh agy_run with this conversation_id to continue the thread without restating the task."
