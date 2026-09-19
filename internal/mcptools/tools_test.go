@@ -321,6 +321,10 @@ func TestStatusOutputRecoveryHint(t *testing.T) {
 		{"failed with a partial result already offered", manager.Status{State: manager.StateFailed, ConversationID: "c1", Result: "as far as I got", Partial: true}, false},
 		{"done and successful needs no recovery", manager.Status{State: manager.StateDone, ConversationID: "c1"}, false},
 		{"running is not terminal", manager.Status{State: manager.StateRunning, ConversationID: "c1"}, false},
+		// A background-aborted run whose narration came back empty still gets NO
+		// generic recovery hint: its Error carries the correct foreground advice, and
+		// the generic "continue this thread" hint would contradict it (issue #173).
+		{"background-aborted with empty narration is excluded", manager.Status{State: manager.StateFailed, FailureReason: manager.ReasonBackgroundAborted, ConversationID: "c1"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
