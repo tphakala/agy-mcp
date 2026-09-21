@@ -18,16 +18,12 @@ func parseWait(s string) (time.Duration, error) {
 	if s == "" {
 		return maxSyncWait(), nil
 	}
-	d, err := time.ParseDuration(s)
+	// parsePositiveDuration is the shared parse-and-positivity half; the wait's own
+	// policy is to clamp a too-large value to the sync cap rather than reject it,
+	// which is where it legitimately diverges from the timeout validator.
+	d, err := parsePositiveDuration("wait", s, "90s")
 	if err != nil {
-		// Keep the parse error for the reason toStartRequest keeps its own: it
-		// names what is actually wrong with the input, which the hint below cannot
-		// express. The two validators take the same shape deliberately, so a
-		// caller gets the same quality of answer for wait as for timeout.
-		return 0, fmt.Errorf("invalid wait %q: %w", s, err)
-	}
-	if d <= 0 {
-		return 0, fmt.Errorf("invalid wait %q: want a positive Go duration like 90s", s)
+		return 0, err
 	}
 	return min(d, maxSyncWait()), nil
 }
