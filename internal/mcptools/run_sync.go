@@ -2,6 +2,7 @@ package mcptools
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -9,18 +10,47 @@ import (
 )
 
 const (
-	// defaultSyncWait bounds how long agy_run_sync blocks when the caller
-	// does not say otherwise; quick models finish well inside it.
-	defaultSyncWait = 2 * time.Minute
-	// maxSyncWait caps caller-supplied waits so a tool call cannot park a
-	// session indefinitely; longer runs are for agy_run + agy_wait/agy_status.
-	maxSyncWait = 10 * time.Minute
+	// syncWaitCeiling is the built-in inline-wait ceiling for agy_run_sync and
+	// agy_wait. It sits well below the ~120s per-call timeout common MCP clients
+	// (Claude Code among them) impose on a single tool call. Staying under that
+	// ceiling is what lets agy-mcp's own graceful still-running result reach the
+	// caller before the client abandons the call: that result carries the job_id
+	// needed to reconcile the run with agy_wait or agy_status, whereas the client's
+	// synthesized "timed out" failure discards agy-mcp's response and the job_id
+	// with it, orphaning a job that is still running under its detached supervisor.
+	//
+	// The measured client cap is not perfectly deterministic (in one session a call
+	// was abandoned at ~120s while another returned at ~157s), and progress
+	// notifications do not extend it, so the ceiling keeps a wide margin rather than
+	// sitting at the edge. See issue #178 for the characterization.
+	syncWaitCeiling = 90 * time.Second
+
+	// envSyncWaitCap overrides syncWaitCeiling for a client whose per-call timeout
+	// differs from Claude Code's: one that tolerates longer calls can raise it, a
+	// stricter one can lower it. The value is a Go duration; anything that does not
+	// parse as a positive duration is ignored and the built-in ceiling stands.
+	envSyncWaitCap = "AGY_MCP_SYNC_WAIT_CAP"
 )
+
+// maxSyncWait resolves the effective inline-wait ceiling: AGY_MCP_SYNC_WAIT_CAP
+// when it parses as a positive Go duration, otherwise the built-in
+// syncWaitCeiling. It is both the clamp for a caller-supplied wait and the default
+// when the caller names none (parseWait), so agy_run_sync and agy_wait cannot
+// drift on either. Longer runs are for agy_run + agy_wait/agy_status, re-issued
+// until the job is terminal.
+func maxSyncWait() time.Duration {
+	if v := os.Getenv(envSyncWaitCap); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return syncWaitCeiling
+}
 
 // runSyncInput is runInput plus the inline wait cap.
 type runSyncInput struct {
 	runInput
-	Wait string `json:"wait,omitempty" jsonschema:"max time to block inline (Go duration, default 2m); a larger value is silently clamped to 10m. Caps only the inline wait, not the job itself: on overrun the job keeps running and the returned job_id can be waited on with agy_wait or polled with agy_status, so never re-send the prompt"`
+	Wait string `json:"wait,omitempty" jsonschema:"max time to block inline (Go duration); a larger value is silently clamped to the inline-wait ceiling. That ceiling defaults to 90s, kept below common MCP clients' ~120s per-call timeout so the still-running result (carrying the job_id) is delivered inline, and is overridable with AGY_MCP_SYNC_WAIT_CAP, which can raise or lower it. Caps only the inline wait, not the job itself: on overrun the job keeps running and the returned job_id can be waited on with agy_wait or polled with agy_status, so never re-send the prompt"`
 }
 
 type runSyncOutput struct {

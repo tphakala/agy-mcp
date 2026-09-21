@@ -117,6 +117,103 @@ func TestParseWaitErrors(t *testing.T) {
 	}
 }
 
+// TestParseWaitCeiling pins the inline-wait ceiling behaviour issues #177 and
+// #178 depend on: an empty wait defaults to the ceiling, a larger wait clamps to
+// it, a smaller wait passes through, and AGY_MCP_SYNC_WAIT_CAP overrides the
+// built-in ceiling (a valid positive duration wins; anything else is ignored).
+// The ceiling must stay below common MCP clients' ~120s per-call timeout so
+// agy-mcp's own still-running result (carrying the job_id) reaches the caller
+// before the client abandons the call.
+func TestParseWaitCeiling(t *testing.T) {
+	// t.Setenv forbids t.Parallel, and these cases mutate the same process env, so
+	// this test and its subtests stay sequential.
+	// Neutralize any ambient AGY_MCP_SYNC_WAIT_CAP so the env-agnostic subtests below
+	// see the built-in ceiling; maxSyncWait treats "" as unset. The parent is
+	// non-parallel, so a parent-level t.Setenv is safe and the per-subtest overrides
+	// still win and restore back to "" on cleanup.
+	t.Setenv(envSyncWaitCap, "")
+	if syncWaitCeiling >= 120*time.Second {
+		t.Fatalf("syncWaitCeiling = %v, want it safely below the ~120s MCP client per-call cap", syncWaitCeiling)
+	}
+
+	t.Run("default is the ceiling", func(t *testing.T) {
+		got, err := parseWait("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != syncWaitCeiling {
+			t.Fatalf("default wait = %v, want the ceiling %v", got, syncWaitCeiling)
+		}
+	})
+	t.Run("over-ceiling clamps to the ceiling", func(t *testing.T) {
+		got, err := parseWait("30m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != syncWaitCeiling {
+			t.Fatalf("clamped wait = %v, want the ceiling %v", got, syncWaitCeiling)
+		}
+	})
+	t.Run("under-ceiling passes through unchanged", func(t *testing.T) {
+		got, err := parseWait("5s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 5*time.Second {
+			t.Fatalf("wait = %v, want 5s passed through unchanged", got)
+		}
+	})
+	t.Run("env override raises the cap", func(t *testing.T) {
+		t.Setenv(envSyncWaitCap, "3m")
+		def, err := parseWait("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if def != 3*time.Minute {
+			t.Fatalf("default under override = %v, want 3m", def)
+		}
+		// A wait the built-in ceiling would have clamped now passes: the override
+		// raised the cap above it.
+		got, err := parseWait("2m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 2*time.Minute {
+			t.Fatalf("wait under override = %v, want 2m (below the raised cap)", got)
+		}
+	})
+	t.Run("env override lowers the cap", func(t *testing.T) {
+		t.Setenv(envSyncWaitCap, "30s")
+		def, err := parseWait("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if def != 30*time.Second {
+			t.Fatalf("default under lowered override = %v, want 30s", def)
+		}
+		// A wait above the lowered cap clamps down to it.
+		got, err := parseWait("60s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 30*time.Second {
+			t.Fatalf("wait under lowered override = %v, want it clamped to 30s", got)
+		}
+	})
+	t.Run("invalid override is ignored", func(t *testing.T) {
+		for _, bad := range []string{"nonsense", "0s", "-1s"} {
+			t.Setenv(envSyncWaitCap, bad)
+			got, err := parseWait("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != syncWaitCeiling {
+				t.Fatalf("override %q: default = %v, want the built-in ceiling %v", bad, got, syncWaitCeiling)
+			}
+		}
+	})
+}
+
 func TestToStartRequestAcceptsTimeoutAtLimit(t *testing.T) {
 	req, err := runInput{Prompt: "x", Timeout: maxJobTimeout.String()}.toStartRequest()
 	if err != nil || req.Timeout != maxJobTimeout {

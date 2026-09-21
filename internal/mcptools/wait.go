@@ -11,7 +11,7 @@ import (
 // waitInput is the input for agy_wait.
 type waitInput struct {
 	JobID string `json:"job_id" jsonschema:"job id to wait for, as returned by agy_run or agy_run_sync"`
-	Wait  string `json:"wait,omitempty" jsonschema:"max time to block inline (Go duration, default 2m); a larger value is silently clamped to 10m. Caps only the inline wait, not the job itself: on overrun the job keeps running and can be waited on again or polled with agy_status"`
+	Wait  string `json:"wait,omitempty" jsonschema:"max time to block inline (Go duration); a larger value is silently clamped to the inline-wait ceiling. That ceiling defaults to 90s, kept below common MCP clients' ~120s per-call timeout so a still-running result is delivered inline, and is overridable with AGY_MCP_SYNC_WAIT_CAP, which can raise or lower it. Caps only the inline wait, not the job itself: on overrun the job keeps running and can be waited on again or polled with agy_status"`
 }
 
 // registerWait adds the agy_wait tool: block on an existing job until it
