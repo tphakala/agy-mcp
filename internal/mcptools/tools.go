@@ -153,15 +153,9 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 		return manager.StartRequest{}, fmt.Errorf("invalid mode %q: want %s or %s", in.Mode, agyModeAcceptEdits, agyModePlan)
 	}
 	if in.Timeout != "" {
-		d, err := time.ParseDuration(in.Timeout)
+		d, err := parsePositiveDuration("timeout", in.Timeout, "20m")
 		if err != nil {
-			// Keep the parse error: it names what is actually wrong with the input
-			// ("missing unit in duration", "unknown unit"), which the generic hint
-			// below cannot express and the caller would otherwise have to guess.
-			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: %w", in.Timeout, err)
-		}
-		if d <= 0 {
-			return manager.StartRequest{}, fmt.Errorf("invalid timeout %q: want a positive Go duration like 20m", in.Timeout)
+			return manager.StartRequest{}, err
 		}
 		if d > maxJobTimeout {
 			return manager.StartRequest{}, fmt.Errorf("timeout %q exceeds the maximum of %s", in.Timeout, maxJobTimeout)
@@ -169,6 +163,28 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 		req.Timeout = d
 	}
 	return req, nil
+}
+
+// parsePositiveDuration parses a Go duration and rejects a non-positive one. It
+// is the shared front half of the wait and timeout validators (parseWait and
+// toStartRequest), so the two cannot drift on the parse-error shape or the
+// positivity check. The over-limit policy is deliberately left to each caller,
+// which is where they legitimately differ: parseWait clamps a too-large wait to
+// the sync cap, while toStartRequest rejects a too-large timeout outright. name
+// is the field named in the message ("wait", "timeout") and example is a valid
+// value to suggest.
+func parsePositiveDuration(name, s, example string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		// Keep the parse error: it names what is actually wrong with the input
+		// ("missing unit in duration", "unknown unit"), which the generic hint
+		// below cannot express and the caller would otherwise have to guess.
+		return 0, fmt.Errorf("invalid %s %q: %w", name, s, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid %s %q: want a positive Go duration like %s", name, s, example)
+	}
+	return d, nil
 }
 
 type runOutput struct {
@@ -188,7 +204,7 @@ type statusOutput struct {
 	Error   string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
 	// FailureReason classifies a failure so a caller can branch on the cause
 	// without scraping Error; see manager's Reason constants.
-	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota or rate-limit wall; this is transient, error carries the reset time, so wait for it before retrying, and recovery spells this out when no partial result was returned), timeout (agy-mcp killed the run for exceeding its timeout), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), background_aborted (agy exited 0 with a SUCCESS payload, but its stderr shows it went idle with outstanding background shell tasks and killed them at exit, so the response is only progress narration rather than completed work; re-run with any verification in the foreground rather than as a background task), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
+	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota or rate-limit wall; this is transient, error carries the reset time, so wait for it before retrying, and recovery spells this out when no partial result was returned), timeout (agy-mcp killed the run for exceeding its timeout), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), background_aborted (agy exited 0 cleanly, but its stderr shows it went idle with outstanding background shell tasks and killed them at exit, so the response is only progress narration rather than completed work; re-run with any verification in the foreground rather than as a background task), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
 	// Recovery is tool-facing advice, not a property of the job: it is present
 	// only when a run ended terminally with no text to offer but is still
 	// actionable (for example a timeout, a cancel, a crash, or an agy error

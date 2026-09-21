@@ -764,6 +764,22 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 				"terminating 1 background task(s) on exit\n",
 			wantState: StateFailed, wantResult: responseWithToolMetadata, wantPartial: true,
 			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
+		}, {
+			// Issue #180: the no-payload sibling of the row above. A schema run that
+			// idle-killed its background tasks and exited 0 WITHOUT ever writing a
+			// terminal result event goes through cleanExitWithoutPayload, which fails
+			// it as a generic agy_error for lacking structured_output. The stderr
+			// markers show the real cause is the idle background-abort, so it
+			// reclassifies to the more actionable background_aborted, matching the
+			// with-payload sibling above. The "schema clean exit without terminal
+			// event fails closed" row, with no markers, is the negative control that
+			// keeps its agy_error reason.
+			name: "idle-killed schema run with no terminal payload reclassifies to background_aborted",
+			code: 0, args: schemaArgs, out: "streamed diagnostic",
+			errFile: "root agent idle; waiting up to 5s for 1 background task(s)\n" +
+				"terminating 1 background task(s) on exit\n",
+			wantState: StateFailed, wantResult: "streamed diagnostic", wantPartial: true,
+			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
