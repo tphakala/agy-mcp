@@ -150,8 +150,8 @@ outright, and on expiry the
 `agy` process tree is killed and the job ends in state `failed`; `effort`, when set, must be
 `low`, `medium` or `high`, and `mode`, when set, must be `accept-edits` or `plan`, with any other
 value rejected before the run starts; `wait` defaults
-to 90s and is silently clamped to that same ceiling, which stays below the roughly 120s per-call
-timeout common MCP clients (Claude Code included) impose, so agy-mcp's still-running result reaches
+to 90s and is silently clamped to that same ceiling. That 90s default is kept below the roughly
+120s per-call timeout common MCP clients (Claude Code included) impose, so agy-mcp's still-running result reaches
 the caller inline instead of being lost to a client-synthesized timeout (set `AGY_MCP_SYNC_WAIT_CAP`
 to a Go duration to raise or lower the ceiling for a client with a different per-call limit), and it
 bounds only the inline wait, never the job itself.
@@ -288,7 +288,7 @@ v2 requires agy 1.1.15 and drives it through `--output-format stream-json`. The 
 | `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
 | `AGY_MCP_DEFAULT_MODEL` | agy default | default model, as an id (`gemini-3.1-pro-high`), not a display label |
 | `AGY_MCP_HTTP_TOKEN` | (none) | optional bearer token for HTTP mode; empty = unauthenticated |
-| `AGY_MCP_SYNC_WAIT_CAP` | `90s` | inline-wait ceiling for `agy_run_sync` / `agy_wait` (the default when no `wait` is given, and the clamp for a larger one); kept below common MCP clients' ~120s per-call timeout; a Go duration that does not parse as positive is ignored |
+| `AGY_MCP_SYNC_WAIT_CAP` | `90s` | inline-wait ceiling for `agy_run_sync` / `agy_wait` (the default when no `wait` is given, and the clamp for a larger one); the 90s default stays below common MCP clients' ~120s per-call timeout, and this variable raises or lowers it; a Go duration that does not parse as positive is ignored |
 | `AGY_MCP_WAIT_READY_FILE` | (none) | absolute path `wait-job` / `hook-wait` create once their SIGINT/SIGTERM handler is installed, so a parent can signal without racing it; must be fresh per invocation, an existing file is refused rather than overwritten; empty = nothing is written |
 
 ## Development
