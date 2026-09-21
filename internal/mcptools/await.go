@@ -10,11 +10,13 @@ import (
 	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
-// parseWait validates a caller-supplied inline wait, applying the shared
-// default and cap. agy_run_sync and agy_wait use it so the two cannot drift.
+// parseWait validates a caller-supplied inline wait, clamping it to the shared
+// ceiling (maxSyncWait) and using that same ceiling as the default when the
+// caller names none. agy_run_sync and agy_wait both call it, so the two cannot
+// drift on either the default or the cap.
 func parseWait(s string) (time.Duration, error) {
 	if s == "" {
-		return defaultSyncWait, nil
+		return maxSyncWait(), nil
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
@@ -27,7 +29,7 @@ func parseWait(s string) (time.Duration, error) {
 	if d <= 0 {
 		return 0, fmt.Errorf("invalid wait %q: want a positive Go duration like 90s", s)
 	}
-	return min(d, maxSyncWait), nil
+	return min(d, maxSyncWait()), nil
 }
 
 // awaitJob blocks until the job is terminal or the deadline passes, emitting

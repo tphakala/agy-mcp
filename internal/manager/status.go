@@ -248,11 +248,16 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// in headless -p mode agy waits only ~5s after its root agent goes idle for
 		// outstanding background shell tasks, then kills them and exits 0 with a
 		// SUCCESS payload whose response is only progress narration (issue #173).
-		// Its stderr is the only record of the abort, so when the derived state is
-		// done but that marker is present, downgrade to a failure the caller can
-		// branch on rather than a phantom success. Confined to code 0 because every
-		// non-zero exit already reports a failure or a cancel.
-		if done.State == StateDone && backgroundTasksAborted(dir) {
+		// Its stderr is the only record of the abort. It surfaces two ways under a
+		// clean exit: a SUCCESS the run vouched for whose state is still done here,
+		// or a json-schema SUCCESS that never emitted structured_output, which
+		// applyResult has already failed as a generic agy_error. Both are really the
+		// background-abort, so when the stderr markers are present reclassify either
+		// to background_aborted (issue #176): it is more actionable than agy_error
+		// because it tells the caller to move verification to the foreground.
+		// Confined to code 0 because every non-zero exit already reports a failure
+		// or a cancel.
+		if (done.State == StateDone || schemaSuccessWithoutOutput(meta, res)) && backgroundTasksAborted(dir) {
 			return markBackgroundAborted(done)
 		}
 		return done
@@ -295,8 +300,10 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	return st
 }
 
-// markBackgroundAborted downgrades a clean-exit "done" status that agy's stderr
-// reveals to be an idle-killed background run (issue #173). It keeps the text agy
+// markBackgroundAborted reclassifies a clean-exit status that agy's stderr reveals
+// to be an idle-killed background run (issue #173): a status the caller derived as
+// "done", or a json-schema SUCCESS that applyResult had already failed for carrying
+// no structured_output (issue #176). It keeps the text agy
 // did stream (the progress narration names what the agent launched) but flags it
 // partial, and states in Error how to recover. The generic issue #151 "continue
 // this conversation" hint is deliberately withheld for this reason, enforced in
@@ -371,7 +378,7 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 			st.Error = "agy reported an error without a message"
 		}
 	case res.Status == streamjson.StatusSuccess:
-		if strictSchema && len(res.StructuredOutput) == 0 {
+		if schemaSuccessWithoutOutput(meta, res) {
 			st.State = StateFailed
 			st.Error = "agy reported SUCCESS for a json-schema run without structured_output"
 			st.FailureReason = ReasonAgyError
@@ -770,6 +777,21 @@ func backgroundTasksAborted(dir string) bool {
 		return false
 	}
 	return matchesBackgroundAbort(tail)
+}
+
+// schemaSuccessWithoutOutput reports a json-schema run agy marked SUCCESS that
+// carried no structured_output. It is the single source of truth for that shape,
+// used at both ends so they cannot drift: applyResult fails it as a generic
+// ReasonAgyError, and statusFromExitCode lets the stderr background-abort markers
+// reclassify that same failure to background_aborted (issue #176), whose real
+// cause is an idle background-abort (issue #173). It is deliberately narrow: an
+// indeterminate payload (empty status) and an unrecognized status both fail the
+// StatusSuccess test and keep their agy_error reason, so this cannot mask an
+// unrelated failure.
+func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool {
+	return res.Status == streamjson.StatusSuccess &&
+		len(res.StructuredOutput) == 0 &&
+		argsSelectJSONSchema(meta.Args)
 }
 
 // matchesBackgroundAbort tests stderr text for BOTH of agy's background-abort

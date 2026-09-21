@@ -150,7 +150,11 @@ outright, and on expiry the
 `agy` process tree is killed and the job ends in state `failed`; `effort`, when set, must be
 `low`, `medium` or `high`, and `mode`, when set, must be `accept-edits` or `plan`, with any other
 value rejected before the run starts; `wait` defaults
-to 2m and is silently clamped to 10m, and it bounds only the inline wait, never the job itself.
+to 90s and is silently clamped to that same ceiling, which stays below the roughly 120s per-call
+timeout common MCP clients (Claude Code included) impose, so agy-mcp's still-running result reaches
+the caller inline instead of being lost to a client-synthesized timeout (set `AGY_MCP_SYNC_WAIT_CAP`
+to a Go duration to raise or lower the ceiling for a client with a different per-call limit), and it
+bounds only the inline wait, never the job itself.
 `agy_cancel` is asynchronous, so it usually returns `running` and the job settles to `cancelled`
 a moment later. A `prompt` is sent to agy literally: a leading slash-command or skill name
 (a prompt beginning with `/`) is treated as text rather than expanded, so caller input means
@@ -240,7 +244,7 @@ The exit code is meant for a setup script or CI: `0` when nothing is broken (a s
 
 On POSIX, both wait subcommands install their SIGINT/SIGTERM handler only after parsing flags, resolving the job state directory and building the wait manager (and hook-wait also reads its payload from stdin first), so a signal sent immediately after launch can land before the handler exists and kill the process outright, losing the interrupt exit code. A parent that intends to interrupt a wait can close that window by setting `AGY_MCP_WAIT_READY_FILE`: the subcommand creates that file the moment the handler is in place, so waiting for it to appear makes the signal deliverable. Leave it unset and nothing is written. Three caveats, because existence is the entire signal: the path must be absolute (a relative one resolves against each process's own working directory, and hook-wait runs from the session cwd), it must be fresh and unique per invocation (a file left from an earlier run satisfies the wait immediately and hands back the race), and the parent still needs its own timeout, since both subcommands have exit paths that return before any handler is armed. An existing file at that path is refused rather than overwritten, so pointing the variable at something that matters destroys nothing; that protects the file, not the handshake, which is why the path has to be fresh.
 
-MCP clients other than Claude Code get the same no-polling benefit in-protocol: call `agy_wait` with a `job_id` from `agy_run` (or from an `agy_run_sync` that outlived its inline wait) and the tool blocks (bounded by `wait`, default 2m, max 10m) until the job finishes.
+MCP clients other than Claude Code get the same no-polling benefit in-protocol: call `agy_wait` with a `job_id` from `agy_run` (or from an `agy_run_sync` that outlived its inline wait) and the tool blocks (bounded by `wait`, default and cap 90s, raise or lower with `AGY_MCP_SYNC_WAIT_CAP`) until the job finishes. Re-issue `agy_wait` with the same `job_id` if a single bounded call is not enough; each call blocks another window rather than re-running the job.
 
 ## HTTP mode
 
@@ -284,6 +288,7 @@ v2 requires agy 1.1.15 and drives it through `--output-format stream-json`. The 
 | `AGY_MCP_STATE_DIR` | `$XDG_STATE_HOME/agy-mcp` | job state directory |
 | `AGY_MCP_DEFAULT_MODEL` | agy default | default model, as an id (`gemini-3.1-pro-high`), not a display label |
 | `AGY_MCP_HTTP_TOKEN` | (none) | optional bearer token for HTTP mode; empty = unauthenticated |
+| `AGY_MCP_SYNC_WAIT_CAP` | `90s` | inline-wait ceiling for `agy_run_sync` / `agy_wait` (the default when no `wait` is given, and the clamp for a larger one); kept below common MCP clients' ~120s per-call timeout; a Go duration that does not parse as positive is ignored |
 | `AGY_MCP_WAIT_READY_FILE` | (none) | absolute path `wait-job` / `hook-wait` create once their SIGINT/SIGTERM handler is installed, so a parent can signal without racing it; must be fresh per invocation, an existing file is refused rather than overwritten; empty = nothing is written |
 
 ## Development

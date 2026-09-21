@@ -86,8 +86,9 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 	} else {
 		// Lead with agy_status here, unlike the tool-level note: this branch only
 		// fires once the job has already outrun hook-wait's own timeout (1h by
-		// default), so agy_wait's 10m cap would most likely just overrun again. One
-		// cheap status read is the better first move for a job this long-lived.
+		// default), so agy_wait's far shorter cap would most likely just overrun
+		// again. One cheap status read is the better first move for a job this
+		// long-lived.
 		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s still running after %s; check agy_status, or call agy_wait to block for another bounded window\n", jobID, *timeout)
 	}
 	return 2

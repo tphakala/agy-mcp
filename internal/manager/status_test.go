@@ -750,6 +750,20 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 				"terminating 1 background task(s) on exit\n",
 			wantState: StateFailed, wantResult: `{"business":"ok"}`, wantPartial: true,
 			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
+		}, {
+			// Issue #176: the same idle-kill on a schema run that never emitted
+			// structured_output. applyResult fails it as a generic agy_error, but the
+			// stderr markers show the real cause is the background-abort, so it
+			// reclassifies to the more actionable background_aborted. The "fails
+			// closed" case above, with no markers, is the negative control that keeps
+			// its agy_error reason.
+			name: "idle-killed schema run without structured output reclassifies to background_aborted",
+			code: 0, args: schemaArgs,
+			res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: responseWithToolMetadata},
+			errFile: "root agent idle; waiting up to 5s for 1 background task(s)\n" +
+				"terminating 1 background task(s) on exit\n",
+			wantState: StateFailed, wantResult: responseWithToolMetadata, wantPartial: true,
+			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

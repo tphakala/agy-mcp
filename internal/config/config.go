@@ -234,13 +234,14 @@ func ResolveWait() (Config, error) {
 	// consume them today.
 	c.DefaultModel = os.Getenv(EnvDefaultModel)
 	c.HTTPToken = os.Getenv(EnvHTTPToken)
-	// One AGY_MCP_ variable is read nowhere in this package at all:
-	// AGY_MCP_WAIT_READY_FILE, which the wait subcommands read in package main (see
-	// waitReadyFileEnv). It is consumed at the instant their signal handler is
-	// installed, which is past the point a resolved Config is threaded to, so
-	// routing it through here would buy uniformity at the cost of carrying the
-	// value through two more signatures. Noted so an audit of the env surface from
-	// this file is not misled. (AGY_MCP_AGY_PATH is also absent here, but for the
-	// reason this function's own doc gives: the wait paths never exec agy.)
+	// Some AGY_MCP_ variables are read nowhere in this package: AGY_MCP_WAIT_READY_FILE,
+	// which the wait subcommands read in package main (see waitReadyFileEnv) at the
+	// instant their signal handler is installed, and AGY_MCP_SYNC_WAIT_CAP, which
+	// mcptools reads when it resolves the inline-wait ceiling (see envSyncWaitCap).
+	// Both are consumed past the point a resolved Config is threaded to, so routing
+	// them through here would buy uniformity at the cost of carrying the values
+	// through more signatures. Noted so an audit of the env surface from this file is
+	// not misled. (AGY_MCP_AGY_PATH is also absent here, but for the reason this
+	// function's own doc gives: the wait paths never exec agy.)
 	return c, nil
 }
