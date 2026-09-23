@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -71,6 +73,50 @@ func TestBuildAgyArgs(t *testing.T) {
 	got = buildAgyArgs(StartRequest{Prompt: "hi", Model: spaced, Timeout: time.Minute})
 	if i := slices.Index(got, "--model"); i < 0 || i+1 >= len(got) || got[i+1] != spaced {
 		t.Fatalf("buildAgyArgs must pass a spaced model as one argument after --model, got %q", got)
+	}
+}
+
+// TestBuildAgyArgsProjectRules pins the implicit --add-dir <cwd> that makes cwd
+// an agy workspace so the project's rule files load (#188): present by default,
+// placed before the caller's dirs, passed once when a caller dir already names
+// cwd under any spelling, and absent when opted out or when there is no cwd.
+func TestBuildAgyArgsProjectRules(t *testing.T) {
+	cwd, err := normalizeCwd(t.TempDir())
+	if err != nil {
+		t.Fatalf("normalizeCwd: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(cwd, alias); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		req  StartRequest
+		want []string // the --add-dir values, in order
+	}{
+		{name: "default adds cwd", req: StartRequest{Cwd: cwd}, want: []string{cwd}},
+		{name: "cwd precedes caller dirs", req: StartRequest{Cwd: cwd, Dirs: []string{"/a"}}, want: []string{cwd, "/a"}},
+		{name: "cwd already in dirs", req: StartRequest{Cwd: cwd, Dirs: []string{"/a", cwd}}, want: []string{"/a", cwd}},
+		{name: "trailing slash spelling", req: StartRequest{Cwd: cwd, Dirs: []string{cwd + "/"}}, want: []string{cwd + "/"}},
+		{name: "relative spelling", req: StartRequest{Cwd: cwd, Dirs: []string{"."}}, want: []string{"."}},
+		{name: "symlinked alias", req: StartRequest{Cwd: cwd, Dirs: []string{alias}}, want: []string{alias}},
+		{name: "opted out", req: StartRequest{Cwd: cwd, SkipProjectRules: true}, want: nil},
+		{name: "opted out keeps caller dirs", req: StartRequest{Cwd: cwd, SkipProjectRules: true, Dirs: []string{cwd}}, want: []string{cwd}},
+		{name: "no cwd", req: StartRequest{}, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.req.Prompt, tc.req.Timeout = "hi", time.Minute
+			args := buildAgyArgs(tc.req)
+			var got []string
+			for i, a := range args {
+				if a == addDirFlag && i+1 < len(args) {
+					got = append(got, args[i+1])
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("--add-dir values = %q, want %q (args %q)", got, tc.want, args)
+			}
+		})
 	}
 }
 

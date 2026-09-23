@@ -38,3 +38,19 @@ func normalizeCwd(cwd string) (string, error) {
 	}
 	return abs, nil
 }
+
+// dirsInclude reports whether any of dirs names cwd, an already normalized
+// directory. A relative entry is resolved against cwd, the directory agy runs in,
+// and each entry gets normalizeCwd's canonical form, so a trailing slash or a
+// symlinked alias still counts as a match.
+func dirsInclude(dirs []string, cwd string) bool {
+	for _, d := range dirs {
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(cwd, d)
+		}
+		if n, err := normalizeCwd(d); err == nil && n == cwd {
+			return true
+		}
+	}
+	return false
+}

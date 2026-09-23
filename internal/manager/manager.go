@@ -96,19 +96,22 @@ func New(c config.Config) *Manager {
 
 // StartRequest describes a run to start.
 type StartRequest struct {
-	Prompt         string
-	Model          string   // optional; falls back to cfg.DefaultModel, then reduced by modelID
-	Effort         string   // optional; --effort <low|medium|high>, reasoning effort for the session
-	Mode           string   // optional; --mode <accept-edits|plan>, agy's agent execution mode
-	Agent          string   // optional; --agent <name>, selects a specific agy agent
-	Sandbox        bool     // optional; --sandbox, runs agy with terminal restrictions
-	Dirs           []string // repeated --add-dir
-	ConversationID string   // optional; --conversation <id>
-	JSONSchema     string   // optional; --json-schema <inline schema or path>, constrains the final stream-json result
-	IdempotencyKey string   // optional; retry token used only by agy-mcp, never forwarded to agy
-	ContinueLatest bool     // resolve cwd's latest conversation before the run
-	Cwd            string   // optional; defaults to process cwd
-	Timeout        time.Duration
+	Prompt  string
+	Model   string   // optional; falls back to cfg.DefaultModel, then reduced by modelID
+	Effort  string   // optional; --effort <low|medium|high>, reasoning effort for the session
+	Mode    string   // optional; --mode <accept-edits|plan>, agy's agent execution mode
+	Agent   string   // optional; --agent <name>, selects a specific agy agent
+	Sandbox bool     // optional; --sandbox, runs agy with terminal restrictions
+	Dirs    []string // repeated --add-dir
+	// SkipProjectRules omits the implicit --add-dir <Cwd> that buildAgyArgs adds
+	// so the project's rule files load; optional, false by default.
+	SkipProjectRules bool
+	ConversationID   string // optional; --conversation <id>
+	JSONSchema       string // optional; --json-schema <inline schema or path>, constrains the final stream-json result
+	IdempotencyKey   string // optional; retry token used only by agy-mcp, never forwarded to agy
+	ContinueLatest   bool   // resolve cwd's latest conversation before the run
+	Cwd              string // optional; defaults to process cwd
+	Timeout          time.Duration
 }
 
 // Job is the handle returned to callers.
@@ -1094,6 +1097,15 @@ func buildAgyArgs(req StartRequest) []string {
 	}
 	if req.Sandbox {
 		args = append(args, sandboxFlag)
+	}
+	// Make cwd an agy workspace so the project's rule files (AGENTS.md and the
+	// like) load. MEASURED on agy 1.2.9: in print mode running inside a directory
+	// does not activate it as a workspace, so no rules load; --add-dir does, and
+	// from a subdirectory it still finds an AGENTS.md at the repo root. It grants
+	// nothing new, since the agent can already read and write under cwd. Skipped
+	// when a caller dir already names cwd, so it is passed once.
+	if !req.SkipProjectRules && req.Cwd != "" && !dirsInclude(req.Dirs, req.Cwd) {
+		args = append(args, addDirFlag, req.Cwd)
 	}
 	for _, d := range req.Dirs {
 		args = append(args, addDirFlag, d)

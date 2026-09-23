@@ -60,6 +60,8 @@ not touch the repo, say so explicitly in the prompt. The tools declare this on t
 ignore them; one that does gate confirmation on them may stop prompting for the four
 read-only tools.
 
+**Project rules load by default.** In print mode `agy` treats a directory as a workspace only when it is passed with `--add-dir`, and only a workspace gets its rule files loaded (`AGENTS.md` and the like, found from that directory up to the repository root). Running `agy` inside `cwd` is not enough on its own, so agy-mcp passes the run's `cwd` as an `--add-dir` too, and the delegated agent follows the same project instructions an interactive session would ([#188](https://github.com/tphakala/agy-mcp/issues/188)). This grants no new access, because the agent can already read and write under `cwd`. A workspace also loads the repository's other `agy` customizations (per `agy`'s changelog, for example hooks in `.agents/hooks.json`). Pass `project_rules: false` for a run that must not be steered by the repository's own instructions, such as an independent review or a run against a repository you do not trust. A directory listed in `dirs` is always passed as given, so listing `cwd` there makes it a workspace even with `project_rules: false`.
+
 Two transports run the same core:
 
 - **stdio** (default): zero-config, one line in your MCP client config.
@@ -121,8 +123,8 @@ Or add to your MCP client config:
 
 ## Tools
 
-- `agy_run(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, idempotency_key?)` -> `{ job_id, conversation_id?, state }`
-- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, idempotency_key?, wait?)` -> `{ job_id, state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
+- `agy_run(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, project_rules?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, idempotency_key?)` -> `{ job_id, conversation_id?, state }`
+- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, project_rules?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, idempotency_key?, wait?)` -> `{ job_id, state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
 - `agy_status(job_id)` -> `{ state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type? }`
 - `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`

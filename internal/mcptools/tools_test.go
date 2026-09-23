@@ -295,6 +295,35 @@ func TestToStartRequestPassesModel(t *testing.T) {
 // TestToStartRequestValidatesMode: mode is an agy enum (accept-edits, plan), so a
 // bad value must fail fast at the tool boundary with a message that quotes the bad
 // value and names the accepted values, rather than reaching agy. An empty mode is
+
+// TestToStartRequestProjectRules: project_rules defaults to true, so an omitted
+// value and an explicit true both keep project rules on, and only an explicit
+// false sets SkipProjectRules.
+func TestToStartRequestProjectRules(t *testing.T) {
+	t.Parallel()
+	on, off := true, false
+	for _, tc := range []struct {
+		name string
+		in   *bool
+		skip bool
+	}{
+		{name: "omitted", in: nil, skip: false},
+		{name: "true", in: &on, skip: false},
+		{name: "false", in: &off, skip: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := runInput{Prompt: "x", ProjectRules: tc.in}.toStartRequest()
+			if err != nil {
+				t.Fatalf("toStartRequest: %v", err)
+			}
+			if req.SkipProjectRules != tc.skip {
+				t.Fatalf("SkipProjectRules = %v, want %v", req.SkipProjectRules, tc.skip)
+			}
+		})
+	}
+}
+
 // valid and means "omit the flag". Validation is exact, so a wrong case is rejected.
 func TestToStartRequestValidatesMode(t *testing.T) {
 	t.Parallel()

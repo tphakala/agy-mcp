@@ -467,6 +467,11 @@ func TestStartJobNormalizesCwd(t *testing.T) {
 	if !hasArg(meta.Args, "--model", "gemini-3.1-pro-high") {
 		t.Errorf("args missing resolved default model: %v", meta.Args)
 	}
+	// The implicit workspace dir that loads project rules (#188) must be the
+	// canonical cwd, not the trailing-slash spelling the caller passed.
+	if !hasArg(meta.Args, "--add-dir", canonical) {
+		t.Errorf("args missing --add-dir with the canonical cwd %q: %v", canonical, meta.Args)
+	}
 	if !hasArg(meta.Args, "--print-timeout", time.Minute.String()) {
 		t.Errorf("args missing resolved default timeout: %v", meta.Args)
 	}
