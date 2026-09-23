@@ -565,7 +565,8 @@ func terminalCases() []terminalCase {
 		}, {
 			// Should both notices ever appear together, background_aborted wins: its
 			// advice (keep verification in the foreground) is the safe one, where a
-			// timeout's "continue this conversation" would relaunch the killed task.
+			// timeout's "continue this conversation" invites launching the same
+			// background command again.
 			name: "the background-abort markers take precedence over the print-timeout notice",
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "waiting on the build"},
 			errFile: "root agent idle; waiting up to 1m0s for 1 background task(s)\n" +

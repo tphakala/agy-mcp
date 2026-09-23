@@ -343,7 +343,8 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 	// verification to the foreground. It is checked first so that, should both
 	// notices ever appear together, the caller gets that advice rather than the
 	// generic "continue this conversation" hint a timeout carries, since
-	// continuing would relaunch the killed background command.
+	// carrying on with the same task would launch the same background command
+	// again.
 	notices := readStderrNotices(dir)
 	if notices.backgroundAborted {
 		return markBackgroundAborted(done)
