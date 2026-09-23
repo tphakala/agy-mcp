@@ -3,6 +3,7 @@ package manager
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -112,7 +113,7 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 	linkErr := os.Symlink(elsewhere, filepath.Join(cwd, "link"))
 	dotdot := "link" + string(filepath.Separator) + ".."
 	// A symlink needs a privilege on Windows that a developer shell may lack, so
-	// only the alias case depends on it and it skips rather than failing the table.
+	// the rows that depend on one skip rather than failing the table.
 	alias := filepath.Join(t.TempDir(), "alias")
 	symlinkErr := os.Symlink(cwd, alias)
 	sep := string(filepath.Separator)
@@ -139,8 +140,15 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 			if slices.Contains(tc.req.Dirs, alias) && symlinkErr != nil {
 				t.Skipf("cannot create a symlink here: %v", symlinkErr)
 			}
-			if slices.Contains(tc.req.Dirs, dotdot) && linkErr != nil {
-				t.Skipf("cannot create a symlink here: %v", linkErr)
+			if slices.Contains(tc.req.Dirs, dotdot) {
+				if linkErr != nil {
+					t.Skipf("cannot create a symlink here: %v", linkErr)
+				}
+				if runtime.GOOS == "windows" {
+					// Win32 path normalization collapses ".." lexically before the
+					// link is resolved, so there link/.. really is cwd.
+					t.Skip("the POSIX resolution of .. after a symlink does not apply on Windows")
+				}
 			}
 			tc.req.Prompt, tc.req.Timeout = "hi", time.Minute
 			args := buildAgyArgs(tc.req)

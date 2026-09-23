@@ -368,7 +368,7 @@ func (m *Manager) conversationLive(convID string) (bool, error) {
 
 // findIdempotentJob returns the existing job bound to req.IdempotencyKey. The
 // key is an at-most-once creation token, not an agy argument: request identity is
-// the normalized cwd plus the exact argument vector agy-mcp would execute. Any
+// the normalized cwd plus the request itself (see sameRequest). Any
 // unreadable job makes the lookup fail closed because it could be the binding
 // this retry needs to find.
 func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool, error) {

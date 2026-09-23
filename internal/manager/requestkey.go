@@ -15,8 +15,9 @@ import (
 // change to buildAgyArgs (such as the implicit --add-dir <cwd> of issue #188)
 // does not make a retry that spans an upgrade look like a different request
 // (issue #189). The encoding has its own JSON names, so renaming a StartRequest
-// field does not change the key either. It returns "" only if encoding fails,
-// which sameRequest treats as "no key" and falls back to comparing args.
+// field does not change the key either. It returns "" if encoding fails, which
+// these field types cannot cause; a job stored with an empty key is compared by
+// args, and a retry whose key came out empty against a keyed job is refused.
 func requestKey(req StartRequest) string {
 	dirs := req.Dirs
 	if len(dirs) == 0 {

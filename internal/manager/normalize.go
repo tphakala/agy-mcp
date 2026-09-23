@@ -50,7 +50,7 @@ func normalizeCwd(cwd string) (string, error) {
 //
 // The canonical form alone is not trusted, because it is lexical first:
 // filepath.Join cleans "<cwd>/link/.." to cwd before any symlink is resolved,
-// while the OS resolves ".." from the link's target. So an entry must also be
+// while a POSIX kernel resolves ".." from the link's target. So an entry must also be
 // the same directory as cwd when the OS resolves it as written. The same check
 // lets an entry that differs from cwd only in letter case count as cwd, but only
 // where the filesystem itself says they are one directory. Whenever the two
