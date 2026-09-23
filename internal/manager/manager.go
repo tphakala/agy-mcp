@@ -12,7 +12,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -369,7 +368,7 @@ func (m *Manager) conversationLive(convID string) (bool, error) {
 
 // findIdempotentJob returns the existing job bound to req.IdempotencyKey. The
 // key is an at-most-once creation token, not an agy argument: request identity is
-// the normalized cwd plus the exact argument vector agy-mcp would execute. Any
+// the normalized cwd plus the request itself (see sameRequest). Any
 // unreadable job makes the lookup fail closed because it could be the binding
 // this retry needs to find.
 func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool, error) {
@@ -388,7 +387,7 @@ func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool,
 		if meta.IdempotencyKey != req.IdempotencyKey {
 			continue
 		}
-		if meta.Cwd != req.Cwd || !slices.Equal(meta.Args, args) {
+		if meta.Cwd != req.Cwd || !sameRequest(meta, req, args) {
 			return Job{}, false, fmt.Errorf("idempotency_key %q is already bound to job %s with a different normalized request", req.IdempotencyKey, id)
 		}
 		// A persisted record that never recorded a supervisor PID is a
@@ -412,9 +411,11 @@ func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool,
 	return Job{}, false, nil
 }
 
-// normalizeRequest resolves every value that feeds the gate key, agy args, and
-// persisted meta - cwd, model, timeout, and continue_latest - back into req, so
-// all three derive from one normalized request. Keeping a resolved value in a
+// normalizeRequest resolves every value that feeds the gate key, agy args,
+// request key and persisted meta (cwd, model, timeout, and continue_latest) back
+// into req, so all of them derive from one normalized request. The request key
+// deliberately ignores the conversation continue_latest resolved (see
+// requestKey). Keeping a resolved value in a
 // separate local while req stays stale risks a later read of req.Model/req.Timeout
 // silently bypassing the default fallback.
 func (m *Manager) normalizeRequest(req StartRequest) (StartRequest, error) {
@@ -443,7 +444,7 @@ func (m *Manager) normalizeRequest(req StartRequest) (StartRequest, error) {
 	}
 	// Reduce a whole `agy models` row to its id (see modelID). Applied after the
 	// fallback above so it covers a configured AGY_MCP_DEFAULT_MODEL too, and
-	// before the args and meta below, which are the two readers of req.Model.
+	// before anything below reads req.Model (the args, the request key, meta).
 	req.Model = modelID(req.Model)
 	if req.Timeout <= 0 {
 		req.Timeout = m.cfg.DefaultTimeout
@@ -608,6 +609,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		Model:          req.Model,
 		ConversationID: req.ConversationID,
 		IdempotencyKey: req.IdempotencyKey,
+		RequestKey:     requestKey(req),
 		Prompt:         req.Prompt,
 		StartedAt:      time.Now().UTC(),
 		BootID:         readBootID(),

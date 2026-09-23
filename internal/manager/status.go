@@ -56,11 +56,13 @@ const (
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
 	ReasonInterrupted    = "interrupted"     // the job process vanished without writing a result
-	// ReasonBackgroundAborted: agy exited cleanly (typically with a SUCCESS
-	// payload, though a clean exit with no terminal payload also qualifies), but
-	// its stderr shows it went idle with outstanding background shell tasks and
-	// killed them at exit, so the "answer" is only progress narration, not usable
-	// work (issue #173). Actionable: re-run and keep verification in the foreground.
+	// ReasonBackgroundAborted: agy ended the run itself (a clean exit, with a
+	// SUCCESS payload in the run MEASURED against agy 1.2.7, issue #173; a clean
+	// exit with no terminal payload and a job recovered from its payload also
+	// qualify), but its stderr shows it went idle with outstanding background
+	// shell tasks and killed them at exit, so the "answer" is only progress
+	// narration, not usable work. Actionable: re-run and keep verification in
+	// the foreground.
 	ReasonBackgroundAborted = "background_aborted"
 	ReasonUnknown           = "unknown" // a failure that fits none of the above (e.g. the output could not be read)
 )
@@ -110,8 +112,9 @@ type Status struct {
 	//   - Taken from a terminal event agy did emit but did not mark SUCCESS: an
 	//     ERROR, an outcome this build does not recognize, or none at all. The
 	//     text is whatever the run had produced when it stopped.
-	//   - Taken from a clean exit whose stderr shows agy ended the run early:
-	//     its own --print-timeout expired mid-turn (markPrintTimeout) or it killed
+	//   - Taken from a clean exit, or from a job recovered from its payload after
+	//     its supervisor died, whose stderr shows agy ended the run early: its own
+	//     --print-timeout expired mid-turn (markPrintTimeout) or it killed
 	//     outstanding background tasks (markBackgroundAborted). Either overrides a
 	//     SUCCESS mark, because agy set it on a run that did not finish.
 	//
@@ -121,8 +124,7 @@ type Status struct {
 	// result is missing. Either kind of authoritative result stays complete even
 	// if the process then exits via cancel or timeout. The one exception after
 	// exit is a timeout (code 124) whose stderr shows agy's own print-timeout had
-	// already cut the turn short; a cancel or crash is not checked for that
-	// notice.
+	// already cut the turn short; a cancel is not checked for that notice.
 	Partial bool
 	// NumTurns and Usage are agy's own accounting, present only once a terminal
 	// result event has been recorded.
@@ -206,7 +208,11 @@ func (m *Manager) Status(id string) (Status, error) {
 // be read is a failure to report, not an absent answer to pass over.
 func recoverInterrupted(dir string, meta jobstore.Meta, st Status) Status {
 	if res, ok := readResultPayload(dir); ok {
-		return applyResult(dir, meta, st, res)
+		// The payload is only written once agy has been reaped, so its stderr is
+		// final and the clean-exit notices apply exactly as they do on code 0. The
+		// branches below have no payload: agy may still be running in its own
+		// session, so its stderr is not read there.
+		return applyCleanExitNotices(dir, meta, applyResult(dir, meta, st, res), res, true)
 	}
 	out, rerr := readFile(jobstore.OutPath(dir))
 	switch {
@@ -246,7 +252,6 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	// letting it grow forever as time.Since(StartedAt).
 	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
 	res, hasResult := readResultPayload(dir)
-	var printTimedOut bool
 	switch code {
 	case 0:
 		var done Status
@@ -255,64 +260,13 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		} else {
 			done = applyResult(dir, meta, st, res)
 		}
-		// Two stderr notices can show that a clean exit agy vouched for did not
-		// finish its work. Both reclassify the same three shapes: a SUCCESS whose
-		// state is still done here; a json-schema SUCCESS that never emitted
-		// structured_output, which applyResult has already failed as a generic
-		// agy_error; and a json-schema run that never wrote any terminal payload,
-		// which cleanExitWithoutPayload has likewise failed as agy_error (issue
-		// #180). The third shape is pinned by !hasResult (so done came from
-		// cleanExitWithoutPayload) plus its agy_error reason, which excludes that
-		// function's read-failure (unknown) branch; a non-schema no-payload clean
-		// exit is already StateDone and needs no extra clause. Every other outcome
-		// (an ERROR payload, a quota wall, an unrecognized status, an unreadable
-		// out file) keeps the more specific reason and message it already has.
-		// Confined to code 0 because every non-zero exit already reports a failure
-		// or a cancel.
-		noPayloadSchemaAbort := !hasResult && argsSelectJSONSchema(meta.Args) && done.FailureReason == ReasonAgyError
-		if done.State != StateDone && !schemaSuccessWithoutOutput(meta, res) && !noPayloadSchemaAbort {
-			return done
-		}
-		// The first notice: in headless -p mode agy waits a bounded time after its
-		// root agent goes idle for outstanding background shell tasks, then kills
-		// any still running and exits 0 whose response is only progress narration
-		// (issue #173). Before agy 1.2.9 that wait was about 5s; from 1.2.9 it runs
-		// to the --print-timeout deadline (capped at 30 minutes per agy's
-		// changelog), so a task that finishes in time is no longer killed and the
-		// run stays done. Reclassified to background_aborted (issue #176), which is
-		// more actionable than agy_error because it tells the caller to move
-		// verification to the foreground. It is checked first so that, should both
-		// notices ever appear together, the caller gets that advice rather than the
-		// generic "continue this conversation" hint a timeout carries, since
-		// continuing would relaunch the killed background command.
-		if backgroundTasksAborted(dir) {
-			return markBackgroundAborted(done)
-		}
-		// The second notice: from agy 1.1.28, an expired --print-timeout makes
-		// agy return whatever it has and exit 0 (with a SUCCESS payload in the
-		// run MEASURED against agy 1.2.9; before 1.1.28 agy reported the expiry
-		// as an in-band ERROR, which keeps its agy_error reason above). agy-mcp
-		// passes the job timeout as --print-timeout and the supervisor arms the
-		// same deadline right after starting agy, so the two timers race. The
-		// hard kill won when this was MEASURED against agy 1.2.9 (a 15s job
-		// ended with exit code 124), but nothing guarantees that order, and
-		// this covers the case where agy's timer wins, which would otherwise
-		// report a truncated answer as done.
-		if printTimeoutExpired(dir) {
-			return markPrintTimeout(done)
-		}
-		return done
+		return applyCleanExitNotices(dir, meta, done, res, hasResult)
 	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
 		st.State = StateCancelled
 	case jobstore.ExitTimeout:
 		st.State = StateFailed
 		st.Error = "job exceeded its timeout and was terminated"
 		st.FailureReason = ReasonTimeout
-		// In a near tie agy's own --print-timeout can fire first and write a
-		// SUCCESS payload for the unfinished turn before the hard kill lands.
-		// carryText would treat that response as authoritative, so the notice is
-		// read here and applied after carryText (below) to flag the text partial.
-		printTimedOut = printTimeoutExpired(dir)
 	case jobstore.ExitSpawnFail:
 		// 127 is written both when the supervisor could not exec agy and when agy
 		// itself exits 127, so name both causes rather than asserting one, and keep
@@ -338,8 +292,12 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	// have, so they all carry it rather than giving a timed-out run its partial
 	// answer and a crashed or 127'd one nothing.
 	st = carryText(dir, st, hasResult, res, argsSelectJSONSchema(meta.Args))
-	if printTimedOut {
-		st.Partial = st.Partial || st.Result != ""
+	// In a near tie on a timeout, agy's own --print-timeout can fire first and
+	// write a SUCCESS payload for the unfinished turn before the hard kill lands.
+	// carryText treats that response as authoritative, so the notice flags it
+	// partial. stderr is read only when the flag would change.
+	if code == jobstore.ExitTimeout && st.Result != "" && !st.Partial && readStderrNotices(dir).printTimeout {
+		st.Partial = true
 	}
 	// A cancelled or timed-out run still has a conversation worth continuing, so
 	// carry the id (and the accounting) from any payload that did get written.
@@ -349,7 +307,66 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	return st
 }
 
-// markBackgroundAborted reclassifies a clean-exit status that agy's stderr reveals
+// applyCleanExitNotices lets agy's stderr notices reclassify a run whose outcome
+// was derived as though agy finished its work: a clean exit (code 0), or a
+// recovered job whose supervisor died after persisting agy's result payload. The
+// supervisor persists that payload only after agy has been reaped (see run in
+// internal/supervisor), so in both cases agy's stderr is complete. done is the status
+// derived from the payload (or its absence); res and hasResult are that payload.
+func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res streamjson.Result, hasResult bool) Status {
+	// Two stderr notices can show that a run agy vouched for did not finish
+	// its work. Both reclassify the same three shapes: a SUCCESS whose
+	// state is still done here; a json-schema SUCCESS that never emitted
+	// structured_output, which applyResult has already failed as a generic
+	// agy_error; and a json-schema run that never wrote any terminal payload,
+	// which cleanExitWithoutPayload has likewise failed as agy_error (issue
+	// #180). The third shape is pinned by !hasResult (so done came from
+	// cleanExitWithoutPayload) plus its agy_error reason, which excludes that
+	// function's read-failure (unknown) branch; a non-schema no-payload clean
+	// exit is already StateDone and needs no extra clause. Every other outcome
+	// (an ERROR payload, a quota wall, an unrecognized status, an unreadable
+	// out file) keeps the more specific reason and message it already has.
+	// statusFromExitCode never calls this for a non-zero exit, which already
+	// reports a failure or a cancel.
+	noPayloadSchemaAbort := !hasResult && argsSelectJSONSchema(meta.Args) && done.FailureReason == ReasonAgyError
+	if done.State != StateDone && !schemaSuccessWithoutOutput(meta, res) && !noPayloadSchemaAbort {
+		return done
+	}
+	// The first notice: in headless -p mode agy waits a bounded time after its
+	// root agent goes idle for outstanding background shell tasks, then kills
+	// any still running and exits 0 whose response is only progress narration
+	// (issue #173). Before agy 1.2.9 that wait was about 5s; from 1.2.9 it runs
+	// to the --print-timeout deadline (capped at 30 minutes per agy's
+	// changelog), so a task that finishes in time is no longer killed and the
+	// run stays done. Reclassified to background_aborted (issue #176), which is
+	// more actionable than agy_error because it tells the caller to move
+	// verification to the foreground. It is checked first so that, should both
+	// notices ever appear together, the caller gets that advice rather than the
+	// generic "continue this conversation" hint a timeout carries, since
+	// carrying on with the same task would launch the same background command
+	// again.
+	notices := readStderrNotices(dir)
+	if notices.backgroundAborted {
+		return markBackgroundAborted(done)
+	}
+	// The second notice: from agy 1.1.28, an expired --print-timeout makes
+	// agy return whatever it has and exit 0 (with a SUCCESS payload in the
+	// run MEASURED against agy 1.2.9; before 1.1.28 agy reported the expiry
+	// as an in-band ERROR, which keeps its agy_error reason above). agy-mcp
+	// passes the job timeout as --print-timeout and the supervisor arms the
+	// same deadline right after starting agy, so the two timers race. The
+	// hard kill won when this was MEASURED against agy 1.2.9 (a 15s job
+	// ended with exit code 124), but nothing guarantees that order, and
+	// this covers the case where agy's timer wins, which would otherwise
+	// report a truncated answer as done.
+	if notices.printTimeout {
+		return markPrintTimeout(done)
+	}
+	return done
+}
+
+// markBackgroundAborted reclassifies a status derived as though agy finished (a
+// clean exit, or a job recovered from its payload) that agy's stderr reveals
 // to be an idle-killed background run (issue #173): a status the caller derived as
 // "done", a json-schema SUCCESS that applyResult had already failed for carrying
 // no structured_output (issue #176), or a json-schema run that wrote no terminal
@@ -375,7 +392,8 @@ func markBackgroundAborted(st Status) Status {
 	return st
 }
 
-// markPrintTimeout reclassifies a clean-exit status whose stderr shows agy's own
+// markPrintTimeout reclassifies a status derived as though agy finished (a clean
+// exit, or a job recovered from its payload) whose stderr shows agy's own
 // --print-timeout expired with the turn still in progress. agy returns the
 // partial output it has and exits 0 in that case (per agy's changelog, since
 // 1.1.28), so the run did not finish even when the payload says SUCCESS. The
@@ -577,9 +595,9 @@ func argsSelectJSONSchema(args []string) bool {
 //
 // It is where every path that HAS a payload to consider makes both decisions,
 // which is all of statusFromExitCode and applyResult. Two terminal paths decide
-// for themselves, and a clean or timed-out exit's stderr can still override the
-// decision afterwards; these are the exceptions to look for before assuming a
-// change here reaches everything:
+// for themselves, and agy's stderr can still override the decision afterwards
+// (on a clean exit, a job recovered from its payload, or a timeout); these are
+// the exceptions to look for before assuming a change here reaches everything:
 //
 //   - cleanExitWithoutPayload, whose text is always streamed and which carries
 //     the one deliberate exception to "streamed text is partial" (a job an older
@@ -841,29 +859,35 @@ func cleanTail(dir string) (string, error) {
 	return tail, nil
 }
 
-// backgroundTasksAborted reports whether a terminal job's captured stderr shows
-// agy aborting outstanding background shell tasks because its root agent went
-// idle (issue #173). It reads the same bounded stderr tail as errorSummary; an
-// unreadable stderr yields false, leaving the derived state untouched rather than
-// guessing a failure.
-func backgroundTasksAborted(dir string) bool {
-	tail, err := cleanTail(dir)
-	if err != nil {
-		return false
-	}
-	return matchesBackgroundAbort(tail)
+// stderrNotices is what a terminal job's captured stderr says about how agy
+// ended the run. Both come from ONE read of the bounded stderr tail
+// (the tail errorSummary reports). An unreadable stderr yields the zero value,
+// which leaves the derived state untouched rather than guessing a failure.
+type stderrNotices struct {
+	backgroundAborted bool // agy killed outstanding background shell tasks at exit (issue #173)
+	printTimeout      bool // agy's own --print-timeout expired with the turn in progress
 }
 
-// printTimeoutExpired reports whether a terminal job's captured stderr carries
-// agy's notice that its own --print-timeout expired mid-turn. Like
-// backgroundTasksAborted it reads the bounded stderr tail, and an unreadable
-// stderr yields false so the derived state stays as it was.
-func printTimeoutExpired(dir string) bool {
+func readStderrNotices(dir string) stderrNotices {
 	tail, err := cleanTail(dir)
 	if err != nil {
-		return false
+		return stderrNotices{}
 	}
-	return matchesPrintTimeout(tail)
+	return stderrNotices{
+		backgroundAborted: matchesBackgroundAbort(tail),
+		printTimeout:      matchesPrintTimeout(tail),
+	}
+}
+
+// lineHasAll reports whether line contains every one of phrases, ignoring case.
+func lineHasAll(line string, phrases ...string) bool {
+	l := strings.ToLower(line)
+	for _, p := range phrases {
+		if !strings.Contains(l, strings.ToLower(p)) {
+			return false
+		}
+	}
+	return true
 }
 
 // matchesPrintTimeout tests stderr text for agy's print-timeout notice. All
@@ -878,13 +902,10 @@ func printTimeoutExpired(dir string) bool {
 //
 // A separate run, whose background-task wait reached the deadline, printed only
 // the background-abort markers and not this line. Should both ever appear, the
-// background-abort check in statusFromExitCode runs first on a clean exit.
+// background-abort check in applyCleanExitNotices runs first.
 func matchesPrintTimeout(stderr string) bool {
 	for line := range strings.Lines(stderr) {
-		l := strings.ToLower(line)
-		if strings.Contains(l, "print timeout") &&
-			strings.Contains(l, "turn in progress") &&
-			strings.Contains(l, "partial output") {
+		if lineHasAll(line, "print timeout", "turn in progress", "partial output") {
 			return true
 		}
 	}
@@ -894,9 +915,10 @@ func matchesPrintTimeout(stderr string) bool {
 // schemaSuccessWithoutOutput reports a json-schema run agy marked SUCCESS that
 // carried no structured_output. It is the single source of truth for that shape,
 // used at both ends so they cannot drift: applyResult fails it as a generic
-// ReasonAgyError, and statusFromExitCode lets the stderr background-abort markers
-// reclassify that same failure to background_aborted (issue #176), whose real
-// cause is an idle background-abort (issue #173). It is deliberately narrow: an
+// ReasonAgyError, and applyCleanExitNotices lets agy's stderr notices reclassify
+// that same failure: the background-abort markers to background_aborted (issue
+// #176, whose real cause is an idle background-abort, issue #173), and the
+// print-timeout notice to timeout. It is deliberately narrow: an
 // indeterminate payload (empty status) and an unrecognized status both fail the
 // StatusSuccess test and keep their agy_error reason, so this cannot mask an
 // unrelated failure.
@@ -918,7 +940,7 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 // idle waiting on it, so demanding the idle-wait line as well as the kill line
 // rejects that case. That inference is not verified against agy, so even a false
 // positive is made safe by markBackgroundAborted, which preserves the run's text
-// (it relabels, never empties). Split out from backgroundTasksAborted so the
+// (it relabels, never empties). Split out from readStderrNotices so the
 // token matching is unit-testable without staging a job directory.
 //
 // Each marker's tokens must fall on a SINGLE line: matching them across the whole
@@ -942,13 +964,10 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 func matchesBackgroundAbort(stderr string) bool {
 	var idleWaiting, killedAtExit bool
 	for line := range strings.Lines(stderr) {
-		l := strings.ToLower(line)
-		if strings.Contains(l, "idle") && strings.Contains(l, "background task") {
+		if lineHasAll(line, "idle", "background task") {
 			idleWaiting = true
 		}
-		if strings.Contains(l, "terminating") &&
-			strings.Contains(l, "background task") &&
-			strings.Contains(l, "on exit") {
+		if lineHasAll(line, "terminating", "background task", "on exit") {
 			killedAtExit = true
 		}
 	}

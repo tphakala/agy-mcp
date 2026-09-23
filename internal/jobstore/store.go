@@ -33,6 +33,7 @@ type Meta struct {
 	Model          string        `json:"model,omitempty"`
 	ConversationID string        `json:"conversation_id,omitempty"`
 	IdempotencyKey string        `json:"idempotency_key,omitempty"`
+	RequestKey     string        `json:"request_key,omitempty"` // hash of the normalized request, compared on an idempotency_key replay
 	Prompt         string        `json:"prompt"`
 	StartedAt      time.Time     `json:"started_at"`
 	PID            int           `json:"pid"`
