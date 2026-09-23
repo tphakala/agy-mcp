@@ -442,7 +442,7 @@ func (m *Manager) normalizeRequest(req StartRequest) (StartRequest, error) {
 	}
 	// Reduce a whole `agy models` row to its id (see modelID). Applied after the
 	// fallback above so it covers a configured AGY_MCP_DEFAULT_MODEL too, and
-	// before the args and meta below, which are the two readers of req.Model.
+	// before anything below reads req.Model (the args, the request key, meta).
 	req.Model = modelID(req.Model)
 	if req.Timeout <= 0 {
 		req.Timeout = m.cfg.DefaultTimeout
