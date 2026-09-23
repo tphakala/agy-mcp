@@ -413,6 +413,10 @@ func TestStatusOutputRecoveryHint(t *testing.T) {
 		wantHint bool
 	}{
 		{"timeout kill, no text, has conversation", manager.Status{State: manager.StateFailed, ConversationID: "c1"}, true},
+		// A timeout, whether agy-mcp's hard kill or agy's own --print-timeout, gets
+		// the generic hint when it produced no text: continuing the thread is the
+		// recovery markPrintTimeout's doc promises.
+		{"timeout reason, no text, has conversation", manager.Status{State: manager.StateFailed, FailureReason: manager.ReasonTimeout, ConversationID: "c1"}, true},
 		{"cancel before any output", manager.Status{State: manager.StateCancelled, ConversationID: "c1"}, true},
 		{"failed but no conversation to continue", manager.Status{State: manager.StateFailed}, false},
 		{"failed with a partial result already offered", manager.Status{State: manager.StateFailed, ConversationID: "c1", Result: "as far as I got", Partial: true}, false},
