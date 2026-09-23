@@ -149,8 +149,9 @@ them without consulting this file. The constraints worth knowing up front: `conv
 and `continue_latest` are mutually exclusive (setting `continue_latest` true alongside a
 `conversation_id` is an error); `timeout` is a Go duration and a value above 24h is rejected
 outright, and on expiry the job normally ends in state `failed` with `failure_reason: timeout`,
-because agy-mcp kills the `agy` process tree (if `agy`'s own `--print-timeout` fires first, `agy`
-stops the turn itself and any text it had comes back as a `partial` result); `effort`, when set, must be
+because agy-mcp kills the `agy` process tree (on agy 1.1.28 and later, if `agy`'s own
+`--print-timeout` fires first, `agy` stops the turn itself and any text it had comes back as a
+`partial` result; on older agy that expiry is reported as `agy_error`); `effort`, when set, must be
 `low`, `medium` or `high`, and `mode`, when set, must be `accept-edits` or `plan`, with any other
 value rejected before the run starts; `wait` defaults
 to 90s and is silently clamped to that same ceiling. That 90s default is kept below the roughly
