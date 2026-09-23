@@ -374,8 +374,9 @@ type terminalCase struct {
 //     report nothing while a sibling reports text.
 //   - Partial is decided by where that text came from, not by the state. A
 //     response agy itself marked SUCCESS is complete even if the job was then
-//     killed, unless agy's stderr shows it ended the run early (the print-timeout
-//     and background-abort rows); any other payload status is agy declining to vouch for it; text
+//     killed, unless stderr shows agy ended the run early (the clean-exit
+//     print-timeout and background-abort rows, and the timed-out run whose
+//     stderr has the print-timeout notice); any other payload status is agy declining to vouch for it; text
 //     rebuilt from the stream is partial. The one exception is a job an older
 //     build wrote, whose plain-text out really is complete.
 //   - Whichever way a run ended, a payload that reached disk still supplies the
@@ -549,6 +550,13 @@ func terminalCases() []terminalCase {
 			errFile:   printTimeoutNotice + "\n",
 			wantState: StateFailed, wantResult: "the first half", wantPartial: true,
 			wantErrSub: "timeout", wantReason: ReasonTimeout,
+		}, {
+			// The empty sibling of the near-tie row: with no text there is nothing to
+			// flag, so Partial stays false.
+			name: "a hard-killed run with an empty response and the notice is not partial",
+			code: jobstore.ExitTimeout, res: &streamjson.Result{Status: streamjson.StatusSuccess},
+			errFile:   printTimeoutNotice + "\n",
+			wantState: StateFailed, wantErrSub: "timeout", wantReason: ReasonTimeout,
 		}, {
 			// The negative control: a line that mentions the print timeout but not
 			// the partial-output return is not agy's expiry notice.
@@ -878,6 +886,24 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 			res:       &streamjson.Result{Status: streamjson.StatusSuccess},
 			errFile:   printTimeoutNotice + "\n",
 			wantState: StateFailed, wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+		}, {
+			// The no-payload sibling: a schema run that exited 0 without a terminal
+			// event is failed as agy_error by cleanExitWithoutPayload; the notice
+			// names the real cause.
+			name: "print-timeout schema run with no terminal payload reclassifies to timeout",
+			code: 0, args: schemaArgs, out: "streamed diagnostic",
+			errFile:   printTimeoutNotice + "\n",
+			wantState: StateFailed, wantResult: "streamed diagnostic", wantPartial: true,
+			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+		}, {
+			// structured_output agy returned on a turn its own print-timeout cut short
+			// is kept but cannot be vouched for.
+			name: "print-timeout schema run keeps its structured output as partial",
+			code: 0, args: schemaArgs,
+			res:       &streamjson.Result{Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(`{"business":"ok"}`)},
+			errFile:   printTimeoutNotice + "\n",
+			wantState: StateFailed, wantResult: `{"business":"ok"}`, wantPartial: true,
+			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
 		}, {
 			// Issue #176: the same idle-kill on a schema run that never emitted
 			// structured_output. applyResult fails it as a generic agy_error, but the

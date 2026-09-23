@@ -692,8 +692,9 @@ func readResultPayload(dir string) (streamjson.Result, bool) {
 func (m *Manager) State(id string) (string, error) {
 	// Fast path: a terminal sentinel other than a clean exit decides the state
 	// from the code alone. A clean exit (0) is excluded because Status downgrades
-	// a successful-but-unreadable out to failed, a distinction that requires the
-	// read State is trying to avoid.
+	// a successful-but-unreadable out, or one whose stderr shows agy ended the run
+	// early, to failed, distinctions that require the reads State is trying to
+	// avoid.
 	if code, ok := m.store.ExitCode(id); ok && code != 0 {
 		return stateForCode(code), nil
 	}
@@ -711,7 +712,8 @@ func (m *Manager) State(id string) (string, error) {
 // stateForCode maps a terminal exit-code sentinel to a job state. It is the
 // shared source of truth for the code->state mapping; State uses it for the
 // non-zero terminal codes (a clean exit's done-vs-failed split also depends on
-// out readability, so State handles 0 via Status rather than this mapping).
+// out readability and stderr notices, so State handles 0 via Status rather than
+// this mapping).
 func stateForCode(code int) string {
 	switch code {
 	case 0:
