@@ -53,14 +53,15 @@ func TestStatusInterruptedNoOutput(t *testing.T) {
 func TestStatusInterruptedAppliesStderrNotices(t *testing.T) {
 	const bgAbort = "root agent idle; waiting up to 5s for 1 background task(s)\nterminating 1 background task(s) on exit\n"
 	for _, tc := range []struct {
-		name       string
-		stderr     string
-		wantState  string
-		wantReason string
+		name        string
+		stderr      string
+		wantState   string
+		wantReason  string
+		wantPartial bool
 	}{
-		{"print timeout", printTimeoutNotice + "\n", StateFailed, ReasonTimeout},
-		{"background abort", bgAbort, StateFailed, ReasonBackgroundAborted},
-		{"no notice stays done", "some agy chatter\n", StateDone, ""},
+		{"print timeout", printTimeoutNotice + "\n", StateFailed, ReasonTimeout, true},
+		{"background abort", bgAbort, StateFailed, ReasonBackgroundAborted, true},
+		{"no notice stays done", "some agy chatter\n", StateDone, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
@@ -81,6 +82,9 @@ func TestStatusInterruptedAppliesStderrNotices(t *testing.T) {
 			}
 			if st.Result != "half an answer" {
 				t.Errorf("result = %q, want the payload response kept", st.Result)
+			}
+			if st.Partial != tc.wantPartial {
+				t.Errorf("partial = %v, want %v", st.Partial, tc.wantPartial)
 			}
 		})
 	}
@@ -197,7 +201,8 @@ func TestMatchesPrintTimeoutRequiresAllPhrasesOnOneLine(t *testing.T) {
 
 func TestReadStderrNoticesEmptyOnUnreadableStderr(t *testing.T) {
 	dir := t.TempDir()
-	// An err path that is a directory makes the read fail. This pins the contract
+	// An err path that is a directory makes the read fail on POSIX (on Windows it
+	// reads as empty, which must also yield no notices). This pins the contract
 	// that an unreadable stderr leaves the derived state alone rather than guessing
 	// a timeout or a background abort. It does not pin the err guard itself:
 	// cleanTail returns "" on a read error, which both matchers already reject.

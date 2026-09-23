@@ -591,8 +591,8 @@ func argsSelectJSONSchema(args []string) bool {
 //
 // It is where every path that HAS a payload to consider makes both decisions,
 // which is all of statusFromExitCode and applyResult. Two terminal paths decide
-// for themselves, and a clean or timed-out exit's stderr can still override the
-// decision afterwards; these are the exceptions to look for before assuming a
+// for themselves, and agy's stderr can still override the decision afterwards
+// (on a clean exit, a job recovered from its payload, or a timeout); these are the exceptions to look for before assuming a
 // change here reaches everything:
 //
 //   - cleanExitWithoutPayload, whose text is always streamed and which carries
@@ -899,7 +899,7 @@ func lineHasAll(line string, phrases ...string) bool {
 //
 // A separate run, whose background-task wait reached the deadline, printed only
 // the background-abort markers and not this line. Should both ever appear, the
-// background-abort check in statusFromExitCode runs first on a clean exit.
+// background-abort check in applyCleanExitNotices runs first.
 func matchesPrintTimeout(stderr string) bool {
 	for line := range strings.Lines(stderr) {
 		if lineHasAll(line, "print timeout", "turn in progress", "partial output") {
@@ -912,7 +912,7 @@ func matchesPrintTimeout(stderr string) bool {
 // schemaSuccessWithoutOutput reports a json-schema run agy marked SUCCESS that
 // carried no structured_output. It is the single source of truth for that shape,
 // used at both ends so they cannot drift: applyResult fails it as a generic
-// ReasonAgyError, and statusFromExitCode lets the stderr background-abort markers
+// ReasonAgyError, and applyCleanExitNotices lets the stderr background-abort markers
 // reclassify that same failure to background_aborted (issue #176), whose real
 // cause is an idle background-abort (issue #173). It is deliberately narrow: an
 // indeterminate payload (empty status) and an unrecognized status both fail the
