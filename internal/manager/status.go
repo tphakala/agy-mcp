@@ -880,11 +880,10 @@ func readStderrNotices(dir string) stderrNotices {
 }
 
 // lineHasAll reports whether line contains every one of phrases, ignoring case.
-// The phrases must be given in lower case.
 func lineHasAll(line string, phrases ...string) bool {
 	l := strings.ToLower(line)
 	for _, p := range phrases {
-		if !strings.Contains(l, p) {
+		if !strings.Contains(l, strings.ToLower(p)) {
 			return false
 		}
 	}

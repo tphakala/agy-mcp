@@ -206,6 +206,17 @@ func TestMatchesPrintTimeoutRequiresAllPhrasesOnOneLine(t *testing.T) {
 	}
 }
 
+// TestLineHasAllIgnoresPhraseCase: the match ignores case on both sides, so a
+// caller that spells a phrase in mixed case still matches.
+func TestLineHasAllIgnoresPhraseCase(t *testing.T) {
+	if !lineHasAll("[agy] Print Timeout after 8s", "PRINT TIMEOUT", "after") {
+		t.Error("lineHasAll missed a phrase given in upper case")
+	}
+	if lineHasAll("[agy] print timeout after 8s", "Print Timeout", "missing") {
+		t.Error("lineHasAll matched although one phrase is absent")
+	}
+}
+
 func TestReadStderrNoticesEmptyOnUnreadableStderr(t *testing.T) {
 	dir := t.TempDir()
 	// An err path that is a directory makes the read fail on POSIX. This pins the contract
