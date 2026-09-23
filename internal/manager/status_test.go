@@ -50,26 +50,33 @@ func TestStatusInterruptedNoOutput(t *testing.T) {
 // that recoverInterrupted classifies from the payload. agy was already reaped by
 // then, so its stderr notices must reclassify the SUCCESS exactly as on a clean
 // exit, rather than the recovered job reading as a complete done (issue #186).
+// The json-schema rows pin the eligibility gate on this path too: a schema
+// SUCCESS without structured_output is reclassified, an ERROR keeps its reason.
 func TestStatusInterruptedAppliesStderrNotices(t *testing.T) {
 	const bgAbort = "root agent idle; waiting up to 5s for 1 background task(s)\nterminating 1 background task(s) on exit\n"
+	schemaArgs := []string{jsonSchemaFlag, "{}"}
 	for _, tc := range []struct {
 		name        string
+		args        []string
+		status      string
 		stderr      string
 		wantState   string
 		wantReason  string
 		wantPartial bool
 	}{
-		{"print timeout", printTimeoutNotice + "\n", StateFailed, ReasonTimeout, true},
-		{"background abort", bgAbort, StateFailed, ReasonBackgroundAborted, true},
-		{"no notice stays done", "some agy chatter\n", StateDone, "", false},
+		{"print timeout", nil, streamjson.StatusSuccess, printTimeoutNotice + "\n", StateFailed, ReasonTimeout, true},
+		{"background abort", nil, streamjson.StatusSuccess, bgAbort, StateFailed, ReasonBackgroundAborted, true},
+		{"no notice stays done", nil, streamjson.StatusSuccess, "some agy chatter\n", StateDone, "", false},
+		{"schema success without output, background abort", schemaArgs, streamjson.StatusSuccess, bgAbort, StateFailed, ReasonBackgroundAborted, true},
+		{"schema error keeps its reason despite background abort", schemaArgs, streamjson.StatusError, bgAbort, StateFailed, ReasonAgyError, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
-			dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
+			dir, err := m.store.Create(jobstore.Meta{ID: "j", Args: tc.args, StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			writeResultPayload(t, dir, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"})
+			writeResultPayload(t, dir, streamjson.Result{Status: tc.status, Response: "half an answer"})
 			if err := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -201,8 +208,7 @@ func TestMatchesPrintTimeoutRequiresAllPhrasesOnOneLine(t *testing.T) {
 
 func TestReadStderrNoticesEmptyOnUnreadableStderr(t *testing.T) {
 	dir := t.TempDir()
-	// An err path that is a directory makes the read fail on POSIX (on Windows it
-	// reads as empty, which must also yield no notices). This pins the contract
+	// An err path that is a directory makes the read fail on POSIX. This pins the contract
 	// that an unreadable stderr leaves the derived state alone rather than guessing
 	// a timeout or a background abort. It does not pin the err guard itself:
 	// cleanTail returns "" on a read error, which both matchers already reject.
