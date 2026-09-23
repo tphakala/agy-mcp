@@ -411,9 +411,11 @@ func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool,
 	return Job{}, false, nil
 }
 
-// normalizeRequest resolves every value that feeds the gate key, agy args, and
-// persisted meta - cwd, model, timeout, and continue_latest - back into req, so
-// all three derive from one normalized request. Keeping a resolved value in a
+// normalizeRequest resolves every value that feeds the gate key, agy args,
+// request key and persisted meta (cwd, model, timeout, and continue_latest) back
+// into req, so all of them derive from one normalized request. The request key
+// deliberately ignores the conversation continue_latest resolved (see
+// requestKey). Keeping a resolved value in a
 // separate local while req stays stale risks a later read of req.Model/req.Timeout
 // silently bypassing the default fallback.
 func (m *Manager) normalizeRequest(req StartRequest) (StartRequest, error) {

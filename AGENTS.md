@@ -16,7 +16,7 @@ Module path: `github.com/tphakala/agy-mcp/v2`. Go version: see `go.mod`.
 
 | Path | Role |
 |---|---|
-| `main.go` | Entry point. Subcommands `run-job`, `wait-job`, `hook-wait`, `doctor` (implemented in the root package's `waitcmd.go`, `hookwait.go`, `doctor.go`); otherwise serves MCP over stdio or HTTP. |
+| `main.go` | Entry point. Subcommands `run-job` (`internal/supervisor`), and `wait-job`, `hook-wait`, `doctor` (the root package's `waitcmd.go`, `hookwait.go`, `doctor.go`); otherwise serves MCP over stdio or HTTP. |
 | `internal/mcptools` | MCP tools. Tool descriptions are the `Description:` strings (plus `serverInstructions`); field descriptions are the `jsonschema` struct tags. Both live in `tools.go`, `run_sync.go` and `wait.go`. |
 | `internal/manager` | Job lifecycle: request normalization, spawning, status derivation (`status.go`), cancel, models, agents, sessions. |
 | `internal/supervisor` | The per-job process that runs agy and writes the job directory. |
@@ -46,8 +46,8 @@ Run the full suite before proposing a change; several tests exercise real child 
 
 Every package that touches a job directory uses the file-name constants in
 `internal/jobstore/store.go`, never string literals. The supervisor writes `result.json` only after agy
-has been reaped, and writes the `exit_code` sentinel last, because the manager treats the sentinel as the completion signal. Keep that
-order when changing the supervisor.
+has been reaped, and writes the `exit_code` sentinel last, because the manager treats the sentinel as
+the completion signal. Keep that order when changing the supervisor.
 
 The exit-code sentinels in the same file carry meaning beyond agy's own exit code; `statusFromExitCode`
 in `internal/manager/status.go` interprets them.

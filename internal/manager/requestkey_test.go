@@ -49,6 +49,21 @@ func TestRequestKeyCoversEveryRequestField(t *testing.T) {
 	}
 }
 
+// TestRequestKeyGolden pins the key's encoding. Keys are persisted in meta.json,
+// so a change to the encoded names, the omitempty tags or the hash makes stored
+// keys stop matching and refuses retries across the upgrade (issue #189).
+// If this fails, make the change deliberately and handle the stored keys.
+func TestRequestKeyGolden(t *testing.T) {
+	req := StartRequest{
+		Prompt: "review", Cwd: "/repo", Model: "m", Dirs: []string{"/a"},
+		ContinueLatest: true, ConversationID: "resolved", Timeout: time.Minute,
+	}
+	const want = "a84f1234f41cc2257b0f15fb0d3ecc0d627f912731a098b2ff9b9d2898a468bb"
+	if got := requestKey(req); got != want {
+		t.Fatalf("requestKey = %s, want %s", got, want)
+	}
+}
+
 func TestRequestKeyNormalizesEquivalentRequests(t *testing.T) {
 	base := StartRequest{Prompt: "review", Cwd: "/repo", Timeout: time.Minute}
 	withEmptyDirs := base
@@ -80,6 +95,12 @@ func TestFindIdempotentJobAcrossBuilds(t *testing.T) {
 	if slices.Equal(args, preImplicitArgs) {
 		t.Fatal("test setup: the two builds' args must differ")
 	}
+	// The argv a v2.8.1 build persisted for this request, spelled out rather than
+	// derived, so a later change to buildAgyArgs cannot move both sides at once.
+	v281Args := []string{
+		"--dangerously-skip-permissions", "--print-timeout", "1m0s", "--output-format", "stream-json",
+		"--disable-slash-commands", "-p", "review",
+	}
 	other := req
 	other.Prompt = "something else"
 	for _, tc := range []struct {
@@ -92,6 +113,7 @@ func TestFindIdempotentJobAcrossBuilds(t *testing.T) {
 		{"keyed job with another request's key is refused", requestKey(other), args, false},
 		{"keyless job with this build's args replays", "", args, true},
 		{"keyless job from a release before the implicit dir replays", "", preImplicitArgs, true},
+		{"keyless job with v2.8.1's literal argv replays", "", v281Args, true},
 		{"keyless job for another request is refused", "", buildAgyArgs(other), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
