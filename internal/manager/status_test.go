@@ -45,6 +45,47 @@ func TestStatusInterruptedNoOutput(t *testing.T) {
 	}
 }
 
+// TestStatusInterruptedAppliesStderrNotices: a supervisor that died after
+// persisting agy's result payload but before the exit-code sentinel leaves a job
+// that recoverInterrupted classifies from the payload. agy was already reaped by
+// then, so its stderr notices must reclassify the SUCCESS exactly as on a clean
+// exit, rather than the recovered job reading as a complete done (issue #186).
+func TestStatusInterruptedAppliesStderrNotices(t *testing.T) {
+	const bgAbort = "root agent idle; waiting up to 5s for 1 background task(s)\nterminating 1 background task(s) on exit\n"
+	for _, tc := range []struct {
+		name       string
+		stderr     string
+		wantState  string
+		wantReason string
+	}{
+		{"print timeout", printTimeoutNotice + "\n", StateFailed, ReasonTimeout},
+		{"background abort", bgAbort, StateFailed, ReasonBackgroundAborted},
+		{"no notice stays done", "some agy chatter\n", StateDone, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newManager(t, managerOpts{})
+			dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeResultPayload(t, dir, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"})
+			if err := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			st, err := m.Status("j")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.State != tc.wantState || st.FailureReason != tc.wantReason {
+				t.Fatalf("state/reason = %q/%q, want %q/%q (%+v)", st.State, st.FailureReason, tc.wantState, tc.wantReason, st)
+			}
+			if st.Result != "half an answer" {
+				t.Errorf("result = %q, want the payload response kept", st.Result)
+			}
+		})
+	}
+}
+
 // TestClassifyAgyError pins the quota/rate-limit matcher: the wording agy has
 // been seen to relay and the common provider spellings map to a retryable
 // ReasonQuotaExhausted, while an ordinary agy error stays ReasonAgyError. The
