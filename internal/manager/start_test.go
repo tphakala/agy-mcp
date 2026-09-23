@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -11,9 +13,9 @@ import (
 
 // TestBuildAgyArgs pins the agy command line: the fixed flags (ending in
 // --disable-slash-commands so prompts stay literal), then --model, --effort,
-// --mode, --agent, --sandbox, repeated --add-dir, --conversation, --json-schema,
-// and finally -p with the prompt, with the optional flags omitted when their
-// fields are empty (and --sandbox omitted when false).
+// --mode, --agent, --sandbox, repeated --add-dir (cwd first), --conversation,
+// --json-schema, and finally -p with the prompt, with the optional flags omitted
+// when their fields are empty (and --sandbox omitted when false).
 func TestBuildAgyArgs(t *testing.T) {
 	got := buildAgyArgs(StartRequest{
 		Prompt:         "review this",
@@ -23,6 +25,7 @@ func TestBuildAgyArgs(t *testing.T) {
 		Agent:          "reviewer",
 		Sandbox:        true,
 		Dirs:           []string{"/a", "/b"},
+		Cwd:            "/work",
 		ConversationID: "cid-123",
 		JSONSchema:     `{"type":"object"}`,
 		Timeout:        20 * time.Minute,
@@ -37,7 +40,7 @@ func TestBuildAgyArgs(t *testing.T) {
 		"--mode", "plan",
 		"--agent", "reviewer",
 		"--sandbox",
-		"--add-dir", "/a", "--add-dir", "/b",
+		"--add-dir", "/work", "--add-dir", "/a", "--add-dir", "/b",
 		"--conversation", "cid-123",
 		"--json-schema", `{"type":"object"}`,
 		"-p", "review this",
@@ -71,6 +74,57 @@ func TestBuildAgyArgs(t *testing.T) {
 	got = buildAgyArgs(StartRequest{Prompt: "hi", Model: spaced, Timeout: time.Minute})
 	if i := slices.Index(got, "--model"); i < 0 || i+1 >= len(got) || got[i+1] != spaced {
 		t.Fatalf("buildAgyArgs must pass a spaced model as one argument after --model, got %q", got)
+	}
+}
+
+// TestBuildAgyArgsProjectRules pins the implicit --add-dir <cwd> that makes cwd
+// an agy workspace so the project's rule files load (#188): present by default,
+// placed before the caller's dirs, passed once when a caller dir already names
+// cwd under a trailing-separator, relative or symlinked spelling, and absent when opted out or when there is no cwd.
+func TestBuildAgyArgsProjectRules(t *testing.T) {
+	cwd, err := normalizeCwd(t.TempDir())
+	if err != nil {
+		t.Fatalf("normalizeCwd: %v", err)
+	}
+	other := filepath.Join(t.TempDir(), "other") // absolute on every OS, unlike "/a" on Windows
+	// A symlink needs a privilege on Windows that a developer shell may lack, so
+	// only the alias case depends on it and it skips rather than failing the table.
+	alias := filepath.Join(t.TempDir(), "alias")
+	symlinkErr := os.Symlink(cwd, alias)
+	sep := string(filepath.Separator)
+	for _, tc := range []struct {
+		name string
+		req  StartRequest
+		want []string // the --add-dir values, in order
+	}{
+		{name: "default adds cwd", req: StartRequest{Cwd: cwd}, want: []string{cwd}},
+		{name: "cwd precedes caller dirs", req: StartRequest{Cwd: cwd, Dirs: []string{other}}, want: []string{cwd, other}},
+		{name: "cwd already in dirs", req: StartRequest{Cwd: cwd, Dirs: []string{other, cwd}}, want: []string{other, cwd}},
+		{name: "trailing separator spelling", req: StartRequest{Cwd: cwd, Dirs: []string{cwd + sep}}, want: []string{cwd + sep}},
+		{name: "relative spelling", req: StartRequest{Cwd: cwd, Dirs: []string{"."}}, want: []string{"."}},
+		{name: "relative non-match", req: StartRequest{Cwd: cwd, Dirs: []string{"sub"}}, want: []string{cwd, "sub"}},
+		{name: "empty entry names no dir", req: StartRequest{Cwd: cwd, Dirs: []string{""}}, want: []string{cwd, ""}},
+		{name: "symlinked alias", req: StartRequest{Cwd: cwd, Dirs: []string{alias}}, want: []string{alias}},
+		{name: "opted out", req: StartRequest{Cwd: cwd, SkipProjectRules: true}, want: nil},
+		{name: "opted out keeps caller dirs", req: StartRequest{Cwd: cwd, SkipProjectRules: true, Dirs: []string{cwd}}, want: []string{cwd}},
+		{name: "no cwd", req: StartRequest{}, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if slices.Contains(tc.req.Dirs, alias) && symlinkErr != nil {
+				t.Skipf("cannot create a symlink here: %v", symlinkErr)
+			}
+			tc.req.Prompt, tc.req.Timeout = "hi", time.Minute
+			args := buildAgyArgs(tc.req)
+			var got []string
+			for i, a := range args {
+				if a == addDirFlag && i+1 < len(args) {
+					got = append(got, args[i+1])
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("--add-dir values = %q, want %q (args %q)", got, tc.want, args)
+			}
+		})
 	}
 }
 

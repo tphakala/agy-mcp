@@ -21,9 +21,9 @@ func normalizeCwd(cwd string) (string, error) {
 		// turn "no directory" into a confident claim about an unrelated one: a cache
 		// lookup against the manager's own cwd, or a cmd.Dir the caller never asked
 		// for. An empty cwd has no canonical form, so keep it empty and let each
-		// consumer decide what to do with it. Both live callers already guarantee a
-		// non-empty value (StartJob fails closed, readSessions guards), so this is
-		// defence in depth.
+		// consumer decide what to do with it. Every live caller already guarantees a
+		// non-empty value (StartJob fails closed, readSessions guards, dirsInclude
+		// skips empty entries), so this is defence in depth.
 		return "", nil
 	}
 	abs, err := filepath.Abs(cwd)
@@ -37,4 +37,25 @@ func normalizeCwd(cwd string) (string, error) {
 		return resolved, nil
 	}
 	return abs, nil
+}
+
+// dirsInclude reports whether any of dirs names cwd, an already normalized
+// directory. A relative entry is resolved against cwd, the directory agy runs in,
+// and each entry gets normalizeCwd's canonical form, so a trailing slash or a
+// symlinked alias still counts as a match.
+func dirsInclude(dirs []string, cwd string) bool {
+	for _, d := range dirs {
+		if d == "" {
+			// filepath.Join(cwd, "") is cwd itself, so an empty entry would count as
+			// a match and drop the implicit workspace while naming no directory.
+			continue
+		}
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(cwd, d)
+		}
+		if n, err := normalizeCwd(d); err == nil && n == cwd {
+			return true
+		}
+	}
+	return false
 }
