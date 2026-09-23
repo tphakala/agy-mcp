@@ -1,6 +1,10 @@
 package manager
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 // normalizeCwd canonicalizes a working directory so the agy conversation-cache
 // lookups, the spawned cmd.Dir, and the persisted meta all agree on one
@@ -43,17 +47,38 @@ func normalizeCwd(cwd string) (string, error) {
 // directory. A relative entry is resolved against cwd, the directory agy runs in,
 // and each entry gets normalizeCwd's canonical form, so a trailing slash or a
 // symlinked alias still counts as a match.
+//
+// The canonical form alone is not trusted, because it is lexical first:
+// filepath.Join cleans "<cwd>/link/.." to cwd before any symlink is resolved,
+// while the OS resolves ".." from the link's target. So an entry must also be
+// the same directory as cwd when the OS resolves it as written. The same check
+// lets an entry that differs from cwd only in letter case count as cwd, but only
+// where the filesystem itself says they are one directory. Whenever the two
+// disagree, or either cannot be stat'ed, the entry does not count: agy then gets
+// cwd as well as the entry, and a duplicate --add-dir was MEASURED harmless on
+// agy 1.2.9 (macOS), while dropping cwd would lose the project's rule files.
 func dirsInclude(dirs []string, cwd string) bool {
+	cwdInfo, err := os.Stat(cwd)
+	if err != nil {
+		return false
+	}
 	for _, d := range dirs {
 		if d == "" {
 			// filepath.Join(cwd, "") is cwd itself, so an empty entry would count as
 			// a match and drop the implicit workspace while naming no directory.
 			continue
 		}
+		asWritten := d
 		if !filepath.IsAbs(d) {
+			// Joined by hand, not with filepath.Join, so ".." is left for the OS.
+			asWritten = cwd + string(filepath.Separator) + d
 			d = filepath.Join(cwd, d)
 		}
-		if n, err := normalizeCwd(d); err == nil && n == cwd {
+		n, err := normalizeCwd(d)
+		if err != nil || (n != cwd && !strings.EqualFold(n, cwd)) {
+			continue
+		}
+		if info, err := os.Stat(asWritten); err == nil && os.SameFile(info, cwdInfo) {
 			return true
 		}
 	}

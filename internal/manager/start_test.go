@@ -80,13 +80,37 @@ func TestBuildAgyArgs(t *testing.T) {
 // TestBuildAgyArgsProjectRules pins the implicit --add-dir <cwd> that makes cwd
 // an agy workspace so the project's rule files load (#188): present by default,
 // placed before the caller's dirs, passed once when a caller dir already names
-// cwd under a trailing-separator, relative or symlinked spelling, and absent when opted out or when there is no cwd.
+// cwd under a trailing-separator, relative or symlinked spelling (or in other
+// letter case, where the filesystem makes that the same directory), kept when a
+// caller dir is cwd only lexically, and absent when opted out or when there is
+// no cwd.
 func TestBuildAgyArgsProjectRules(t *testing.T) {
-	cwd, err := normalizeCwd(t.TempDir())
+	// A letter in the last component gives the case-variant row something to flip.
+	repo := filepath.Join(t.TempDir(), "Repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := normalizeCwd(repo)
 	if err != nil {
 		t.Fatalf("normalizeCwd: %v", err)
 	}
 	other := filepath.Join(t.TempDir(), "other") // absolute on every OS, unlike "/a" on Windows
+	// caseVariant names cwd in other letter case. On a case-insensitive volume it
+	// is the same directory, so it replaces the implicit cwd; on a case-sensitive
+	// one it names nothing, so cwd is kept.
+	caseVariant := filepath.Join(filepath.Dir(cwd), "rEPO")
+	wantCase := []string{cwd, caseVariant}
+	if _, err := os.Stat(caseVariant); err == nil {
+		wantCase = []string{caseVariant}
+	}
+	// "link/.." is cwd lexically, but the OS resolves it from the link's target,
+	// which is somewhere else, so it must not stand in for cwd.
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere", "target")
+	if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkErr := os.Symlink(elsewhere, filepath.Join(cwd, "link"))
+	dotdot := "link" + string(filepath.Separator) + ".."
 	// A symlink needs a privilege on Windows that a developer shell may lack, so
 	// only the alias case depends on it and it skips rather than failing the table.
 	alias := filepath.Join(t.TempDir(), "alias")
@@ -105,6 +129,8 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 		{name: "relative non-match", req: StartRequest{Cwd: cwd, Dirs: []string{"sub"}}, want: []string{cwd, "sub"}},
 		{name: "empty entry names no dir", req: StartRequest{Cwd: cwd, Dirs: []string{""}}, want: []string{cwd, ""}},
 		{name: "symlinked alias", req: StartRequest{Cwd: cwd, Dirs: []string{alias}}, want: []string{alias}},
+		{name: "dot-dot after a symlink names its target's parent", req: StartRequest{Cwd: cwd, Dirs: []string{dotdot}}, want: []string{cwd, dotdot}},
+		{name: "letter-case variant", req: StartRequest{Cwd: cwd, Dirs: []string{caseVariant}}, want: wantCase},
 		{name: "opted out", req: StartRequest{Cwd: cwd, SkipProjectRules: true}, want: nil},
 		{name: "opted out keeps caller dirs", req: StartRequest{Cwd: cwd, SkipProjectRules: true, Dirs: []string{cwd}}, want: []string{cwd}},
 		{name: "no cwd", req: StartRequest{}, want: nil},
@@ -112,6 +138,9 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if slices.Contains(tc.req.Dirs, alias) && symlinkErr != nil {
 				t.Skipf("cannot create a symlink here: %v", symlinkErr)
+			}
+			if slices.Contains(tc.req.Dirs, dotdot) && linkErr != nil {
+				t.Skipf("cannot create a symlink here: %v", linkErr)
 			}
 			tc.req.Prompt, tc.req.Timeout = "hi", time.Minute
 			args := buildAgyArgs(tc.req)
