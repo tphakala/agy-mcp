@@ -12,7 +12,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -388,7 +387,7 @@ func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool,
 		if meta.IdempotencyKey != req.IdempotencyKey {
 			continue
 		}
-		if meta.Cwd != req.Cwd || !slices.Equal(meta.Args, args) {
+		if meta.Cwd != req.Cwd || !sameRequest(meta, req, args) {
 			return Job{}, false, fmt.Errorf("idempotency_key %q is already bound to job %s with a different normalized request", req.IdempotencyKey, id)
 		}
 		// A persisted record that never recorded a supervisor PID is a
@@ -608,6 +607,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		Model:          req.Model,
 		ConversationID: req.ConversationID,
 		IdempotencyKey: req.IdempotencyKey,
+		RequestKey:     requestKey(req),
 		Prompt:         req.Prompt,
 		StartedAt:      time.Now().UTC(),
 		BootID:         readBootID(),

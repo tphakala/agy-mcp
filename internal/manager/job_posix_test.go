@@ -125,6 +125,15 @@ func TestStartJobIdempotencyReusesExistingJob(t *testing.T) {
 	if meta.IdempotencyKey != "retry-1" {
 		t.Fatalf("persisted idempotency_key = %q, want retry-1", meta.IdempotencyKey)
 	}
+	// The replay above would also pass on the args fallback, so pin that the key
+	// the replay is meant to compare was actually persisted.
+	nreq, err := m.normalizeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := requestKey(nreq); meta.RequestKey != want {
+		t.Fatalf("persisted request_key = %q, want %q", meta.RequestKey, want)
+	}
 }
 
 func TestStartJobIdempotencyReplaysTerminalState(t *testing.T) {
