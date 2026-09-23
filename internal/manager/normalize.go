@@ -21,9 +21,9 @@ func normalizeCwd(cwd string) (string, error) {
 		// turn "no directory" into a confident claim about an unrelated one: a cache
 		// lookup against the manager's own cwd, or a cmd.Dir the caller never asked
 		// for. An empty cwd has no canonical form, so keep it empty and let each
-		// consumer decide what to do with it. Both live callers already guarantee a
-		// non-empty value (StartJob fails closed, readSessions guards), so this is
-		// defence in depth.
+		// consumer decide what to do with it. Every live caller already guarantees a
+		// non-empty value (StartJob fails closed, readSessions guards, dirsInclude
+		// skips empty entries), so this is defence in depth.
 		return "", nil
 	}
 	abs, err := filepath.Abs(cwd)
