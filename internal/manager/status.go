@@ -56,12 +56,13 @@ const (
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
 	ReasonInterrupted    = "interrupted"     // the job process vanished without writing a result
-	// ReasonBackgroundAborted: agy exited cleanly (with a SUCCESS payload in the
-	// run MEASURED against agy 1.2.7, issue #173; a clean exit with no terminal
-	// payload also qualifies), but
-	// its stderr shows it went idle with outstanding background shell tasks and
-	// killed them at exit, so the "answer" is only progress narration, not usable
-	// work (issue #173). Actionable: re-run and keep verification in the foreground.
+	// ReasonBackgroundAborted: agy ended the run itself (a clean exit, with a
+	// SUCCESS payload in the run MEASURED against agy 1.2.7, issue #173; a clean
+	// exit with no terminal payload and a job recovered from its payload also
+	// qualify), but its stderr shows it went idle with outstanding background
+	// shell tasks and killed them at exit, so the "answer" is only progress
+	// narration, not usable work. Actionable: re-run and keep verification in
+	// the foreground.
 	ReasonBackgroundAborted = "background_aborted"
 	ReasonUnknown           = "unknown" // a failure that fits none of the above (e.g. the output could not be read)
 )
@@ -111,8 +112,9 @@ type Status struct {
 	//   - Taken from a terminal event agy did emit but did not mark SUCCESS: an
 	//     ERROR, an outcome this build does not recognize, or none at all. The
 	//     text is whatever the run had produced when it stopped.
-	//   - Taken from a clean exit whose stderr shows agy ended the run early:
-	//     its own --print-timeout expired mid-turn (markPrintTimeout) or it killed
+	//   - Taken from a clean exit, or from a job recovered from its payload after
+	//     its supervisor died, whose stderr shows agy ended the run early: its own
+	//     --print-timeout expired mid-turn (markPrintTimeout) or it killed
 	//     outstanding background tasks (markBackgroundAborted). Either overrides a
 	//     SUCCESS mark, because agy set it on a run that did not finish.
 	//
@@ -122,8 +124,7 @@ type Status struct {
 	// result is missing. Either kind of authoritative result stays complete even
 	// if the process then exits via cancel or timeout. The one exception after
 	// exit is a timeout (code 124) whose stderr shows agy's own print-timeout had
-	// already cut the turn short; a cancel or crash is not checked for that
-	// notice.
+	// already cut the turn short; a cancel is not checked for that notice.
 	Partial bool
 	// NumTurns and Usage are agy's own accounting, present only once a terminal
 	// result event has been recorded.
@@ -313,8 +314,8 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 // internal/supervisor), so in both cases agy's stderr is complete. done is the status
 // derived from the payload (or its absence); res and hasResult are that payload.
 func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res streamjson.Result, hasResult bool) Status {
-	// Two stderr notices can show that a clean exit agy vouched for did not
-	// finish its work. Both reclassify the same three shapes: a SUCCESS whose
+	// Two stderr notices can show that a run agy vouched for did not finish
+	// its work. Both reclassify the same three shapes: a SUCCESS whose
 	// state is still done here; a json-schema SUCCESS that never emitted
 	// structured_output, which applyResult has already failed as a generic
 	// agy_error; and a json-schema run that never wrote any terminal payload,
@@ -363,7 +364,8 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 	return done
 }
 
-// markBackgroundAborted reclassifies a clean-exit status that agy's stderr reveals
+// markBackgroundAborted reclassifies a status derived as though agy finished (a
+// clean exit, or a job recovered from its payload) that agy's stderr reveals
 // to be an idle-killed background run (issue #173): a status the caller derived as
 // "done", a json-schema SUCCESS that applyResult had already failed for carrying
 // no structured_output (issue #176), or a json-schema run that wrote no terminal
@@ -389,7 +391,8 @@ func markBackgroundAborted(st Status) Status {
 	return st
 }
 
-// markPrintTimeout reclassifies a clean-exit status whose stderr shows agy's own
+// markPrintTimeout reclassifies a status derived as though agy finished (a clean
+// exit, or a job recovered from its payload) whose stderr shows agy's own
 // --print-timeout expired with the turn still in progress. agy returns the
 // partial output it has and exits 0 in that case (per agy's changelog, since
 // 1.1.28), so the run did not finish even when the payload says SUCCESS. The
@@ -592,8 +595,8 @@ func argsSelectJSONSchema(args []string) bool {
 // It is where every path that HAS a payload to consider makes both decisions,
 // which is all of statusFromExitCode and applyResult. Two terminal paths decide
 // for themselves, and agy's stderr can still override the decision afterwards
-// (on a clean exit, a job recovered from its payload, or a timeout); these are the exceptions to look for before assuming a
-// change here reaches everything:
+// (on a clean exit, a job recovered from its payload, or a timeout); these are
+// the exceptions to look for before assuming a change here reaches everything:
 //
 //   - cleanExitWithoutPayload, whose text is always streamed and which carries
 //     the one deliberate exception to "streamed text is partial" (a job an older
@@ -855,8 +858,8 @@ func cleanTail(dir string) (string, error) {
 	return tail, nil
 }
 
-// stderrNotices is what a terminal job's captured stderr says about a run that
-// agy ended on its own terms. Both come from ONE read of the bounded stderr tail
+// stderrNotices is what a terminal job's captured stderr says about how agy
+// ended the run. Both come from ONE read of the bounded stderr tail
 // (the tail errorSummary reports). An unreadable stderr yields the zero value,
 // which leaves the derived state untouched rather than guessing a failure.
 type stderrNotices struct {
@@ -912,9 +915,10 @@ func matchesPrintTimeout(stderr string) bool {
 // schemaSuccessWithoutOutput reports a json-schema run agy marked SUCCESS that
 // carried no structured_output. It is the single source of truth for that shape,
 // used at both ends so they cannot drift: applyResult fails it as a generic
-// ReasonAgyError, and applyCleanExitNotices lets the stderr background-abort markers
-// reclassify that same failure to background_aborted (issue #176), whose real
-// cause is an idle background-abort (issue #173). It is deliberately narrow: an
+// ReasonAgyError, and applyCleanExitNotices lets agy's stderr notices reclassify
+// that same failure: the background-abort markers to background_aborted (issue
+// #176, whose real cause is an idle background-abort, issue #173), and the
+// print-timeout notice to timeout. It is deliberately narrow: an
 // indeterminate payload (empty status) and an unrecognized status both fail the
 // StatusSuccess test and keep their agy_error reason, so this cannot mask an
 // unrelated failure.
