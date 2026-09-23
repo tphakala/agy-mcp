@@ -93,9 +93,6 @@ func TestClassifyAgyError(t *testing.T) {
 	}
 }
 
-// TestErrorSummaryTruncatesOnUTF8Boundary: when the trailing stderr is larger
-// than errTailBytes and the cut falls mid-rune, the reported error is advanced
-// to a valid UTF-8 boundary rather than emitting a split multi-byte rune.
 func TestMatchesBackgroundAbortRequiresBothMarkers(t *testing.T) {
 	// The idle-wait line and the kill-at-exit line, as measured against agy 1.2.7.
 	const idleLine = "root agent idle; waiting up to 5s for 2 background task(s)"
@@ -157,38 +154,23 @@ func TestMatchesPrintTimeoutRequiresAllPhrasesOnOneLine(t *testing.T) {
 	}
 }
 
-func TestPrintTimeoutExpiredFalseOnUnreadableStderr(t *testing.T) {
+func TestReadStderrNoticesEmptyOnUnreadableStderr(t *testing.T) {
 	dir := t.TempDir()
 	// An err path that is a directory makes the read fail. This pins the contract
 	// that an unreadable stderr leaves the derived state alone rather than guessing
-	// a timeout. Like its background-abort sibling it does not pin the err guard
-	// itself: cleanTail returns "" on a read error, which matchesPrintTimeout
-	// already rejects.
+	// a timeout or a background abort. It does not pin the err guard itself:
+	// cleanTail returns "" on a read error, which both matchers already reject.
 	if err := os.Mkdir(jobstore.ErrPath(dir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if printTimeoutExpired(dir) {
-		t.Error("printTimeoutExpired = true on an unreadable stderr, want false")
+	if got := readStderrNotices(dir); got != (stderrNotices{}) {
+		t.Errorf("readStderrNotices = %+v on an unreadable stderr, want no notices", got)
 	}
 }
 
-func TestBackgroundTasksAbortedFalseOnUnreadableStderr(t *testing.T) {
-	dir := t.TempDir()
-	// Stage the err path as a directory so cleanTail's read fails. This pins the
-	// observable contract (issue #173): an unreadable stderr must leave the derived
-	// state untouched (false), never guess a failure. The err-guard it exercises is
-	// defensive rather than behaviour-bearing: cleanTail returns "" on a read error,
-	// which matchesBackgroundAbort already rejects, so removing the guard would not
-	// change this result. The test still documents the contract and covers the
-	// read-error branch.
-	if err := os.Mkdir(jobstore.ErrPath(dir), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if backgroundTasksAborted(dir) {
-		t.Error("backgroundTasksAborted = true on an unreadable stderr, want false")
-	}
-}
-
+// TestErrorSummaryTruncatesOnUTF8Boundary: when the trailing stderr is larger
+// than errTailBytes and the cut falls mid-rune, the reported error is advanced
+// to a valid UTF-8 boundary rather than emitting a split multi-byte rune.
 func TestErrorSummaryTruncatesOnUTF8Boundary(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	dir := createJob(t, m, "j")

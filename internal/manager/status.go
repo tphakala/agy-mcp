@@ -56,8 +56,9 @@ const (
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
 	ReasonInterrupted    = "interrupted"     // the job process vanished without writing a result
-	// ReasonBackgroundAborted: agy exited cleanly (typically with a SUCCESS
-	// payload, though a clean exit with no terminal payload also qualifies), but
+	// ReasonBackgroundAborted: agy exited cleanly (with a SUCCESS payload in the
+	// run MEASURED against agy 1.2.7, issue #173; a clean exit with no terminal
+	// payload also qualifies), but
 	// its stderr shows it went idle with outstanding background shell tasks and
 	// killed them at exit, so the "answer" is only progress narration, not usable
 	// work (issue #173). Actionable: re-run and keep verification in the foreground.
@@ -246,7 +247,6 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	// letting it grow forever as time.Since(StartedAt).
 	st.Elapsed = m.frozenElapsed(meta, st.Elapsed)
 	res, hasResult := readResultPayload(dir)
-	var printTimedOut bool
 	switch code {
 	case 0:
 		var done Status
@@ -285,7 +285,8 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// notices ever appear together, the caller gets that advice rather than the
 		// generic "continue this conversation" hint a timeout carries, since
 		// continuing would relaunch the killed background command.
-		if backgroundTasksAborted(dir) {
+		notices := readStderrNotices(dir)
+		if notices.backgroundAborted {
 			return markBackgroundAborted(done)
 		}
 		// The second notice: from agy 1.1.28, an expired --print-timeout makes
@@ -298,7 +299,7 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// ended with exit code 124), but nothing guarantees that order, and
 		// this covers the case where agy's timer wins, which would otherwise
 		// report a truncated answer as done.
-		if printTimeoutExpired(dir) {
+		if notices.printTimeout {
 			return markPrintTimeout(done)
 		}
 		return done
@@ -308,11 +309,6 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		st.State = StateFailed
 		st.Error = "job exceeded its timeout and was terminated"
 		st.FailureReason = ReasonTimeout
-		// In a near tie agy's own --print-timeout can fire first and write a
-		// SUCCESS payload for the unfinished turn before the hard kill lands.
-		// carryText would treat that response as authoritative, so the notice is
-		// read here and applied after carryText (below) to flag the text partial.
-		printTimedOut = printTimeoutExpired(dir)
 	case jobstore.ExitSpawnFail:
 		// 127 is written both when the supervisor could not exec agy and when agy
 		// itself exits 127, so name both causes rather than asserting one, and keep
@@ -338,8 +334,12 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	// have, so they all carry it rather than giving a timed-out run its partial
 	// answer and a crashed or 127'd one nothing.
 	st = carryText(dir, st, hasResult, res, argsSelectJSONSchema(meta.Args))
-	if printTimedOut {
-		st.Partial = st.Partial || st.Result != ""
+	// In a near tie on a timeout, agy's own --print-timeout can fire first and
+	// write a SUCCESS payload for the unfinished turn before the hard kill lands.
+	// carryText treats that response as authoritative, so the notice flags it
+	// partial. stderr is read only when the flag would change.
+	if code == jobstore.ExitTimeout && st.Result != "" && !st.Partial && readStderrNotices(dir).printTimeout {
+		st.Partial = true
 	}
 	// A cancelled or timed-out run still has a conversation worth continuing, so
 	// carry the id (and the accounting) from any payload that did get written.
@@ -841,29 +841,36 @@ func cleanTail(dir string) (string, error) {
 	return tail, nil
 }
 
-// backgroundTasksAborted reports whether a terminal job's captured stderr shows
-// agy aborting outstanding background shell tasks because its root agent went
-// idle (issue #173). It reads the same bounded stderr tail as errorSummary; an
-// unreadable stderr yields false, leaving the derived state untouched rather than
-// guessing a failure.
-func backgroundTasksAborted(dir string) bool {
-	tail, err := cleanTail(dir)
-	if err != nil {
-		return false
-	}
-	return matchesBackgroundAbort(tail)
+// stderrNotices is what a terminal job's captured stderr says about a run that
+// agy ended on its own terms. Both come from ONE read of the bounded stderr tail
+// (the tail errorSummary reports). An unreadable stderr yields the zero value,
+// which leaves the derived state untouched rather than guessing a failure.
+type stderrNotices struct {
+	backgroundAborted bool // agy killed outstanding background shell tasks at exit (issue #173)
+	printTimeout      bool // agy's own --print-timeout expired with the turn in progress
 }
 
-// printTimeoutExpired reports whether a terminal job's captured stderr carries
-// agy's notice that its own --print-timeout expired mid-turn. Like
-// backgroundTasksAborted it reads the bounded stderr tail, and an unreadable
-// stderr yields false so the derived state stays as it was.
-func printTimeoutExpired(dir string) bool {
+func readStderrNotices(dir string) stderrNotices {
 	tail, err := cleanTail(dir)
 	if err != nil {
-		return false
+		return stderrNotices{}
 	}
-	return matchesPrintTimeout(tail)
+	return stderrNotices{
+		backgroundAborted: matchesBackgroundAbort(tail),
+		printTimeout:      matchesPrintTimeout(tail),
+	}
+}
+
+// lineHasAll reports whether line contains every one of phrases, ignoring case.
+// The phrases must be given in lower case.
+func lineHasAll(line string, phrases ...string) bool {
+	l := strings.ToLower(line)
+	for _, p := range phrases {
+		if !strings.Contains(l, p) {
+			return false
+		}
+	}
+	return true
 }
 
 // matchesPrintTimeout tests stderr text for agy's print-timeout notice. All
@@ -881,10 +888,7 @@ func printTimeoutExpired(dir string) bool {
 // background-abort check in statusFromExitCode runs first on a clean exit.
 func matchesPrintTimeout(stderr string) bool {
 	for line := range strings.Lines(stderr) {
-		l := strings.ToLower(line)
-		if strings.Contains(l, "print timeout") &&
-			strings.Contains(l, "turn in progress") &&
-			strings.Contains(l, "partial output") {
+		if lineHasAll(line, "print timeout", "turn in progress", "partial output") {
 			return true
 		}
 	}
@@ -918,7 +922,7 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 // idle waiting on it, so demanding the idle-wait line as well as the kill line
 // rejects that case. That inference is not verified against agy, so even a false
 // positive is made safe by markBackgroundAborted, which preserves the run's text
-// (it relabels, never empties). Split out from backgroundTasksAborted so the
+// (it relabels, never empties). Split out from readStderrNotices so the
 // token matching is unit-testable without staging a job directory.
 //
 // Each marker's tokens must fall on a SINGLE line: matching them across the whole
@@ -942,13 +946,10 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 func matchesBackgroundAbort(stderr string) bool {
 	var idleWaiting, killedAtExit bool
 	for line := range strings.Lines(stderr) {
-		l := strings.ToLower(line)
-		if strings.Contains(l, "idle") && strings.Contains(l, "background task") {
+		if lineHasAll(line, "idle", "background task") {
 			idleWaiting = true
 		}
-		if strings.Contains(l, "terminating") &&
-			strings.Contains(l, "background task") &&
-			strings.Contains(l, "on exit") {
+		if lineHasAll(line, "terminating", "background task", "on exit") {
 			killedAtExit = true
 		}
 	}
