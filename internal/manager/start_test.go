@@ -80,25 +80,27 @@ func TestBuildAgyArgs(t *testing.T) {
 // TestBuildAgyArgsProjectRules pins the implicit --add-dir <cwd> that makes cwd
 // an agy workspace so the project's rule files load (#188): present by default,
 // placed before the caller's dirs, passed once when a caller dir already names
-// cwd under any spelling, and absent when opted out or when there is no cwd.
+// cwd under a trailing-separator, relative or symlinked spelling, and absent when opted out or when there is no cwd.
 func TestBuildAgyArgsProjectRules(t *testing.T) {
 	cwd, err := normalizeCwd(t.TempDir())
 	if err != nil {
 		t.Fatalf("normalizeCwd: %v", err)
 	}
+	other := filepath.Join(t.TempDir(), "other") // absolute on every OS, unlike "/a" on Windows
+	// A symlink needs a privilege on Windows that a developer shell may lack, so
+	// only the alias case depends on it and it skips rather than failing the table.
 	alias := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(cwd, alias); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
+	symlinkErr := os.Symlink(cwd, alias)
+	sep := string(filepath.Separator)
 	for _, tc := range []struct {
 		name string
 		req  StartRequest
 		want []string // the --add-dir values, in order
 	}{
 		{name: "default adds cwd", req: StartRequest{Cwd: cwd}, want: []string{cwd}},
-		{name: "cwd precedes caller dirs", req: StartRequest{Cwd: cwd, Dirs: []string{"/a"}}, want: []string{cwd, "/a"}},
-		{name: "cwd already in dirs", req: StartRequest{Cwd: cwd, Dirs: []string{"/a", cwd}}, want: []string{"/a", cwd}},
-		{name: "trailing slash spelling", req: StartRequest{Cwd: cwd, Dirs: []string{cwd + "/"}}, want: []string{cwd + "/"}},
+		{name: "cwd precedes caller dirs", req: StartRequest{Cwd: cwd, Dirs: []string{other}}, want: []string{cwd, other}},
+		{name: "cwd already in dirs", req: StartRequest{Cwd: cwd, Dirs: []string{other, cwd}}, want: []string{other, cwd}},
+		{name: "trailing separator spelling", req: StartRequest{Cwd: cwd, Dirs: []string{cwd + sep}}, want: []string{cwd + sep}},
 		{name: "relative spelling", req: StartRequest{Cwd: cwd, Dirs: []string{"."}}, want: []string{"."}},
 		{name: "relative non-match", req: StartRequest{Cwd: cwd, Dirs: []string{"sub"}}, want: []string{cwd, "sub"}},
 		{name: "empty entry names no dir", req: StartRequest{Cwd: cwd, Dirs: []string{""}}, want: []string{cwd, ""}},
@@ -108,6 +110,9 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 		{name: "no cwd", req: StartRequest{}, want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if slices.Contains(tc.req.Dirs, alias) && symlinkErr != nil {
+				t.Skipf("cannot create a symlink here: %v", symlinkErr)
+			}
 			tc.req.Prompt, tc.req.Timeout = "hi", time.Minute
 			args := buildAgyArgs(tc.req)
 			var got []string
