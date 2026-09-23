@@ -139,7 +139,10 @@ func TestMatchesPrintTimeoutRequiresAllPhrasesOnOneLine(t *testing.T) {
 		{"mixed case with a different duration", "[AGY] PRINT TIMEOUT AFTER 1H0M0S WITH TURN IN PROGRESS; RETURNING PARTIAL OUTPUT", true},
 		{"print timeout alone", "print timeout after 8s\n", false},
 		{"partial output alone", "returning partial output\n", false},
+		// Each row below lacks exactly one phrase, so each phrase is pinned alone.
+		{"without the print-timeout phrase", "[agy] with turn in progress; returning partial output\n", false},
 		{"without the turn-in-progress phrase", "handled the print timeout and saved partial output\n", false},
+		{"without the partial-output phrase", "[agy] print timeout after 8s with turn in progress\n", false},
 		// All three phrases present, but on separate unrelated lines: they must not
 		// combine. Matching the whole tail rather than per line would return true.
 		{"phrases split across lines", "the print timeout is 30m\none turn in progress\nwrote partial output to a file\n", false},
@@ -1086,6 +1089,41 @@ func TestStatusUnreadableOutputKeepsReasonDespitePrintTimeout(t *testing.T) {
 	st, _ := m.Status("j")
 	if st.FailureReason != ReasonUnknown || !strings.Contains(st.Error, "could not be read") {
 		t.Fatalf("status = %+v, want reason %q with the read error kept", st, ReasonUnknown)
+	}
+}
+
+// TestStatusUnreadableSchemaOutputKeepsReasonDespiteNotices: the json-schema
+// sibling. A schema run with no payload is eligible for stderr reclassification
+// only when cleanExitWithoutPayload failed it as agy_error; its read-failure
+// branch (unknown) must keep its reason whichever notice stderr carries.
+func TestStatusUnreadableSchemaOutputKeepsReasonDespiteNotices(t *testing.T) {
+	for name, stderr := range map[string]string{
+		"print-timeout notice":     printTimeoutNotice + "\n",
+		"background-abort markers": "root agent idle; waiting up to 1m0s for 1 background task(s)\nterminating 1 background task(s) on exit\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newManager(t, managerOpts{})
+			dir, err := m.store.Create(jobstore.Meta{
+				ID: "j", StartedAt: time.Now(), BootID: readBootID(),
+				Args: []string{outputFormatFlag, streamJSONFormat, jsonSchemaFlag, `{"type":"object"}`, "-p", "hi"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(dir, "out"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(jobstore.ErrPath(dir), []byte(stderr), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.store.WriteExitCode("j", 0); err != nil {
+				t.Fatal(err)
+			}
+			st, _ := m.Status("j")
+			if st.FailureReason != ReasonUnknown || !strings.Contains(st.Error, "could not be read") {
+				t.Fatalf("status = %+v, want reason %q with the read error kept", st, ReasonUnknown)
+			}
+		})
 	}
 }
 
