@@ -140,8 +140,9 @@ func TestMatchesPrintTimeoutRequiresAllPhrasesOnOneLine(t *testing.T) {
 		{"print timeout alone", "print timeout after 8s\n", false},
 		{"partial output alone", "returning partial output\n", false},
 		{"without the turn-in-progress phrase", "handled the print timeout and saved partial output\n", false},
-		// The two phrases on separate unrelated lines must not combine.
-		{"phrases split across lines", "the print timeout is 30m\nwrote partial output to a file\n", false},
+		// All three phrases present, but on separate unrelated lines: they must not
+		// combine. Matching the whole tail rather than per line would return true.
+		{"phrases split across lines", "the print timeout is 30m\none turn in progress\nwrote partial output to a file\n", false},
 		{"the background-abort markers are not a print timeout", "root agent idle; waiting up to 1m0s for 1 background task(s)\nterminating 1 background task(s) on exit\n", false},
 		{"empty stderr", "", false},
 	} {
@@ -373,7 +374,8 @@ type terminalCase struct {
 //     report nothing while a sibling reports text.
 //   - Partial is decided by where that text came from, not by the state. A
 //     response agy itself marked SUCCESS is complete even if the job was then
-//     killed; any other payload status is agy declining to vouch for it; text
+//     killed, unless agy's stderr shows it ended the run early (the print-timeout
+//     and background-abort rows); any other payload status is agy declining to vouch for it; text
 //     rebuilt from the stream is partial. The one exception is a job an older
 //     build wrote, whose plain-text out really is complete.
 //   - Whichever way a run ended, a payload that reached disk still supplies the
@@ -1040,10 +1042,6 @@ func TestTailFileShorterThanRequested(t *testing.T) {
 	}
 }
 
-// TestStatusDoneButOutputUnreadable: a job that exited 0 whose out file cannot
-// be read must report failed, not done with an empty result. Making out a
-// directory lets os.Open succeed while the read fails, exposing the old
-// readFile that collapsed every IO error into "".
 // TestStatusUnreadableOutputKeepsReasonDespitePrintTimeout: an unreadable out
 // file is already a failure with its own diagnostic, and the print-timeout
 // notice must not replace it with a timeout that hides the I/O error.
@@ -1064,6 +1062,10 @@ func TestStatusUnreadableOutputKeepsReasonDespitePrintTimeout(t *testing.T) {
 	}
 }
 
+// TestStatusDoneButOutputUnreadable: a job that exited 0 whose out file cannot
+// be read must report failed, not done with an empty result. Making out a
+// directory lets os.Open succeed while the read fails, exposing the old
+// readFile that collapsed every IO error into "".
 func TestStatusDoneButOutputUnreadable(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	dir := createJob(t, m, "j")

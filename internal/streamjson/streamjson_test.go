@@ -678,7 +678,7 @@ func BenchmarkNext(b *testing.B) {
 }
 
 // An in-band failure decodes with its message intact; this is how agy reports an
-// unresolvable model or its own print-timeout.
+// unresolvable model or, before agy 1.1.28, its own print-timeout.
 func TestErrorResult(t *testing.T) {
 	in := `{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"timeout waiting for response"}}`
 	r := NewReader(strings.NewReader(in))

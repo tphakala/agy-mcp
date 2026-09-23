@@ -119,8 +119,9 @@ type Status struct {
 	// authoritative. For a schema run, only SUCCESS structured_output is
 	// authoritative; response is diagnostic and partial when that structured
 	// result is missing. Either kind of authoritative result stays complete even
-	// if the process then exits via cancel or timeout, unless stderr shows agy's
-	// own print-timeout cut the turn short.
+	// if the process then exits via cancel or timeout. The one exception after
+	// exit is a timeout (code 124) whose stderr shows agy's own print-timeout had
+	// already cut the turn short; a cancel or crash does not read stderr.
 	Partial bool
 	// NumTurns and Usage are agy's own accounting, present only once a terminal
 	// result event has been recorded.
@@ -287,7 +288,8 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 			return markBackgroundAborted(done)
 		}
 		// The second notice: from agy 1.1.28, an expired --print-timeout makes agy
-		// return whatever it has and exit 0, often with a SUCCESS payload (before
+		// return whatever it has and exit 0 (with a SUCCESS payload in the run
+		// MEASURED against agy 1.2.9; before
 		// 1.1.28 agy reported the expiry as an in-band ERROR, which keeps its
 		// agy_error reason above). agy-mcp passes the job timeout as
 		// --print-timeout and the supervisor arms the same deadline right after
@@ -308,7 +310,7 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// In a near tie agy's own --print-timeout can fire first and write a
 		// SUCCESS payload for the unfinished turn before the hard kill lands.
 		// carryText would treat that response as authoritative, so the notice is
-		// checked after it (below) to flag the text partial.
+		// read here and applied after carryText (below) to flag the text partial.
 		printTimedOut = printTimeoutExpired(dir)
 	case jobstore.ExitSpawnFail:
 		// 127 is written both when the supervisor could not exec agy and when agy
@@ -589,7 +591,7 @@ func argsSelectJSONSchema(args []string) bool {
 //     when agy's stderr shows it ended the run early, whatever its payload says.
 //
 // There are exactly two sources of text, and which one supplied it is the whole
-// of the Partial decision:
+// of this function's Partial decision:
 //
 //   - agy's terminal payload. For a non-schema run, a SUCCESS response is
 //     authoritative. For a schema run, a SUCCESS structured_output is the
@@ -864,15 +866,15 @@ func printTimeoutExpired(dir string) bool {
 // three stable phrases must fall on one line, which biases toward precision as
 // matchesBackgroundAbort does: a missed notice only leaves the pre-existing
 // reporting in place, while a false match downgrades a finished answer. The
-// duration is not matched. MEASURED against agy 1.2.9, a run given --print-timeout 8s exited 0
-// with a SUCCESS payload carrying an empty response, and wrote this line to
-// stderr:
+// duration is not matched. MEASURED against agy 1.2.9, a run given
+// --print-timeout 8s exited 0 with a SUCCESS payload carrying an empty response,
+// and wrote this line to stderr:
 //
 //	[agy] print timeout after 8s with turn in progress; returning partial output
 //
-// The same probe showed that a run whose background-task wait reaches the
-// deadline prints only the background-abort markers, not this line, so the two
-// checks do not overlap.
+// A separate run, whose background-task wait reached the deadline, printed only
+// the background-abort markers and not this line. Should both ever appear, the
+// background-abort check in statusFromExitCode runs first.
 func matchesPrintTimeout(stderr string) bool {
 	for line := range strings.Lines(stderr) {
 		l := strings.ToLower(line)
@@ -930,10 +932,9 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 // so both marker lines fall in the bounded tail, and only the stable tokens are
 // matched, not the variable grace or count. Re-MEASURED against agy 1.2.9, where
 // the wait runs to the --print-timeout deadline (capped at 30 minutes per agy's
-// changelog): a background task that outlived
-// a 60s budget produced the same two lines (the first reading "waiting up to
-// 1m0s"), and one that finished in time left only the idle-wait line, which on
-// its own does not match.
+// changelog): a background task that outlived a 60s budget produced the same
+// two lines (the first reading "waiting up to 1m0s"), and one that finished in
+// time left only the idle-wait line, which on its own does not match.
 func matchesBackgroundAbort(stderr string) bool {
 	var idleWaiting, killedAtExit bool
 	for line := range strings.Lines(stderr) {
