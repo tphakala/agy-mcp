@@ -45,6 +45,11 @@ func normalizeCwd(cwd string) (string, error) {
 // symlinked alias still counts as a match.
 func dirsInclude(dirs []string, cwd string) bool {
 	for _, d := range dirs {
+		if d == "" {
+			// filepath.Join(cwd, "") is cwd itself, so an empty entry would count as
+			// a match and drop the implicit workspace while naming no directory.
+			continue
+		}
 		if !filepath.IsAbs(d) {
 			d = filepath.Join(cwd, d)
 		}

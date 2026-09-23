@@ -13,9 +13,9 @@ import (
 
 // TestBuildAgyArgs pins the agy command line: the fixed flags (ending in
 // --disable-slash-commands so prompts stay literal), then --model, --effort,
-// --mode, --agent, --sandbox, repeated --add-dir, --conversation, --json-schema,
-// and finally -p with the prompt, with the optional flags omitted when their
-// fields are empty (and --sandbox omitted when false).
+// --mode, --agent, --sandbox, repeated --add-dir (cwd first), --conversation,
+// --json-schema, and finally -p with the prompt, with the optional flags omitted
+// when their fields are empty (and --sandbox omitted when false).
 func TestBuildAgyArgs(t *testing.T) {
 	got := buildAgyArgs(StartRequest{
 		Prompt:         "review this",
@@ -25,6 +25,7 @@ func TestBuildAgyArgs(t *testing.T) {
 		Agent:          "reviewer",
 		Sandbox:        true,
 		Dirs:           []string{"/a", "/b"},
+		Cwd:            "/work",
 		ConversationID: "cid-123",
 		JSONSchema:     `{"type":"object"}`,
 		Timeout:        20 * time.Minute,
@@ -39,7 +40,7 @@ func TestBuildAgyArgs(t *testing.T) {
 		"--mode", "plan",
 		"--agent", "reviewer",
 		"--sandbox",
-		"--add-dir", "/a", "--add-dir", "/b",
+		"--add-dir", "/work", "--add-dir", "/a", "--add-dir", "/b",
 		"--conversation", "cid-123",
 		"--json-schema", `{"type":"object"}`,
 		"-p", "review this",
@@ -99,6 +100,8 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 		{name: "cwd already in dirs", req: StartRequest{Cwd: cwd, Dirs: []string{"/a", cwd}}, want: []string{"/a", cwd}},
 		{name: "trailing slash spelling", req: StartRequest{Cwd: cwd, Dirs: []string{cwd + "/"}}, want: []string{cwd + "/"}},
 		{name: "relative spelling", req: StartRequest{Cwd: cwd, Dirs: []string{"."}}, want: []string{"."}},
+		{name: "relative non-match", req: StartRequest{Cwd: cwd, Dirs: []string{"sub"}}, want: []string{cwd, "sub"}},
+		{name: "empty entry names no dir", req: StartRequest{Cwd: cwd, Dirs: []string{""}}, want: []string{cwd, ""}},
 		{name: "symlinked alias", req: StartRequest{Cwd: cwd, Dirs: []string{alias}}, want: []string{alias}},
 		{name: "opted out", req: StartRequest{Cwd: cwd, SkipProjectRules: true}, want: nil},
 		{name: "opted out keeps caller dirs", req: StartRequest{Cwd: cwd, SkipProjectRules: true, Dirs: []string{cwd}}, want: []string{cwd}},

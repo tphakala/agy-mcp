@@ -3,10 +3,13 @@
 package mcptools
 
 import (
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 	"github.com/tphakala/agy-mcp/v2/internal/manager"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
@@ -236,4 +239,43 @@ func TestAgyRunAndStatusOverMCP(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("job did not reach done")
+}
+
+// TestProjectRulesOverMCP sends project_rules through the real tool schema and
+// decoder and checks the persisted agy args: omitted keeps the implicit
+// --add-dir <cwd> that loads project rules, and false drops it. The unit tests
+// build runInput and StartRequest directly, so only this one pins the wire name.
+func TestProjectRulesOverMCP(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    map[string]any
+		wantDir bool
+	}{
+		{name: "omitted", args: map[string]any{}, wantDir: true},
+		{name: "false", args: map[string]any{"project_rules": false}, wantDir: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+			cs := connect(t, mgr, nil)
+			cwd, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.args["prompt"], tc.args["cwd"] = "x", cwd
+			res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: toolAgyRunSync, Arguments: tc.args})
+			if err != nil || res.IsError {
+				t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
+			}
+			jobID, _ := structMap(t, res.StructuredContent)["job_id"].(string)
+			meta, err := jobstore.New(stateDir).Load(jobID)
+			if err != nil {
+				t.Fatalf("load job %q: %v", jobID, err)
+			}
+			i := slices.Index(meta.Args, "--add-dir")
+			got := i >= 0 && i+1 < len(meta.Args) && meta.Args[i+1] == cwd
+			if got != tc.wantDir {
+				t.Fatalf("--add-dir %s present = %v, want %v (args %q)", cwd, got, tc.wantDir, meta.Args)
+			}
+		})
+	}
 }
