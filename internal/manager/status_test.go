@@ -374,11 +374,12 @@ type terminalCase struct {
 //     report nothing while a sibling reports text.
 //   - Partial is decided by where that text came from, not by the state. A
 //     response agy itself marked SUCCESS is complete even if the job was then
-//     killed, unless stderr shows agy ended the run early (the clean-exit
-//     print-timeout and background-abort rows, and the timed-out run whose
-//     stderr has the print-timeout notice); any other payload status is agy declining to vouch for it; text
-//     rebuilt from the stream is partial. The one exception is a job an older
-//     build wrote, whose plain-text out really is complete.
+//     killed, unless the timed-out run's stderr has the print-timeout notice; a
+//     clean exit whose stderr shows agy ended the run early (the print-timeout
+//     and background-abort rows) is partial too. Any other payload status is agy
+//     declining to vouch for it; text rebuilt from the stream is partial. The
+//     one exception is a job an older build wrote, whose plain-text out really
+//     is complete.
 //   - Whichever way a run ended, a payload that reached disk still supplies the
 //     conversation to continue and agy's own accounting.
 func terminalCases() []terminalCase {

@@ -121,7 +121,8 @@ type Status struct {
 	// result is missing. Either kind of authoritative result stays complete even
 	// if the process then exits via cancel or timeout. The one exception after
 	// exit is a timeout (code 124) whose stderr shows agy's own print-timeout had
-	// already cut the turn short; a cancel or crash does not read stderr.
+	// already cut the turn short; a cancel or crash is not checked for that
+	// notice.
 	Partial bool
 	// NumTurns and Usage are agy's own accounting, present only once a terminal
 	// result event has been recorded.
@@ -287,16 +288,16 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		if backgroundTasksAborted(dir) {
 			return markBackgroundAborted(done)
 		}
-		// The second notice: from agy 1.1.28, an expired --print-timeout makes agy
-		// return whatever it has and exit 0 (with a SUCCESS payload in the run
-		// MEASURED against agy 1.2.9; before
-		// 1.1.28 agy reported the expiry as an in-band ERROR, which keeps its
-		// agy_error reason above). agy-mcp passes the job timeout as
-		// --print-timeout and the supervisor arms the same deadline right after
-		// starting agy, so the two timers race. The hard kill won when this was
-		// MEASURED against agy 1.2.9 (a 15s job ended with exit code 124), but
-		// nothing guarantees that order, and this covers the case where agy's timer
-		// wins, which would otherwise report a truncated answer as done.
+		// The second notice: from agy 1.1.28, an expired --print-timeout makes
+		// agy return whatever it has and exit 0 (with a SUCCESS payload in the
+		// run MEASURED against agy 1.2.9; before 1.1.28 agy reported the expiry
+		// as an in-band ERROR, which keeps its agy_error reason above). agy-mcp
+		// passes the job timeout as --print-timeout and the supervisor arms the
+		// same deadline right after starting agy, so the two timers race. The
+		// hard kill won when this was MEASURED against agy 1.2.9 (a 15s job
+		// ended with exit code 124), but nothing guarantees that order, and
+		// this covers the case where agy's timer wins, which would otherwise
+		// report a truncated answer as done.
 		if printTimeoutExpired(dir) {
 			return markPrintTimeout(done)
 		}
@@ -698,10 +699,11 @@ func (m *Manager) State(id string) (string, error) {
 	if code, ok := m.store.ExitCode(id); ok && code != 0 {
 		return stateForCode(code), nil
 	}
-	// Clean exit, or no sentinel yet: defer to Status, which reads the out file to
-	// tell a clean/recovered result (done) from an unreadable or absent one
-	// (failed) and handles the running and post-exit race exactly as the poller
-	// sees it. Deferring here keeps State and Status from ever diverging.
+	// Clean exit, or no sentinel yet: defer to Status, which reads the out file
+	// and stderr to tell a clean/recovered result (done) from an unreadable or
+	// absent one, or one agy ended early (failed), and handles the running and
+	// post-exit race exactly as the poller sees it. Deferring here keeps State
+	// and Status from ever diverging.
 	st, err := m.Status(id)
 	if err != nil {
 		return "", err
@@ -876,7 +878,7 @@ func printTimeoutExpired(dir string) bool {
 //
 // A separate run, whose background-task wait reached the deadline, printed only
 // the background-abort markers and not this line. Should both ever appear, the
-// background-abort check in statusFromExitCode runs first.
+// background-abort check in statusFromExitCode runs first on a clean exit.
 func matchesPrintTimeout(stderr string) bool {
 	for line := range strings.Lines(stderr) {
 		l := strings.ToLower(line)
