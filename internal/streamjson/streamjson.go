@@ -20,7 +20,8 @@ const (
 
 // Terminal result statuses. agy reports ERROR in-band (with a populated Error)
 // for failures it survives long enough to describe, such as an unresolvable
-// model or its own print-timeout expiring.
+// model or, before agy 1.1.28, its own print-timeout expiring. From 1.1.28 an
+// expired print-timeout returns the partial output instead, typically as SUCCESS.
 const (
 	StatusSuccess = "SUCCESS"
 	StatusError   = "ERROR"

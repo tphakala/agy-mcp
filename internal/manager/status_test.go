@@ -15,6 +15,10 @@ import (
 	"github.com/tphakala/agy-mcp/v2/internal/streamjson"
 )
 
+// printTimeoutNotice is agy's stderr line when its own --print-timeout expires
+// mid-turn, as MEASURED against agy 1.2.9.
+const printTimeoutNotice = "[agy] print timeout after 8s with turn in progress; returning partial output"
+
 // TestStatusInterruptedNoOutput: a job whose process is gone with no sentinel
 // and no out file is a genuine interruption, reported failed (not done). This
 // is the branch TestStatusInterruptedAfterReboot does not cover (that one has
@@ -123,9 +127,8 @@ func TestMatchesBackgroundAbortRequiresBothMarkers(t *testing.T) {
 	}
 }
 
-func TestMatchesPrintTimeoutRequiresBothPhrasesOnOneLine(t *testing.T) {
-	// The notice as MEASURED against agy 1.2.9.
-	const notice = "[agy] print timeout after 8s with turn in progress; returning partial output"
+func TestMatchesPrintTimeoutRequiresAllPhrasesOnOneLine(t *testing.T) {
+	const notice = printTimeoutNotice
 	for _, tc := range []struct {
 		name   string
 		stderr string
@@ -136,6 +139,7 @@ func TestMatchesPrintTimeoutRequiresBothPhrasesOnOneLine(t *testing.T) {
 		{"mixed case with a different duration", "[AGY] PRINT TIMEOUT AFTER 1H0M0S WITH TURN IN PROGRESS; RETURNING PARTIAL OUTPUT", true},
 		{"print timeout alone", "print timeout after 8s\n", false},
 		{"partial output alone", "returning partial output\n", false},
+		{"without the turn-in-progress phrase", "handled the print timeout and saved partial output\n", false},
 		// The two phrases on separate unrelated lines must not combine.
 		{"phrases split across lines", "the print timeout is 30m\nwrote partial output to a file\n", false},
 		{"the background-abort markers are not a print timeout", "root agent idle; waiting up to 1m0s for 1 background task(s)\nterminating 1 background task(s) on exit\n", false},
@@ -487,7 +491,7 @@ func terminalCases() []terminalCase {
 			// finished. Reported as done it would be a complete empty answer.
 			name: "a print-timeout expiry with an empty SUCCESS is a timeout, not done",
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, ConversationID: "cid-pt"},
-			errFile:   "[agy] print timeout after 8s with turn in progress; returning partial output\n",
+			errFile:   printTimeoutNotice + "\n",
 			wantState: StateFailed, wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
 			wantConvID: "cid-pt",
 		}, {
@@ -495,7 +499,7 @@ func terminalCases() []terminalCase {
 			// partial because agy marked SUCCESS on a turn it had not finished.
 			name: "a print-timeout expiry keeps the partial response it returned",
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "the first half"},
-			errFile:   "[agy] print timeout after 8s with turn in progress; returning partial output\n",
+			errFile:   printTimeoutNotice + "\n",
 			wantState: StateFailed, wantResult: "the first half", wantPartial: true,
 			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
 		}, {
@@ -503,9 +507,46 @@ func terminalCases() []terminalCase {
 			// other no-payload path, and it is partial.
 			name: "a print-timeout expiry with no payload carries the stream",
 			code: 0, out: "streamed so far", args: streamArgs,
-			errFile:   "[agy] print timeout after 8s with turn in progress; returning partial output\n",
+			errFile:   printTimeoutNotice + "\n",
 			wantState: StateFailed, wantResult: "streamed so far", wantPartial: true,
 			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+		}, {
+			// The notice must not overwrite a more specific failure agy already
+			// reported. A quota wall keeps its reason and its reset window, so the
+			// caller is still told to wait rather than to continue at once.
+			name: "a quota wall with the print-timeout notice stays quota_exhausted",
+			code: 0, res: &streamjson.Result{
+				Status: streamjson.StatusError,
+				Error:  "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 21m50s.",
+			},
+			errFile:   printTimeoutNotice + "\n",
+			wantState: StateFailed, wantErrSub: "Resets in 21m50s", wantReason: ReasonQuotaExhausted,
+		}, {
+			// The same for an ordinary ERROR payload: agy's own message survives.
+			name: "an error payload with the print-timeout notice keeps its message",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusError, Error: "model unavailable"},
+			errFile:   printTimeoutNotice + "\n",
+			wantState: StateFailed, wantErrSub: "model unavailable", wantReason: ReasonAgyError,
+		}, {
+			// Should both notices ever appear together, background_aborted wins: its
+			// advice (keep verification in the foreground) is the safe one, where a
+			// timeout's "continue this conversation" would relaunch the killed task.
+			name: "the background-abort markers take precedence over the print-timeout notice",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "waiting on the build"},
+			errFile: "root agent idle; waiting up to 1m0s for 1 background task(s)\n" +
+				"terminating 1 background task(s) on exit\n" + printTimeoutNotice + "\n",
+			wantState: StateFailed, wantResult: "waiting on the build", wantPartial: true,
+			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
+		}, {
+			// The near tie: agy's timer fired first and wrote a SUCCESS payload for the
+			// unfinished turn, then the hard kill landed and the sentinel reads 124.
+			// The response is kept, but it is not the complete answer agy's SUCCESS
+			// would otherwise vouch for.
+			name: "a hard-killed run whose stderr has the print-timeout notice is partial",
+			code: jobstore.ExitTimeout, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "the first half"},
+			errFile:   printTimeoutNotice + "\n",
+			wantState: StateFailed, wantResult: "the first half", wantPartial: true,
+			wantErrSub: "timeout", wantReason: ReasonTimeout,
 		}, {
 			// The negative control: a line that mentions the print timeout but not
 			// the partial-output return is not agy's expiry notice.
@@ -608,7 +649,7 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantErrSub: "rate limit", wantReason: ReasonQuotaExhausted,
 		}, {
 			// A payload's own message outranks the stderr tail: agy reports failures
-			// it survives in band, where the exit code is only ever 1.
+			// it survives in band, where the exit code says less.
 			name: "a crash with an error payload uses its message and text",
 			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Response: "partial text", Error: "model unavailable"},
 			out: "streamed", errFile: "some stderr",
@@ -833,7 +874,7 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 			name: "print-timeout schema run without structured output reclassifies to timeout",
 			code: 0, args: schemaArgs,
 			res:       &streamjson.Result{Status: streamjson.StatusSuccess},
-			errFile:   "[agy] print timeout after 8s with turn in progress; returning partial output\n",
+			errFile:   printTimeoutNotice + "\n",
 			wantState: StateFailed, wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
 		}, {
 			// Issue #176: the same idle-kill on a schema run that never emitted
@@ -1003,6 +1044,26 @@ func TestTailFileShorterThanRequested(t *testing.T) {
 // be read must report failed, not done with an empty result. Making out a
 // directory lets os.Open succeed while the read fails, exposing the old
 // readFile that collapsed every IO error into "".
+// TestStatusUnreadableOutputKeepsReasonDespitePrintTimeout: an unreadable out
+// file is already a failure with its own diagnostic, and the print-timeout
+// notice must not replace it with a timeout that hides the I/O error.
+func TestStatusUnreadableOutputKeepsReasonDespitePrintTimeout(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir := createJob(t, m, "j")
+	if err := os.Mkdir(filepath.Join(dir, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jobstore.ErrPath(dir), []byte(printTimeoutNotice+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.store.WriteExitCode("j", 0)
+
+	st, _ := m.Status("j")
+	if st.FailureReason != ReasonUnknown || !strings.Contains(st.Error, "could not be read") {
+		t.Fatalf("status = %+v, want reason %q with the read error kept", st, ReasonUnknown)
+	}
+}
+
 func TestStatusDoneButOutputUnreadable(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	dir := createJob(t, m, "j")
