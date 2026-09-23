@@ -1099,11 +1099,9 @@ func buildAgyArgs(req StartRequest) []string {
 	// Make cwd an agy workspace so the project's rule files (AGENTS.md and the
 	// like) load. MEASURED on agy 1.2.9: in print mode running inside a directory
 	// does not activate it as a workspace, so no rules load; --add-dir does, and
-	// from a subdirectory it still finds an AGENTS.md at the repo root. It grants
-	// no new file access, since the agent can already read and write under cwd,
-	// but a workspace also activates the repo's other agy customizations (its
-	// .agents/hooks.json hooks show as enabled), hence the opt-out. Skipped when a
-	// caller dir already names cwd, so it is passed once.
+	// from a subdirectory it still finds an AGENTS.md at the repo root. agy also
+	// lists a workspace's .agents/hooks.json hooks as enabled, hence the opt-out.
+	// Not added when a caller dir already names cwd.
 	if !req.SkipProjectRules && req.Cwd != "" && !dirsInclude(req.Dirs, req.Cwd) {
 		args = append(args, addDirFlag, req.Cwd)
 	}
