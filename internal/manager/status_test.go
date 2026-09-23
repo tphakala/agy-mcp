@@ -123,6 +123,47 @@ func TestMatchesBackgroundAbortRequiresBothMarkers(t *testing.T) {
 	}
 }
 
+func TestMatchesPrintTimeoutRequiresBothPhrasesOnOneLine(t *testing.T) {
+	// The notice as MEASURED against agy 1.2.9.
+	const notice = "[agy] print timeout after 8s with turn in progress; returning partial output"
+	for _, tc := range []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{"the real notice", notice + "\n", true},
+		{"the notice among other lines", "some agy chatter\n" + notice + "\nShell cwd was reset\n", true},
+		{"mixed case with a different duration", "[AGY] PRINT TIMEOUT AFTER 1H0M0S WITH TURN IN PROGRESS; RETURNING PARTIAL OUTPUT", true},
+		{"print timeout alone", "print timeout after 8s\n", false},
+		{"partial output alone", "returning partial output\n", false},
+		// The two phrases on separate unrelated lines must not combine.
+		{"phrases split across lines", "the print timeout is 30m\nwrote partial output to a file\n", false},
+		{"the background-abort markers are not a print timeout", "root agent idle; waiting up to 1m0s for 1 background task(s)\nterminating 1 background task(s) on exit\n", false},
+		{"empty stderr", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchesPrintTimeout(tc.stderr); got != tc.want {
+				t.Errorf("matchesPrintTimeout(%q) = %v, want %v", tc.stderr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrintTimeoutExpiredFalseOnUnreadableStderr(t *testing.T) {
+	dir := t.TempDir()
+	// An err path that is a directory makes the read fail. This pins the contract
+	// that an unreadable stderr leaves the derived state alone rather than guessing
+	// a timeout. Like its background-abort sibling it does not pin the err guard
+	// itself: cleanTail returns "" on a read error, which matchesPrintTimeout
+	// already rejects.
+	if err := os.Mkdir(jobstore.ErrPath(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if printTimeoutExpired(dir) {
+		t.Error("printTimeoutExpired = true on an unreadable stderr, want false")
+	}
+}
+
 func TestBackgroundTasksAbortedFalseOnUnreadableStderr(t *testing.T) {
 	dir := t.TempDir()
 	// Stage the err path as a directory so cleanTail's read fails. This pins the
@@ -438,6 +479,41 @@ func terminalCases() []terminalCase {
 			errFile:   "terminating 1 background task(s) on exit\n",
 			wantState: StateDone, wantResult: "the real answer",
 		},
+		// --- clean exit, but agy's own --print-timeout cut the turn short -------
+		{
+			// agy returns what it has and exits 0 when its --print-timeout expires
+			// mid-turn, with a SUCCESS payload. This is the shape MEASURED against agy
+			// 1.2.9: empty response, only the stderr notice to say the turn never
+			// finished. Reported as done it would be a complete empty answer.
+			name: "a print-timeout expiry with an empty SUCCESS is a timeout, not done",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, ConversationID: "cid-pt"},
+			errFile:   "[agy] print timeout after 8s with turn in progress; returning partial output\n",
+			wantState: StateFailed, wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+			wantConvID: "cid-pt",
+		}, {
+			// The same expiry after some text streamed: the text is kept, but flagged
+			// partial because agy marked SUCCESS on a turn it had not finished.
+			name: "a print-timeout expiry keeps the partial response it returned",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "the first half"},
+			errFile:   "[agy] print timeout after 8s with turn in progress; returning partial output\n",
+			wantState: StateFailed, wantResult: "the first half", wantPartial: true,
+			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+		}, {
+			// With no terminal payload the streamed text is the answer, as on every
+			// other no-payload path, and it is partial.
+			name: "a print-timeout expiry with no payload carries the stream",
+			code: 0, out: "streamed so far", args: streamArgs,
+			errFile:   "[agy] print timeout after 8s with turn in progress; returning partial output\n",
+			wantState: StateFailed, wantResult: "streamed so far", wantPartial: true,
+			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+		}, {
+			// The negative control: a line that mentions the print timeout but not
+			// the partial-output return is not agy's expiry notice.
+			name: "a print timeout mention without the partial-output notice stays done",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "the real answer"},
+			errFile:   "note: print timeout is set to 30m\n",
+			wantState: StateDone, wantResult: "the real answer",
+		},
 		// --- clean exit, no terminal payload ------------------------------------
 		{
 			name: "a stream-json run with no payload was cut short",
@@ -750,6 +826,15 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 				"terminating 1 background task(s) on exit\n",
 			wantState: StateFailed, wantResult: `{"business":"ok"}`, wantPartial: true,
 			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
+		}, {
+			// A json-schema run cut short by agy's own --print-timeout never emits
+			// structured_output, which applyResult fails as a generic agy_error. The
+			// stderr notice names the real cause, so it reclassifies to timeout.
+			name: "print-timeout schema run without structured output reclassifies to timeout",
+			code: 0, args: schemaArgs,
+			res:       &streamjson.Result{Status: streamjson.StatusSuccess},
+			errFile:   "[agy] print timeout after 8s with turn in progress; returning partial output\n",
+			wantState: StateFailed, wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
 		}, {
 			// Issue #176: the same idle-kill on a schema run that never emitted
 			// structured_output. applyResult fails it as a generic agy_error, but the

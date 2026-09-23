@@ -80,6 +80,25 @@ import (
 // single run still reads back intact and nothing agy-mcp does can flush agy's
 // store on its behalf.
 //
+// Three later releases change how a headless run ends. agy-mcp handles each on
+// every supported version, so none of them raises the floor either:
+//   - 1.1.28 made an expired --print-timeout return the partial output and exit
+//     0 instead of failing. agy-mcp passes the job timeout as --print-timeout and
+//     its supervisor arms the same deadline, so the hard kill usually wins; when
+//     agy's timer wins, status derivation reads agy's stderr notice and reports
+//     the run as a timeout (markPrintTimeout in internal/manager).
+//   - 1.2.9 made headless runs wait for outstanding background tasks until the
+//     --print-timeout deadline instead of cancelling them about 5s after the
+//     agent goes idle. A task that outlives the deadline is still killed; the
+//     run is reported as background_aborted, or as a timeout when agy-mcp's own
+//     hard kill fires first.
+//   - 1.2.9 also fixed a conversation-database corruption risk in which checking
+//     the file for write access could drop file locks held by concurrent CLI
+//     processes. agy-mcp runs concurrent agy processes, so users running
+//     parallel jobs benefit from 1.2.9; whether its concurrent jobs actually
+//     share a database file is not measured, and the floor stays put on the same
+//     reasoning as 1.1.26 and 1.1.27 above.
+//
 // All facts are from agy's own changelog (run `agy changelog`); the 1.1.15 line
 // reads "Fixed streamed text corrupting non-ASCII characters into replacement
 // characters, in both the interactive display and --output-format stream-json
