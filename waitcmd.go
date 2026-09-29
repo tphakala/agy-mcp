@@ -93,9 +93,10 @@ func waitForJobWith(mgr *manager.Manager, id string, timeout time.Duration) (man
 // after the wait returns without error, while the signal handler is still
 // installed. Work that follows the wait and must stay interruptible belongs
 // there: once this function returns the handler is gone and a SIGINT or SIGTERM
-// takes the default action. settle's error is returned as the wait's error, so a
-// settle that returns ctx.Err() reads as an interrupted wait.
-func waitForJobSettling(mgr *manager.Manager, id string, timeout time.Duration, settle func(ctx context.Context, terminal bool) error) (manager.Status, bool, error) {
+// takes the default action. settle receives the wait's final status and whether
+// the job was terminal. Its error is returned as the wait's error, so a settle
+// that returns ctx.Err() reads as an interrupted wait.
+func waitForJobSettling(mgr *manager.Manager, id string, timeout time.Duration, settle func(ctx context.Context, st manager.Status, terminal bool) error) (manager.Status, bool, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	// The handler is installed by the time NotifyContext returns, so from here a
@@ -106,7 +107,7 @@ func waitForJobSettling(mgr *manager.Manager, id string, timeout time.Duration, 
 	if err != nil || settle == nil {
 		return st, terminal, err
 	}
-	return st, terminal, settle(ctx, terminal)
+	return st, terminal, settle(ctx, st, terminal)
 }
 
 // waitReadyFileEnv names an optional file the wait subcommands create once the

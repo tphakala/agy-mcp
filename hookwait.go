@@ -26,7 +26,9 @@ import (
 // A job that finishes is not woken for when a tool already returned its outcome
 // to the session (agy_wait or agy_status recorded the collected marker, issue
 // #194); that case exits 0. The marker does not prove the client received the
-// response. A finished job with no marker still wakes. A SIGINT or SIGTERM
+// response. The same holds when agy_cancel recorded the dismissed marker and the
+// job ended cancelled; a dismissed job that ended any other way still wakes. A
+// finished job with no marker still wakes. A SIGINT or SIGTERM
 // during the marker grace takes the interrupted-wake path (exit 2) like one
 // during the wait itself.
 //
@@ -83,13 +85,13 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 	// The marker grace runs inside the wait's signal scope, so a SIGINT or SIGTERM
 	// during it takes the interrupted-wake path below instead of killing hook-wait
 	// and dropping the owed wake.
-	collected := false
-	st, terminal, err := waitForJobSettling(mgr, jobID, *timeout, func(ctx context.Context, terminal bool) error {
+	suppressed := false
+	st, terminal, err := waitForJobSettling(mgr, jobID, *timeout, func(ctx context.Context, done manager.Status, terminal bool) error {
 		if !terminal {
 			return nil
 		}
 		var err error
-		collected, err = waitCollected(ctx, mgr, jobID, collectedGrace)
+		suppressed, err = waitSuppressed(ctx, mgr, jobID, done.State, collectedGrace)
 		return err
 	})
 	if err != nil {
@@ -111,8 +113,9 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 		// agy_status), in which case this wake carries nothing new. Those tools
 		// record the marker as they return it, which can land just after this
 		// observer sees the terminal state, so allow a short grace. Only a marker
-		// suppresses the wake; a finished job without one still wakes.
-		if collected {
+		// suppresses the wake (the dismissed marker only for a cancelled job); a
+		// finished job without one still wakes.
+		if suppressed {
 			return 0
 		}
 		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s finished%s: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
@@ -132,17 +135,20 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 // after it sees a terminal job. It is a variable so tests can shorten it.
 var collectedGrace = time.Second
 
-// collectedPollInterval is how often waitCollected re-checks for the marker.
+// collectedPollInterval is how often waitSuppressed re-checks for the markers.
 const collectedPollInterval = 25 * time.Millisecond
 
-// waitCollected reports whether the job's collected marker appears within
-// grace. It checks once immediately, so an already-collected job returns without
-// sleeping. It returns ctx.Err() as soon as ctx is done, so the grace never
+// waitSuppressed reports whether a marker that makes the finish wake redundant
+// appears within grace: the collected marker, or the dismissed marker when the
+// job ended cancelled. A dismissed marker on a job that ended any other way does
+// not count, because that outcome is not the one the caller asked for and still
+// needs reporting. It checks once immediately, so an already-marked job returns
+// without sleeping. It returns ctx.Err() as soon as ctx is done, so the grace never
 // delays a wake for an interrupted wait.
-func waitCollected(ctx context.Context, mgr *manager.Manager, jobID string, grace time.Duration) (bool, error) {
+func waitSuppressed(ctx context.Context, mgr *manager.Manager, jobID, state string, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		if mgr.Collected(jobID) {
+		if mgr.Collected(jobID) || (state == manager.StateCancelled && mgr.Dismissed(jobID)) {
 			return true, nil
 		}
 		if !time.Now().Before(deadline) {

@@ -445,7 +445,11 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		}
 		// The job is deliberately not marked collected here: this response carries
 		// no outcome, and the job can still finish on its own before the cancel
-		// lands, so the finish wake stays owed.
+		// lands. Record the request instead; hook-wait suppresses the finish wake
+		// on it only when the job ends cancelled, so a job that finishes done or
+		// failed on its own still wakes. Best effort: a failed write leaves the
+		// wake owed.
+		_ = mgr.MarkDismissed(in.JobID)
 		return nil, cancelOutput{State: state}, nil
 	})
 

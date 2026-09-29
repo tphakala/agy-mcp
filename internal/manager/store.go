@@ -26,5 +26,7 @@ type jobStore interface {
 	CompletedAt(id string) (time.Time, bool)
 	MarkCollected(id string) error
 	Collected(id string) bool
+	MarkDismissed(id string) error
+	Dismissed(id string) bool
 	List() ([]string, error)
 }

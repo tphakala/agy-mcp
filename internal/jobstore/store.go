@@ -70,6 +70,11 @@ const (
 	// (issue #194). It does not prove the client received the response. Existence
 	// is the whole signal.
 	CollectedFile = "collected"
+	// DismissedFile is the marker agy_cancel writes after a successful cancel
+	// call, whatever state the job was in. It suppresses the finish wake only when the job then ends
+	// cancelled, so a job that finishes on its own after the request still wakes
+	// (issue #194). Existence is the whole signal.
+	DismissedFile = "dismissed"
 )
 
 // MetaPath, OutPath, ErrPath, ExitCodePath, ProgressPath and ResultPath join a
@@ -225,6 +230,22 @@ func WriteCollectedDir(dir string) error {
 // wake, and a redundant wake is better than a lost one.
 func CollectedDir(dir string) bool {
 	_, err := os.Stat(CollectedPath(dir))
+	return err == nil
+}
+
+// DismissedPath joins a job directory with the dismissed marker's name.
+func DismissedPath(dir string) string { return filepath.Join(dir, DismissedFile) }
+
+// WriteDismissedDir creates a job's dismissed marker. It is idempotent and
+// carries no content.
+func WriteDismissedDir(dir string) error {
+	return writeFileAtomic(dir, DismissedFile, nil)
+}
+
+// DismissedDir reports whether the dismissed marker exists in dir. Any stat
+// error other than absence counts as not dismissed, which leaves the wake owed.
+func DismissedDir(dir string) bool {
+	_, err := os.Stat(DismissedPath(dir))
 	return err == nil
 }
 
@@ -557,6 +578,22 @@ func (s *Store) Collected(id string) bool {
 		return false
 	}
 	return CollectedDir(s.jobDir(id))
+}
+
+// MarkDismissed records that a client asked a job to stop.
+func (s *Store) MarkDismissed(id string) error {
+	if !validJobID(id) {
+		return ErrInvalidID
+	}
+	return WriteDismissedDir(s.jobDir(id))
+}
+
+// Dismissed reports whether MarkDismissed was recorded for the job.
+func (s *Store) Dismissed(id string) bool {
+	if !validJobID(id) {
+		return false
+	}
+	return DismissedDir(s.jobDir(id))
 }
 
 // List returns all known job IDs.

@@ -18,3 +18,16 @@ func (m *Manager) MarkCollected(id string) error {
 func (m *Manager) Collected(id string) bool {
 	return m.store.Collected(id)
 }
+
+// MarkDismissed records that a client asked the job to stop. Unlike
+// MarkCollected it says nothing about the outcome, so hook-wait honours it only
+// when the job ends cancelled. The write is best effort for the caller: a
+// failure leaves the marker absent, which only means a redundant wake.
+func (m *Manager) MarkDismissed(id string) error {
+	return m.store.MarkDismissed(id)
+}
+
+// Dismissed reports whether MarkDismissed was recorded for the job.
+func (m *Manager) Dismissed(id string) bool {
+	return m.store.Dismissed(id)
+}

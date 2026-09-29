@@ -19,3 +19,21 @@ func TestMarkCollectedRoundTrip(t *testing.T) {
 		t.Fatal("Collected = false after MarkCollected")
 	}
 }
+
+func TestMarkDismissedRoundTrip(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	id := "job-dismissed-1"
+	createJob(t, m, id)
+	if m.Dismissed(id) {
+		t.Fatal("Dismissed = true before MarkDismissed")
+	}
+	if err := m.MarkDismissed(id); err != nil {
+		t.Fatalf("MarkDismissed: %v", err)
+	}
+	if !m.Dismissed(id) {
+		t.Fatal("Dismissed = false after MarkDismissed")
+	}
+	if m.Collected(id) {
+		t.Fatal("MarkDismissed also made the job read as collected")
+	}
+}
