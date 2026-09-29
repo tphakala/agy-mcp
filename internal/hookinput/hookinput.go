@@ -32,6 +32,21 @@ const maxPayloadBytes = 64 << 20
 type payload struct {
 	ToolName     string          `json:"tool_name"`
 	ToolResponse json.RawMessage `json:"tool_response"`
+	// AgentType names the subagent that made the tool call. Per the Claude Code
+	// hooks documentation (code.claude.com/docs/en/hooks) it is present when the
+	// hook fires inside a subagent and absent on the main thread; NOT MEASURED
+	// against a live payload.
+	AgentType string `json:"agent_type"`
+}
+
+// Input is what hook-wait reads from a PostToolUse payload.
+type Input struct {
+	JobID    string
+	ToolName string
+	// State is the response's own job-state string, or empty.
+	State string
+	// AgentType is the calling subagent's type, or empty when the payload names none.
+	AgentType string
 }
 
 // Parse decodes a PostToolUse payload from r and extracts the agy job id and
@@ -42,19 +57,26 @@ type payload struct {
 // still running when the tool returned (an overrun) apart from one that had
 // already settled.
 func Parse(r io.Reader) (jobID, toolName, state string, ok bool) {
+	in, ok := ParseInput(r)
+	return in.JobID, in.ToolName, in.State, ok
+}
+
+// ParseInput is Parse with the calling subagent's type as well. The returned
+// Input's JobID is empty exactly when ok is false.
+func ParseInput(r io.Reader) (Input, bool) {
 	var p payload
 	// Cap the decode so a stuck or hostile producer cannot make the hook read
 	// without bound; a truncated read fails here and the hook stays quiet.
 	if err := json.NewDecoder(io.LimitReader(r, maxPayloadBytes)).Decode(&p); err != nil {
-		return "", "", "", false
+		return Input{}, false
 	}
 	var resp any
 	if err := json.Unmarshal(p.ToolResponse, &resp); err != nil {
-		return "", p.ToolName, "", false
+		return Input{ToolName: p.ToolName}, false
 	}
 	id := extractField(resp, "job_id")
-	st := extractField(resp, "state")
-	return id, p.ToolName, st, id != ""
+	in := Input{JobID: id, ToolName: p.ToolName, State: extractField(resp, "state"), AgentType: p.AgentType}
+	return in, id != ""
 }
 
 // extractField finds a named string field in a tool response, checking the

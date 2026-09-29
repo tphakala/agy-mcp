@@ -33,7 +33,7 @@ func parseWait(s string) (time.Duration, error) {
 // progress token. It is the wait phase shared by agy_run_sync and agy_wait,
 // so their semantics cannot drift. On a wait-cap overrun the returned output
 // carries the standard still-running note, which names agy_wait before
-// agy_status.
+// agy_status. A terminal outcome is recorded as collected (see markCollected).
 func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manager, jobID string, deadline time.Time) (runSyncOutput, error) {
 	token := req.Params.GetProgressToken()
 	// Notify once per elapsed second, not per poll tick: the message has
@@ -78,7 +78,9 @@ func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manage
 		return runSyncOutput{}, fmt.Errorf("job %s status read failed: %w", jobID, err)
 	}
 	out := runSyncOutput{JobID: jobID, statusOutput: toStatusOutput(st)}
-	if !terminal {
+	if terminal {
+		markCollected(mgr, jobID)
+	} else {
 		// Name agy_wait first: one blocking call is cheaper than an agy_status poll
 		// loop, and the note is the instruction a caller actually acts on at overrun
 		// (the tool description is far away by then). Saying the job is still running
@@ -89,4 +91,15 @@ func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manage
 			"Do not re-send the prompt."
 	}
 	return out, nil
+}
+
+// markCollected records that this tool response carries the job's terminal
+// outcome (or a requested cancel), so hook-wait can skip a wake that would
+// repeat it (issue #194). Every tool that returns a job's terminal outcome
+// calls it after the outcome is in hand; a caller that saw only a running job
+// must not, since the marker suppresses the wake that job still owes.
+// The write is best effort: a failure leaves the marker absent, which costs one
+// redundant wake and never a lost one.
+func markCollected(mgr *manager.Manager, jobID string) {
+	_ = mgr.MarkCollected(jobID)
 }

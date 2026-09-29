@@ -23,6 +23,10 @@ import (
 // A timeout also wakes (exit 2): the model should learn the job is
 // long-running rather than never hearing back.
 //
+// A job that finishes is not woken for when its outcome was already handed to the
+// session (agy_wait, agy_status, or agy_cancel recorded the collected marker,
+// issue #194); that case exits 0. A finished job with no marker still wakes.
+//
 // Claude Code renders any exit-2 hook under a "Stop hook blocking error from
 // command ..." wrapper it prepends itself; we cannot change that wrapper, only
 // the stderr body below. Each wake message therefore leads with an explicit
@@ -39,9 +43,17 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 0
 	}
-	jobID, toolName, respState, ok := hookinput.Parse(stdin)
+	in, ok := hookinput.ParseInput(stdin)
 	if !ok {
 		return 0
+	}
+	jobID, toolName, respState := in.JobID, in.ToolName, in.State
+	// A job started inside a subagent wakes the parent session too, which cannot
+	// otherwise tell the job is not its own. Say so in the finish and still-running
+	// messages.
+	owner := ""
+	if in.AgentType != "" {
+		owner = fmt.Sprintf(" (started by subagent %q, so it may not be this session's job)", in.AgentType)
 	}
 	// Resolve the wait manager once and reuse it for both the run_sync
 	// short-circuit and the wait below. A resolve failure means there is no way to
@@ -81,15 +93,46 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 		return 2
 	}
 	if terminal {
-		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s finished: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
-			jobID, st.State, st.Elapsed.Round(time.Second))
+		// The session may have collected the outcome itself (agy_wait, agy_status)
+		// or cancelled the job, in which case this wake carries nothing new. Those
+		// tools record a marker after their response is built, which can land just
+		// after this observer sees the terminal state, so allow a short grace. Only
+		// a marker suppresses the wake; anything uncertain still wakes.
+		if waitCollected(mgr, jobID, collectedGrace) {
+			return 0
+		}
+		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s finished%s: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
+			jobID, owner, st.State, st.Elapsed.Round(time.Second))
 	} else {
 		// Lead with agy_status here, unlike the tool-level note: this branch only
 		// fires once the job has already outrun hook-wait's own timeout (1h by
 		// default), so agy_wait's far shorter cap would most likely just overrun
 		// again. One cheap status read is the better first move for a job this
 		// long-lived.
-		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s still running after %s; check agy_status, or call agy_wait to block for another bounded window\n", jobID, *timeout)
+		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s still running after %s%s; check agy_status, or call agy_wait to block for another bounded window\n", jobID, *timeout, owner)
 	}
 	return 2
+}
+
+// collectedGrace is how long hook-wait keeps looking for the collected marker
+// after it sees a terminal job. It is a variable so tests can shorten it.
+var collectedGrace = time.Second
+
+// collectedPollInterval is how often waitCollected re-checks for the marker.
+const collectedPollInterval = 25 * time.Millisecond
+
+// waitCollected reports whether the job's collected marker appears within
+// grace. It checks once immediately, so an already-collected job returns without
+// sleeping.
+func waitCollected(mgr *manager.Manager, jobID string, grace time.Duration) bool {
+	deadline := time.Now().Add(grace)
+	for {
+		if mgr.Collected(jobID) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(collectedPollInterval)
+	}
 }

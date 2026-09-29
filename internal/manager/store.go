@@ -24,5 +24,7 @@ type jobStore interface {
 	WriteExitCode(id string, code int) error
 	ExitCode(id string) (int, bool)
 	CompletedAt(id string) (time.Time, bool)
+	MarkCollected(id string) error
+	Collected(id string) bool
 	List() ([]string, error)
 }

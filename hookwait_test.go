@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
 
 // The file-based hook-wait tests live in this untagged file (not the posix one)
@@ -125,5 +129,79 @@ func TestHookWaitQuietOnUnknownJob(t *testing.T) {
 	}
 	if errb.String() != "" {
 		t.Fatalf("stderr = %q, want empty", errb.String())
+	}
+}
+
+// shortCollectedGrace keeps tests that expect a wake from paying the full
+// production grace before the wake is written.
+func shortCollectedGrace(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := collectedGrace
+	collectedGrace = d
+	t.Cleanup(func() { collectedGrace = old })
+}
+
+// TestHookWaitQuietWhenAlreadyCollected covers issue #194: the session already
+// collected the finished job (the tool recorded the marker), so the wake carries
+// nothing new.
+func TestHookWaitQuietWhenAlreadyCollected(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 200*time.Millisecond)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+	if err := jobstore.WriteCollectedDir(filepath.Join(stateDir, "jobs", "job-hw-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	if errb.String() != "" {
+		t.Fatalf("stderr = %q, want empty", errb.String())
+	}
+}
+
+// TestHookWaitQuietWhenMarkerLandsInGrace covers the race the marker has by
+// construction: agy_wait returns the outcome and only then records the marker,
+// so hook-wait can see the terminal state first.
+func TestHookWaitQuietWhenMarkerLandsInGrace(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 5*time.Second)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+	dir := filepath.Join(stateDir, "jobs", "job-hw-1")
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = jobstore.WriteCollectedDir(dir)
+	}()
+
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+}
+
+// TestHookWaitNamesSubagentOwner: a job started inside a subagent wakes the
+// parent, so the wake says whose job it is.
+func TestHookWaitNamesSubagentOwner(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 50*time.Millisecond)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+
+	payload := `{"tool_name":"mcp__agy__agy_run","agent_id":"a1","agent_type":"watch-pr","tool_response":{"job_id":"job-hw-1","state":"running"}}`
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(payload), &errb)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), `started by subagent "watch-pr"`) {
+		t.Fatalf("stderr = %q, want it to name the subagent", errb.String())
 	}
 }

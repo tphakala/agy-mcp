@@ -148,3 +148,15 @@ func TestParseStructuredContentWinsOverContentText(t *testing.T) {
 		}
 	}
 }
+
+func TestParseInputAgentType(t *testing.T) {
+	const resp = `"tool_response":{"job_id":"job-1","state":"running"}`
+	in, ok := ParseInput(strings.NewReader(`{"tool_name":"mcp__agy__agy_run","agent_id":"a1","agent_type":"watch-pr",` + resp + `}`))
+	if !ok || in.JobID != "job-1" || in.AgentType != "watch-pr" {
+		t.Fatalf("ParseInput = (%+v, %v), want job-1 from agent watch-pr", in, ok)
+	}
+	in, ok = ParseInput(strings.NewReader(`{"tool_name":"mcp__agy__agy_run",` + resp + `}`))
+	if !ok || in.AgentType != "" {
+		t.Fatalf("ParseInput = (%+v, %v), want an empty AgentType on a main-thread payload", in, ok)
+	}
+}

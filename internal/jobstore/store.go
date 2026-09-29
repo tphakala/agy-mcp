@@ -65,6 +65,10 @@ const (
 	CancelFile   = "cancel"        // manager -> supervisor cancel request sentinel
 	ProgressFile = "progress.json" // latest stream position (atomic rewrite)
 	ResultFile   = "result.json"   // terminal stream-json result payload (written once)
+	// CollectedFile is the marker an MCP tool writes once it has handed a job's
+	// terminal outcome (or a cancel) to the client, so hook-wait can skip a wake
+	// that would carry nothing new (issue #194). Existence is the whole signal.
+	CollectedFile = "collected"
 )
 
 // MetaPath, OutPath, ErrPath, ExitCodePath, ProgressPath and ResultPath join a
@@ -203,6 +207,24 @@ func WriteExitCodeDir(dir string, code int) error {
 // destination is the one that cannot be held by a reader.
 func WriteCancelDir(dir string) error {
 	return writeFileAtomic(dir, CancelFile, nil)
+}
+
+// CollectedPath joins a job directory with the collected marker's name.
+func CollectedPath(dir string) string { return filepath.Join(dir, CollectedFile) }
+
+// WriteCollectedDir creates a job's collected marker. It is idempotent and
+// carries no content, so it goes through the same atomic writer as the other
+// job-dir files.
+func WriteCollectedDir(dir string) error {
+	return writeFileAtomic(dir, CollectedFile, nil)
+}
+
+// CollectedDir reports whether the collected marker exists in dir. Any stat
+// error other than absence counts as not collected: the caller's fallback is a
+// wake, and a redundant wake is better than a lost one.
+func CollectedDir(dir string) bool {
+	_, err := os.Stat(CollectedPath(dir))
+	return err == nil
 }
 
 // writeFileAtomic writes b to dir/name via a uniquely-named temp file and a
@@ -518,6 +540,22 @@ func (s *Store) ExitCode(id string) (int, bool) {
 		return 0, false
 	}
 	return code, true
+}
+
+// MarkCollected records that a job's outcome was delivered to a client.
+func (s *Store) MarkCollected(id string) error {
+	if !validJobID(id) {
+		return ErrInvalidID
+	}
+	return WriteCollectedDir(s.jobDir(id))
+}
+
+// Collected reports whether MarkCollected was recorded for the job.
+func (s *Store) Collected(id string) bool {
+	if !validJobID(id) {
+		return false
+	}
+	return CollectedDir(s.jobDir(id))
 }
 
 // List returns all known job IDs.
