@@ -93,3 +93,28 @@ func TestAgyStatusMarksStagedTerminalJobCollected(t *testing.T) {
 		t.Fatal("agy_status returned a terminal outcome but did not mark the job collected")
 	}
 }
+
+// A successful agy_cancel records the dismissed marker and not the collected
+// marker: its response carries a state, not the outcome. Cancelling a staged
+// finished job is a no-op for the supervisor, so this needs no process and pins
+// the handler's write without a build tag.
+func TestAgyCancelMarksStagedJobDismissedNotCollected(t *testing.T) {
+	mgr, id := stageTerminalJob(t)
+	cs := connect(t, mgr, nil)
+	if mgr.Dismissed(id) {
+		t.Fatal("dismissed before agy_cancel")
+	}
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "agy_cancel",
+		Arguments: map[string]any{"job_id": id},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("agy_cancel: err=%v res=%+v", err, res)
+	}
+	if !mgr.Dismissed(id) {
+		t.Fatal("agy_cancel did not record the cancel request as dismissed")
+	}
+	if mgr.Collected(id) {
+		t.Fatal("agy_cancel marked the job collected, which would suppress an owed wake")
+	}
+}
