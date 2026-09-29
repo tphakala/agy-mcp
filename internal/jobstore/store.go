@@ -65,9 +65,10 @@ const (
 	CancelFile   = "cancel"        // manager -> supervisor cancel request sentinel
 	ProgressFile = "progress.json" // latest stream position (atomic rewrite)
 	ResultFile   = "result.json"   // terminal stream-json result payload (written once)
-	// CollectedFile is the marker an MCP tool writes once it has handed a job's
-	// terminal outcome to the client, so hook-wait can skip a wake
-	// that would carry nothing new (issue #194). Existence is the whole signal.
+	// CollectedFile is the marker an MCP tool writes as it returns a job's
+	// terminal outcome, so hook-wait can skip a wake that would carry nothing new
+	// (issue #194). It does not prove the client received the response. Existence
+	// is the whole signal.
 	CollectedFile = "collected"
 )
 
@@ -542,7 +543,7 @@ func (s *Store) ExitCode(id string) (int, bool) {
 	return code, true
 }
 
-// MarkCollected records that a job's outcome was delivered to a client.
+// MarkCollected records that a tool is returning a job's outcome to a client.
 func (s *Store) MarkCollected(id string) error {
 	if !validJobID(id) {
 		return ErrInvalidID
