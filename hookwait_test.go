@@ -2,8 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
 
 // The file-based hook-wait tests live in this untagged file (not the posix one)
@@ -125,5 +134,186 @@ func TestHookWaitQuietOnUnknownJob(t *testing.T) {
 	}
 	if errb.String() != "" {
 		t.Fatalf("stderr = %q, want empty", errb.String())
+	}
+}
+
+// shortCollectedGrace keeps tests that expect a wake from paying the full
+// production grace before the wake is written.
+func shortCollectedGrace(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := collectedGrace
+	collectedGrace = d
+	t.Cleanup(func() { collectedGrace = old })
+}
+
+// TestHookWaitQuietWhenAlreadyCollected covers issue #194: the session already
+// collected the finished job (the tool recorded the marker), so the wake carries
+// nothing new.
+func TestHookWaitQuietWhenAlreadyCollected(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 200*time.Millisecond)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+	if err := jobstore.WriteCollectedDir(filepath.Join(stateDir, "jobs", "job-hw-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	if errb.String() != "" {
+		t.Fatalf("stderr = %q, want empty", errb.String())
+	}
+}
+
+// TestHookWaitQuietWhenMarkerLandsInGrace covers the race the marker has by
+// construction: awaitJob builds the terminal output and writes the marker
+// before it returns, so hook-wait can see the terminal state while the tool has
+// the outcome in hand but has not written the marker yet.
+func TestHookWaitQuietWhenMarkerLandsInGrace(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 5*time.Second)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+	dir := filepath.Join(stateDir, "jobs", "job-hw-1")
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = jobstore.WriteCollectedDir(dir)
+	}()
+
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+}
+
+// stageCancelledJob turns the staged terminal job into one that ended cancelled
+// (the SIGTERM exit sentinel) and returns its directory.
+func stageCancelledJob(t *testing.T, stateDir, id string) string {
+	t.Helper()
+	writeTerminalJob(t, stateDir, id)
+	dir := filepath.Join(stateDir, "jobs", id)
+	code := []byte(strconv.Itoa(jobstore.ExitSIGTERM))
+	if err := os.WriteFile(jobstore.ExitCodePath(dir), code, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestHookWaitQuietWhenCancelledAfterDismiss covers the cancel case in #194: the
+// session asked agy_cancel to stop the job and it ended cancelled, so the finish
+// wake repeats what the session asked for.
+func TestHookWaitQuietWhenCancelledAfterDismiss(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 200*time.Millisecond)
+	stateDir := t.TempDir()
+	dir := stageCancelledJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+	if err := jobstore.WriteDismissedDir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	if errb.String() != "" {
+		t.Fatalf("stderr = %q, want empty", errb.String())
+	}
+}
+
+// TestHookWaitWakesOnCancelledWithoutDismiss: a job that ended cancelled with no
+// request from this session (an external kill) still wakes.
+func TestHookWaitWakesOnCancelledWithoutDismiss(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 50*time.Millisecond)
+	stateDir := t.TempDir()
+	stageCancelledJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "state=cancelled") {
+		t.Fatalf("stderr = %q, want it to report state=cancelled", errb.String())
+	}
+}
+
+// TestHookWaitWakesWhenDismissedJobFinishedOnItsOwn is the race that made a
+// cancel marker unsafe: agy_cancel was called, but the job finished done before
+// the stop landed, so its result was never returned and the wake is still owed.
+func TestHookWaitWakesWhenDismissedJobFinishedOnItsOwn(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 50*time.Millisecond)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+	if err := jobstore.WriteDismissedDir(filepath.Join(stateDir, "jobs", "job-hw-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "state=done") {
+		t.Fatalf("stderr = %q, want it to report state=done", errb.String())
+	}
+}
+
+// TestWaitSuppressedStopsWhenContextIsCancelled: the grace must not hold an
+// interrupted hook-wait for its full length, and must report the cancellation so
+// hookWaitMain takes the interrupted-wake path.
+func TestWaitSuppressedStopsWhenContextIsCancelled(t *testing.T) {
+	setFakeHome(t)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+	mgr, err := resolveWaitManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	start := time.Now()
+	collected, err := waitSuppressed(ctx, mgr, "job-hw-1", manager.StateDone, time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if collected {
+		t.Fatal("collected = true for a job with no marker")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("waitSuppressed took %s after cancellation, want it to return promptly", d)
+	}
+}
+
+// TestHookWaitNamesSubagentOwner: a job started inside a subagent wakes the
+// parent, so the wake says whose job it is.
+func TestHookWaitNamesSubagentOwner(t *testing.T) {
+	setFakeHome(t)
+	shortCollectedGrace(t, 50*time.Millisecond)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+
+	payload := `{"tool_name":"mcp__agy__agy_run","agent_id":"a1","agent_type":"watch-pr","tool_response":{"job_id":"job-hw-1","state":"running"}}`
+	var errb bytes.Buffer
+	code := hookWaitMain(nil, strings.NewReader(payload), &errb)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), `started by subagent "watch-pr"`) {
+		t.Fatalf("stderr = %q, want it to name the subagent", errb.String())
 	}
 }

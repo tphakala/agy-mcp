@@ -29,6 +29,63 @@ func assertIDRejected(t *testing.T, s *Store, id string) {
 	if _, ok := s.ExitCode(id); ok {
 		t.Errorf("ExitCode(%q) ok = true, want false", id)
 	}
+	if err := s.MarkCollected(id); !errors.Is(err, ErrInvalidID) {
+		t.Errorf("MarkCollected(%q) err = %v, want ErrInvalidID", id, err)
+	}
+	if s.Collected(id) {
+		t.Errorf("Collected(%q) = true, want false", id)
+	}
+	if err := s.MarkDismissed(id); !errors.Is(err, ErrInvalidID) {
+		t.Errorf("MarkDismissed(%q) err = %v, want ErrInvalidID", id, err)
+	}
+	if s.Dismissed(id) {
+		t.Errorf("Dismissed(%q) = true, want false", id)
+	}
+}
+
+func TestMarkDismissedRoundTrip(t *testing.T) {
+	s := New(t.TempDir())
+	const id = "job-dismissed-1"
+	if _, err := s.Create(Meta{ID: id}); err != nil {
+		t.Fatal(err)
+	}
+	if s.Dismissed(id) {
+		t.Fatal("Dismissed = true before MarkDismissed")
+	}
+	if err := s.MarkDismissed(id); err != nil {
+		t.Fatalf("MarkDismissed: %v", err)
+	}
+	if !s.Dismissed(id) {
+		t.Fatal("Dismissed = false after MarkDismissed")
+	}
+	// The two markers are independent: dismissing must not read as collecting.
+	if s.Collected(id) {
+		t.Fatal("MarkDismissed also made the job read as collected")
+	}
+	if err := s.MarkDismissed(id); err != nil {
+		t.Fatalf("second MarkDismissed: %v", err)
+	}
+}
+
+func TestMarkCollectedRoundTrip(t *testing.T) {
+	s := New(t.TempDir())
+	const id = "job-collected-1"
+	if _, err := s.Create(Meta{ID: id}); err != nil {
+		t.Fatal(err)
+	}
+	if s.Collected(id) {
+		t.Fatal("Collected = true before MarkCollected")
+	}
+	if err := s.MarkCollected(id); err != nil {
+		t.Fatalf("MarkCollected: %v", err)
+	}
+	if !s.Collected(id) {
+		t.Fatal("Collected = false after MarkCollected")
+	}
+	// Idempotent: a second call from a repeated agy_status must not fail.
+	if err := s.MarkCollected(id); err != nil {
+		t.Fatalf("second MarkCollected: %v", err)
+	}
 }
 
 func TestRejectsUnsafeJobID(t *testing.T) {
