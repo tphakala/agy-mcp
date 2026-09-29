@@ -102,7 +102,10 @@ func TestAgyStatusMarksOnlyTerminalJobCollected(t *testing.T) {
 	}
 }
 
-func TestAgyCancelMarksJobCollected(t *testing.T) {
+// A cancel response carries only a state, not the job's outcome, and the job can
+// still finish on its own after the cancel is requested. The wake stays owed, so
+// agy_cancel must leave the marker absent.
+func TestAgyCancelDoesNotMarkCollected(t *testing.T) {
 	mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0, Sleep: 30 * time.Second})
 	cs := connect(t, mgr, nil)
 	id := startJob(t, cs)
@@ -114,8 +117,8 @@ func TestAgyCancelMarksJobCollected(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("agy_cancel: err=%v res=%+v", err, res)
 	}
-	if !mgr.Collected(id) {
-		t.Fatal("agy_cancel did not mark the job collected")
+	if mgr.Collected(id) {
+		t.Fatal("agy_cancel marked the job collected before its outcome was known, which would suppress an owed wake")
 	}
 }
 

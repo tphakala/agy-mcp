@@ -432,10 +432,6 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Annotations: annCancel,
 		Description: "Stop a running agy job: asks its supervisor to terminate the agy process tree. Use it to abandon a job whose result is no longer needed, or one that is stuck; there is no resume, so continuing the work means a new agy_run. Before re-sending the prompt, read the cancelled job with agy_status: a cancelled run still carries whatever text it produced, and a run agy had already finished carries a complete, non-partial answer, so re-running it would pay for the same work twice. Termination is asynchronous, so the returned state is usually still running and settles to cancelled a moment later; that is a delivered cancel, not a failed one. Calling it on an already-finished job is a harmless no-op. Files the delegated agent already wrote are not rolled back.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in cancelInput) (*mcp.CallToolResult, cancelOutput, error) {
-		// Read the state first: only a cancel that stops a live job is marked
-		// collected (below). The state after the cancel cannot stand in for this,
-		// because a stopped job can settle to failed as well as cancelled.
-		before, beforeErr := mgr.State(in.JobID)
 		if err := mgr.Cancel(in.JobID); err != nil {
 			return nil, cancelOutput{}, err
 		}
@@ -447,12 +443,9 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		if s, err := mgr.State(in.JobID); err == nil {
 			state = s
 		}
-		// The caller asked for this stop, so the finish wake would only repeat it.
-		// A job that had already ended is not marked: the cancel response did not
-		// carry its result, so that wake still informs.
-		if beforeErr == nil && before == manager.StateRunning {
-			markCollected(mgr, in.JobID)
-		}
+		// The job is deliberately not marked collected here: this response carries
+		// no outcome, and the job can still finish on its own before the cancel
+		// lands, so the finish wake stays owed.
 		return nil, cancelOutput{State: state}, nil
 	})
 

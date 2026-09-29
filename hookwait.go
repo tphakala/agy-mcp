@@ -24,8 +24,8 @@ import (
 // long-running rather than never hearing back.
 //
 // A job that finishes is not woken for when its outcome was already handed to the
-// session (agy_wait, agy_status, or agy_cancel recorded the collected marker,
-// issue #194); that case exits 0. A finished job with no marker still wakes.
+// session (agy_wait or agy_status recorded the collected marker, issue #194);
+// that case exits 0. A finished job with no marker still wakes.
 //
 // Claude Code renders any exit-2 hook under a "Stop hook blocking error from
 // command ..." wrapper it prepends itself; we cannot change that wrapper, only
@@ -93,9 +93,9 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 		return 2
 	}
 	if terminal {
-		// The session may have collected the outcome itself (agy_wait, agy_status)
-		// or cancelled the job, in which case this wake carries nothing new. Those
-		// tools record a marker after their response is built, which can land just
+		// The session may have collected the outcome itself (agy_wait, agy_status),
+		// in which case this wake carries nothing new. Those tools record a marker
+		// after their response is built, which can land just
 		// after this observer sees the terminal state, so allow a short grace. Only
 		// a marker suppresses the wake; anything uncertain still wakes.
 		if waitCollected(mgr, jobID, collectedGrace) {

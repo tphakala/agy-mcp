@@ -94,7 +94,7 @@ func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manage
 }
 
 // markCollected records that this tool response carries the job's terminal
-// outcome (or a requested cancel), so hook-wait can skip a wake that would
+// outcome, so hook-wait can skip a wake that would
 // repeat it (issue #194). Every tool that returns a job's terminal outcome
 // calls it after the outcome is in hand; a caller that saw only a running job
 // must not, since the marker suppresses the wake that job still owes.

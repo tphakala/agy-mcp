@@ -1,9 +1,9 @@
 package manager
 
 // MarkCollected records that a client has been handed the job's terminal
-// outcome, or asked to cancel it, so a later hook-wait wake would carry nothing
-// new (issue #194). Callers must invoke it only after the outcome is in the
-// tool response: the marker suppresses a wake, so writing it early loses one.
+// outcome, so a later hook-wait wake would carry nothing new (issue #194).
+// Callers must invoke it only after the outcome is in the tool response: the
+// marker suppresses a wake, so writing it early loses one.
 // Status and WaitTerminal never write it themselves, because hook-wait reads
 // through them and would otherwise suppress its own wake.
 //
