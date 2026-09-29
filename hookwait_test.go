@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -183,6 +185,34 @@ func TestHookWaitQuietWhenMarkerLandsInGrace(t *testing.T) {
 	code := hookWaitMain(nil, strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running")), &errb)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+}
+
+// TestWaitCollectedStopsWhenContextIsCancelled: the grace must not hold an
+// interrupted hook-wait for its full length, and must report the cancellation so
+// hookWaitMain takes the interrupted-wake path.
+func TestWaitCollectedStopsWhenContextIsCancelled(t *testing.T) {
+	setFakeHome(t)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+	mgr, err := resolveWaitManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	start := time.Now()
+	collected, err := waitCollected(ctx, mgr, "job-hw-1", time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if collected {
+		t.Fatal("collected = true for a job with no marker")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("waitCollected took %s after cancellation, want it to return promptly", d)
 	}
 }
 

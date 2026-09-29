@@ -26,7 +26,9 @@ import (
 // A job that finishes is not woken for when a tool already returned its outcome
 // to the session (agy_wait or agy_status recorded the collected marker, issue
 // #194); that case exits 0. The marker does not prove the client received the
-// response. A finished job with no marker still wakes.
+// response. A finished job with no marker still wakes. A SIGINT or SIGTERM
+// during the marker grace takes the interrupted-wake path (exit 2) like one
+// during the wait itself.
 //
 // Claude Code renders any exit-2 hook under a "Stop hook blocking error from
 // command ..." wrapper it prepends itself; we cannot change that wrapper, only
@@ -78,7 +80,18 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 			return 0
 		}
 	}
-	st, terminal, err := waitForJobWith(mgr, jobID, *timeout)
+	// The marker grace runs inside the wait's signal scope, so a SIGINT or SIGTERM
+	// during it takes the interrupted-wake path below instead of killing hook-wait
+	// and dropping the owed wake.
+	collected := false
+	st, terminal, err := waitForJobSettling(mgr, jobID, *timeout, func(ctx context.Context, terminal bool) error {
+		if !terminal {
+			return nil
+		}
+		var err error
+		collected, err = waitCollected(ctx, mgr, jobID, collectedGrace)
+		return err
+	})
 	if err != nil {
 		// An externally delivered SIGINT/SIGTERM cancels only this observer, not the
 		// job, which keeps running under its detached supervisor. Exiting 0 would
@@ -99,7 +112,7 @@ func hookWaitMain(args []string, stdin io.Reader, stderr io.Writer) int {
 		// record the marker as they return it, which can land just after this
 		// observer sees the terminal state, so allow a short grace. Only a marker
 		// suppresses the wake; a finished job without one still wakes.
-		if waitCollected(mgr, jobID, collectedGrace) {
+		if collected {
 			return 0
 		}
 		_, _ = fmt.Fprintf(stderr, "agy async job notification (not an error): job %s finished%s: state=%s elapsed=%s; call agy_status with this job_id to collect the result\n",
@@ -124,16 +137,21 @@ const collectedPollInterval = 25 * time.Millisecond
 
 // waitCollected reports whether the job's collected marker appears within
 // grace. It checks once immediately, so an already-collected job returns without
-// sleeping.
-func waitCollected(mgr *manager.Manager, jobID string, grace time.Duration) bool {
+// sleeping. It returns ctx.Err() as soon as ctx is done, so the grace never
+// delays a wake for an interrupted wait.
+func waitCollected(ctx context.Context, mgr *manager.Manager, jobID string, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
 		if mgr.Collected(jobID) {
-			return true
+			return true, nil
 		}
 		if !time.Now().Before(deadline) {
-			return false
+			return false, nil
 		}
-		time.Sleep(collectedPollInterval)
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(collectedPollInterval):
+		}
 	}
 }

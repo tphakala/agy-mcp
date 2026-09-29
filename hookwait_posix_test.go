@@ -106,3 +106,56 @@ func TestHookWaitWakesOnInterrupt(t *testing.T) {
 		t.Fatalf("stderr = %q, want it to frame the wake as not an error", errb.String())
 	}
 }
+
+// TestHookWaitWakesOnInterruptDuringCollectedGrace proves a SIGINT that lands
+// while hook-wait is looking for the collected marker still produces the
+// interrupted wake. The job is already terminal and has no marker, so the wait
+// returns at once and hook-wait spends its one-second grace polling; the signal
+// is sent partway through it. If the signal handler were removed before the
+// grace, the default action would kill the process instead of exiting 2.
+func TestHookWaitWakesOnInterruptDuringCollectedGrace(t *testing.T) {
+	bin, err := buildBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	setFakeHome(t)
+	stateDir := t.TempDir()
+	writeTerminalJob(t, stateDir, "job-hw-1")
+	t.Setenv("AGY_MCP_STATE_DIR", stateDir)
+
+	cmd := exec.Command(bin, "hook-wait", "-timeout", "1h")
+	cmd.Stdin = strings.NewReader(hookPayload("mcp__agy__agy_run", "job-hw-1", "running"))
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	awaitReady := armWaitReady(t, cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reaped := false
+	t.Cleanup(func() {
+		if !reaped {
+			_ = cmd.Process.Signal(syscall.SIGKILL)
+			_ = cmd.Wait()
+		}
+	})
+	awaitReady()
+	// The wait on a terminal job returns within one poll; land the signal well
+	// inside the one-second grace that follows.
+	time.Sleep(300 * time.Millisecond)
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	waitErr := cmd.Wait()
+	reaped = true
+	exitErr, ok := errors.AsType[*exec.ExitError](waitErr)
+	if !ok {
+		t.Fatalf("hook-wait did not exit with an error after SIGINT: %v (stdout=%q stderr=%q)", waitErr, out.String(), errb.String())
+	}
+	if code := exitErr.ExitCode(); code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errb.String())
+	}
+	if !strings.Contains(errb.String(), "wait interrupted") {
+		t.Fatalf("stderr = %q, want it to mention wait interrupted", errb.String())
+	}
+}

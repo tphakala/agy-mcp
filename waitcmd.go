@@ -82,15 +82,31 @@ func waitForJob(id string, timeout time.Duration) (manager.Status, bool, error) 
 // waitForJobWith blocks on the job using an already-resolved manager, so a
 // caller that needs the manager for more than the wait (hook-wait reuses it for
 // its run_sync short-circuit Status read) resolves it once and reuses it here.
-// SIGINT/SIGTERM cancel only this observer's wait, never the job.
+// SIGINT/SIGTERM cancel only this observer's wait, never the job. Its signal
+// handler is removed when it returns; see waitForJobSettling for work that must
+// stay interruptible after the wait.
 func waitForJobWith(mgr *manager.Manager, id string, timeout time.Duration) (manager.Status, bool, error) {
+	return waitForJobSettling(mgr, id, timeout, nil)
+}
+
+// waitForJobSettling is waitForJobWith plus an optional settle step that runs
+// after the wait returns without error, while the signal handler is still
+// installed. Work that follows the wait and must stay interruptible belongs
+// there: once this function returns the handler is gone and a SIGINT or SIGTERM
+// takes the default action. settle's error is returned as the wait's error, so a
+// settle that returns ctx.Err() reads as an interrupted wait.
+func waitForJobSettling(mgr *manager.Manager, id string, timeout time.Duration, settle func(ctx context.Context, terminal bool) error) (manager.Status, bool, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	// The handler is installed by the time NotifyContext returns, so from here a
 	// SIGINT or SIGTERM cancels this wait instead of killing the process. That is
 	// the moment the readiness file announces.
 	signalWaitReady()
-	return mgr.WaitTerminal(ctx, id, time.Now().Add(timeout), nil)
+	st, terminal, err := mgr.WaitTerminal(ctx, id, time.Now().Add(timeout), nil)
+	if err != nil || settle == nil {
+		return st, terminal, err
+	}
+	return st, terminal, settle(ctx, terminal)
 }
 
 // waitReadyFileEnv names an optional file the wait subcommands create once the

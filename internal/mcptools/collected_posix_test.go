@@ -55,6 +55,7 @@ func TestAgyWaitOverrunDoesNotMarkCollected(t *testing.T) {
 	mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0, Sleep: 5 * time.Second})
 	cs := connect(t, mgr, nil)
 	id := startJob(t, cs)
+	killJobGroup(t, stateDir, id)
 	waitForRunningJob(t, mgr, stateDir, 5*time.Second)
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      "agy_wait",
@@ -109,6 +110,7 @@ func TestAgyCancelDoesNotMarkCollected(t *testing.T) {
 	mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0, Sleep: 30 * time.Second})
 	cs := connect(t, mgr, nil)
 	id := startJob(t, cs)
+	killJobGroup(t, stateDir, id)
 	waitForRunningJob(t, mgr, stateDir, 5*time.Second)
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      "agy_cancel",
