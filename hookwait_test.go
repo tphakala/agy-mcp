@@ -167,8 +167,9 @@ func TestHookWaitQuietWhenAlreadyCollected(t *testing.T) {
 }
 
 // TestHookWaitQuietWhenMarkerLandsInGrace covers the race the marker has by
-// construction: agy_wait returns the outcome and only then records the marker,
-// so hook-wait can see the terminal state first.
+// construction: awaitJob builds the terminal output and writes the marker
+// before it returns, so hook-wait can see the terminal state while the tool has
+// the outcome in hand but has not written the marker yet.
 func TestHookWaitQuietWhenMarkerLandsInGrace(t *testing.T) {
 	setFakeHome(t)
 	shortCollectedGrace(t, 5*time.Second)
