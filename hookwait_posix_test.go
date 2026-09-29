@@ -29,6 +29,28 @@ func TestHookWaitWakesOnTimeout(t *testing.T) {
 	}
 }
 
+// TestHookWaitStillRunningNamesSubagentOwner pins the subagent name in the
+// still-running wake, the sibling of the finish wake checked by
+// TestHookWaitNamesSubagentOwner: a job a subagent started wakes the parent
+// either way.
+func TestHookWaitStillRunningNamesSubagentOwner(t *testing.T) {
+	setFakeHome(t)
+	jobID := startRunningJobForWait(t, 2*time.Second, "conv-hookwait-owner-test", 5*time.Second)
+
+	payload := `{"tool_name":"mcp__agy__agy_run","agent_id":"a1","agent_type":"watch-pr","tool_response":{"job_id":"` + jobID + `","state":"running"}}`
+	var errb bytes.Buffer
+	code := hookWaitMain([]string{"-timeout", "100ms"}, strings.NewReader(payload), &errb)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "still running") {
+		t.Fatalf("stderr = %q, want the still-running wake", errb.String())
+	}
+	if !strings.Contains(errb.String(), `started by subagent "watch-pr"`) {
+		t.Fatalf("stderr = %q, want it to name the subagent", errb.String())
+	}
+}
+
 // TestHookWaitWakesOnInterrupt proves a SIGINT delivered to a waiting hook-wait
 // wakes with the distinct interrupt message and exit 2, rather than silently
 // exiting 0 and dropping the owed wake. hookWaitMain runs in-process for the
