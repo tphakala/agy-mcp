@@ -612,3 +612,55 @@ func TestCheckPriorityRefusalMessage(t *testing.T) {
 		t.Fatalf("optional run on an unmapped model refused: %v", err)
 	}
 }
+
+// A model-turn reply that comes with a failure exit spent quota just like one on
+// a clean exit, so it must trip the latch rather than count as a retryable
+// failure that a later call or refresh would repeat.
+func TestUsageModelTurnOnFailureExitLatches(t *testing.T) {
+	var calls atomic.Int32
+	m, off := quotaTestManager(t, time.Minute, func(context.Context) ([]byte, error) {
+		calls.Add(1)
+		return []byte(`{"conversation_id":"c","status":"ERROR","num_turns":1}`), errors.New("agy /usage: exit status 1")
+	})
+	if _, err := m.Usage(t.Context(), time.Minute); !errors.Is(err, errUsageModelTurn) {
+		t.Fatalf("Usage error = %v, want the model-turn latch", err)
+	}
+	off.Store(int64(usageErrorBackoff + time.Second))
+	if _, err := m.Usage(t.Context(), time.Minute); !errors.Is(err, errUsageModelTurn) {
+		t.Fatalf("second Usage error = %v, want the model-turn latch", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("probes = %d, want 1: the latch must stop every later probe", calls.Load())
+	}
+}
+
+// A refresher tick inside the failure backoff starts no probe, the same rule
+// Usage applies, and one after the backoff does.
+func TestRefreshHonoursFailureBackoff(t *testing.T) {
+	var calls atomic.Int32
+	m, off := quotaTestManager(t, time.Minute, func(context.Context) ([]byte, error) {
+		calls.Add(1)
+		return nil, errors.New("agy usage: boom")
+	})
+	if _, err := m.Usage(t.Context(), time.Minute); err == nil {
+		t.Fatal("expected the stub's failure")
+	}
+	refresh := func() *quotaFlight {
+		m.quota.mu.Lock()
+		defer m.quota.mu.Unlock()
+		return m.startRefreshLocked()
+	}
+	off.Store(int64(usageErrorBackoff - time.Second))
+	if f := refresh(); f != nil {
+		t.Fatal("refresh started a probe inside the failure backoff")
+	}
+	off.Store(int64(usageErrorBackoff + time.Second))
+	f := refresh()
+	if f == nil {
+		t.Fatal("refresh started no probe after the backoff")
+	}
+	<-f.done
+	if calls.Load() != 2 {
+		t.Fatalf("probes = %d, want 2", calls.Load())
+	}
+}

@@ -44,6 +44,25 @@ func TestUsageProbeIncludesStderrOnError(t *testing.T) {
 	}
 }
 
+// runJSONProbe hands back stdout with a failure exit, so a model-turn reply that
+// agy printed before exiting non-zero still trips the latch.
+func TestUsageProbeKeepsStdoutOnFailureExit(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "agy")
+	body := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo ` + "1.9.9" + `; exit 0; fi
+echo '{"conversation_id":"c","status":"ERROR","num_turns":1}'
+exit 1
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := newManager(t, managerOpts{agyPath: script})
+	if _, err := m.Usage(t.Context(), time.Minute); !errors.Is(err, errUsageModelTurn) {
+		t.Fatalf("Usage error = %v, want the model-turn latch", err)
+	}
+}
+
 // The probe must run in its own session: agy opens /dev/tty in -p mode and stops
 // on SIGTTOU in a background process group (see proc.ConfigureSession). The fake
 // records its session id and its parent's; Setsid makes them differ. It runs on

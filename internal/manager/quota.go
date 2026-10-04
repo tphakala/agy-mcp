@@ -339,6 +339,17 @@ func (m *Manager) startFetchLocked() *quotaFlight {
 	return f
 }
 
+// startRefreshLocked starts or joins a background refresh, or returns nil when a
+// probe failed within the last usageErrorBackoff, so a refresher tick honours the
+// same backoff as Usage. c.mu must be held.
+func (m *Manager) startRefreshLocked() *quotaFlight {
+	c := &m.quota
+	if c.lastErr != nil && m.now().Sub(c.lastErrAt) < usageErrorBackoff {
+		return nil
+	}
+	return m.startFetchLocked()
+}
+
 // fetchQuota runs one probe on its own context, so a caller that gives up does
 // not abort the probe the others are waiting on, and records the outcome.
 func (m *Manager) fetchQuota(f *quotaFlight) {
@@ -346,6 +357,12 @@ func (m *Manager) fetchQuota(f *quotaFlight) {
 	var groups []QuotaGroup
 	if err == nil {
 		groups, err = decodeUsageEnvelope(raw)
+	} else if len(raw) > 0 {
+		// A failure exit can still carry a model-turn reply on stdout; it spent
+		// quota just the same, so it must trip the latch, never count as a reading.
+		if _, derr := decodeUsageEnvelope(raw); errors.Is(derr, errUsageModelTurn) {
+			err = fmt.Errorf("%w; %w", err, derr)
+		}
 	}
 	c := &m.quota
 	c.mu.Lock()
@@ -432,8 +449,9 @@ func (m *Manager) RunUsageRefresherFromConfig(ctx context.Context) {
 	m.runUsageRefresher(ctx, m.cfg.UsageInterval)
 }
 
-// runUsageRefresher probes immediately and then every interval. It stops when ctx
-// ends or once a probe has spent a model turn (see errUsageModelTurn). A
+// runUsageRefresher probes immediately and then every interval, skipping a tick
+// that falls inside the failure backoff (see startRefreshLocked). It stops when
+// ctx ends or once a probe has spent a model turn (see errUsageModelTurn). A
 // non-positive interval is a no-op.
 func (m *Manager) runUsageRefresher(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
@@ -448,10 +466,12 @@ func (m *Manager) runUsageRefresher(ctx context.Context, interval time.Duration)
 			c.mu.Unlock()
 			return
 		}
-		f := m.startFetchLocked()
+		f := m.startRefreshLocked()
 		c.mu.Unlock()
 		// The outcome is recorded in the cache and logged by fetchQuota.
-		_, _ = m.awaitFlight(ctx, f)
+		if f != nil {
+			_, _ = m.awaitFlight(ctx, f)
+		}
 		select {
 		case <-ctx.Done():
 			return

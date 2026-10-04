@@ -92,7 +92,10 @@ func (m *Manager) runJSONListing(ctx context.Context, sub string, timeout, killG
 	return m.runJSONProbe(ctx, sub, []string{outputFormatFlag, jsonOutputFormat, sub}, false, timeout, killGrace)
 }
 
-// runJSONProbe execs agy with args and returns its stdout. label names the probe
+// runJSONProbe execs agy with args and returns its stdout. On a non-zero exit it
+// returns the error together with whatever stdout agy printed, so a caller can
+// still inspect a reply that came with a failure exit; the listings ignore it.
+// label names the probe
 // in errors ("agy <label>: ..."). newSession runs agy in its own session
 // (proc.ConfigureSession): agy 1.2.x opens /dev/tty in -p mode and stops on
 // SIGTTOU in a background process group that shares a controlling terminal (see
@@ -153,10 +156,10 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 			// "exit status 1".
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 				if stderr := strings.TrimSpace(string(ee.Stderr)); stderr != "" {
-					return nil, fmt.Errorf("agy %s: %w: %s", label, err, stderr)
+					return out, fmt.Errorf("agy %s: %w: %s", label, err, stderr)
 				}
 			}
-			return nil, fmt.Errorf("agy %s: %w", label, err)
+			return out, fmt.Errorf("agy %s: %w", label, err)
 		}
 	}
 	return out, nil
