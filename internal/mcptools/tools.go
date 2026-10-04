@@ -58,12 +58,6 @@ const (
 	agyEffortHigh   = "high"
 )
 
-// Run priorities accepted by the priority field.
-const (
-	priorityNormal   = manager.PriorityNormal
-	priorityOptional = manager.PriorityOptional
-)
-
 // ToolAgyRunSync is the agy_run_sync tool name, exported so out-of-package
 // callers (the hook-wait suppression gate) can match it against a hook payload's
 // recorded tool name with a compile-time link instead of a duplicated literal.
@@ -161,8 +155,8 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 	if in.Effort != "" && in.Effort != agyEffortLow && in.Effort != agyEffortMedium && in.Effort != agyEffortHigh {
 		return manager.StartRequest{}, fmt.Errorf("invalid effort %q: want %s, %s or %s", in.Effort, agyEffortLow, agyEffortMedium, agyEffortHigh)
 	}
-	if in.Priority != "" && in.Priority != priorityNormal && in.Priority != priorityOptional {
-		return manager.StartRequest{}, fmt.Errorf("invalid priority %q: want %s or %s", in.Priority, priorityNormal, priorityOptional)
+	if in.Priority != "" && in.Priority != manager.PriorityNormal && in.Priority != manager.PriorityOptional {
+		return manager.StartRequest{}, fmt.Errorf("invalid priority %q: want %s or %s", in.Priority, manager.PriorityNormal, manager.PriorityOptional)
 	}
 	if in.Mode != "" && in.Mode != agyModeAcceptEdits && in.Mode != agyModePlan {
 		return manager.StartRequest{}, fmt.Errorf("invalid mode %q: want %s or %s", in.Mode, agyModeAcceptEdits, agyModePlan)

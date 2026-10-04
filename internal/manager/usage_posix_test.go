@@ -90,7 +90,6 @@ func setSnapshot(m *Manager, remaining float64) {
 	m.quota.mu.Lock()
 	defer m.quota.mu.Unlock()
 	m.quota.snap = quotaFixture(m.now(), remaining, m.now().Add(time.Hour))
-	m.quota.have = true
 }
 
 const quotaTestModel = "gemini-3.8-flash-high"

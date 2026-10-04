@@ -152,12 +152,12 @@ func TestGroupQuotaBindingBucket(t *testing.T) {
 	}}
 	before := t5.Add(-time.Hour)
 	gq := groupQuota(g, before, testThresholds)
-	if gq.Binding.ID != "5h" || gq.Level != QuotaCritical || gq.Percent() != 3 || gq.Refilled {
+	if gq.Binding.ID != "5h" || gq.Level != QuotaCritical || gq.Percent() != 3 || gq.Buckets[0].Refilled {
 		t.Fatalf("before reset: %+v (percent %d)", gq, gq.Percent())
 	}
 	// Past the 5h reset that bucket counts as full, so the weekly one binds.
 	gq = groupQuota(g, t5.Add(time.Minute), testThresholds)
-	if gq.Binding.ID != "weekly" || gq.Level != QuotaOK || !gq.Refilled || gq.Percent() != 68 {
+	if gq.Binding.ID != "weekly" || gq.Level != QuotaOK || !gq.Buckets[0].Refilled || gq.Buckets[1].Refilled || gq.Percent() != 68 {
 		t.Fatalf("after reset: %+v", gq)
 	}
 
@@ -215,26 +215,22 @@ func TestQuotaDecision(t *testing.T) {
 	now := time.Date(2026, 10, 4, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(time.Hour)
 	const model = "gemini-3.8-flash-high"
-	maxAge := 10 * time.Minute
 	tests := []struct {
 		name   string
 		snap   QuotaSnapshot
-		have   bool
 		model  string
 		refuse bool
 	}{
-		{"ok passes", quotaFixture(now, 0.9, reset), true, model, false},
-		{"low refuses", quotaFixture(now, 0.2, reset), true, model, true},
-		{"critical refuses", quotaFixture(now, 0.03, reset), true, model, true},
-		{"exhausted refuses", quotaFixture(now, 0, reset), true, model, true},
-		{"no snapshot passes", quotaFixture(now, 0, reset), false, model, false},
-		{"stale snapshot passes", quotaFixture(now.Add(-time.Hour), 0, reset), true, model, false},
-		{"unmapped model passes", quotaFixture(now, 0, reset), true, "claude-x", false},
-		{"empty model passes", quotaFixture(now, 0, reset), true, "", false},
+		{"ok passes", quotaFixture(now, 0.9, reset), model, false},
+		{"low refuses", quotaFixture(now, 0.2, reset), model, true},
+		{"critical refuses", quotaFixture(now, 0.03, reset), model, true},
+		{"exhausted refuses", quotaFixture(now, 0, reset), model, true},
+		{"unmapped model passes", quotaFixture(now, 0, reset), "claude-x", false},
+		{"empty model passes", quotaFixture(now, 0, reset), "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			refuse, _ := quotaDecision(tt.snap, tt.have, now, maxAge, tt.model, testThresholds)
+			refuse, _ := quotaDecision(tt.snap, now, tt.model, testThresholds)
 			if refuse != tt.refuse {
 				t.Fatalf("refuse = %v, want %v", refuse, tt.refuse)
 			}
@@ -246,24 +242,18 @@ func TestQuotaDecisionTransitions(t *testing.T) {
 	t0 := time.Date(2026, 10, 4, 10, 0, 0, 0, time.UTC)
 	reset := t0.Add(30 * time.Minute)
 	const model = "gemini-3.8-flash-high"
-	maxAge := 10 * time.Minute
 	decide := func(s QuotaSnapshot, now time.Time) bool {
-		r, _ := quotaDecision(s, true, now, maxAge, model, testThresholds)
+		r, _ := quotaDecision(s, now, model, testThresholds)
 		return r
 	}
 	low := quotaFixture(t0, 0.03, reset)
 
-	// Past the binding bucket's reset a stale low snapshot no longer refuses.
-	longAge := 2 * time.Hour
-	if r, _ := quotaDecision(low, true, t0, longAge, model, testThresholds); !r {
+	// Past the binding bucket's reset a low snapshot no longer refuses.
+	if !decide(low, t0) {
 		t.Fatal("low snapshot should refuse before the reset")
 	}
-	if r, _ := quotaDecision(low, true, reset.Add(time.Second), longAge, model, testThresholds); r {
+	if decide(low, reset.Add(time.Second)) {
 		t.Fatal("low snapshot should pass after the binding bucket reset")
-	}
-	// Past the max age the snapshot is ignored.
-	if !decide(low, t0.Add(time.Minute)) || decide(low, t0.Add(maxAge)) {
-		t.Fatal("low snapshot should refuse inside max age and pass at it")
 	}
 	// A new snapshot replaces an ok one.
 	ok := quotaFixture(t0, 0.9, reset)
@@ -481,100 +471,47 @@ func TestUsageUnsafeLatch(t *testing.T) {
 	}
 }
 
-func TestCachedQuotaNeverBlocks(t *testing.T) {
-	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
+// TestCachedQuotaIsPureRead: CachedQuota never starts a probe, with no snapshot
+// or a stale one, even with background probing on; the refresher owns that.
+func TestCachedQuotaIsPureRead(t *testing.T) {
 	var calls atomic.Int32
-	m, _ := quotaTestManager(t, time.Minute, func(context.Context) ([]byte, error) {
-		calls.Add(1)
-		<-block
-		return nil, errors.New("never")
-	})
-	done := make(chan struct{})
-	go func() { m.CachedQuota(); m.CachedQuota(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("CachedQuota blocked on the probe")
+	m, off := quotaTestManager(t, time.Minute, okStub(&calls))
+	if _, ok := m.CachedQuota(); ok {
+		t.Fatal("trusted a snapshot that was never taken")
 	}
-}
-
-// waitQuotaIdle blocks until no probe is in flight, so a following assertion on
-// the probe count cannot race a goroutine the previous step started.
-func waitQuotaIdle(t *testing.T, m *Manager) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		m.quota.mu.Lock()
-		idle := m.quota.inflight == nil
-		m.quota.mu.Unlock()
-		if idle {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	if _, err := m.Usage(t.Context(), 0); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("a probe stayed in flight")
-}
-
-// TestCachedQuotaRefreshTrigger pins when CachedQuota starts a background probe:
-// with no snapshot, and with a snapshot older than the 60s cache TTL (even one
-// still trusted), but not with a fresh snapshot, not inside the failure backoff,
-// and never with background probing off.
-func TestCachedQuotaRefreshTrigger(t *testing.T) {
-	var calls atomic.Int32
-	var fail atomic.Bool
-	m, off := quotaTestManager(t, time.Minute, func(context.Context) ([]byte, error) {
-		calls.Add(1)
-		if fail.Load() {
-			return nil, errors.New("agy usage: boom")
-		}
-		return []byte(measuredUsageEnvelope), nil
-	})
-	step := func(at time.Duration, wantProbes int32, wantTrusted bool) {
-		t.Helper()
-		off.Store(int64(at))
-		_, trusted := m.CachedQuota()
-		waitQuotaIdle(t, m)
-		if got := calls.Load(); got != wantProbes {
-			t.Fatalf("at %s: probes = %d, want %d", at, got, wantProbes)
-		}
-		if trusted != wantTrusted {
-			t.Fatalf("at %s: trusted = %v, want %v", at, trusted, wantTrusted)
-		}
+	off.Store(int64(5 * time.Minute))
+	if _, ok := m.CachedQuota(); !ok {
+		t.Fatal("snapshot inside the max age was not trusted")
 	}
-	step(0, 1, false)              // no snapshot: a probe starts, nothing to trust yet
-	step(30*time.Second, 1, true)  // fresh: no probe
-	step(90*time.Second, 2, true)  // older than the TTL but still trusted: probe
-	fail.Store(true)               //
-	step(200*time.Second, 3, true) // stale again: this probe fails
-	step(220*time.Second, 3, true) // inside the 30s failure backoff: no probe
-	step(240*time.Second, 4, true) // backoff over: probe
-
-	var offCalls atomic.Int32
-	m2, _ := quotaTestManager(t, 0, func(context.Context) ([]byte, error) { offCalls.Add(1); return nil, errors.New("x") })
-	m2.CachedQuota()
-	waitQuotaIdle(t, m2)
-	if offCalls.Load() != 0 {
-		t.Fatal("CachedQuota probed with background probing disabled")
+	off.Store(int64(time.Hour))
+	if _, ok := m.CachedQuota(); ok {
+		t.Fatal("snapshot past the max age was trusted")
+	}
+	m.quota.mu.Lock()
+	inflight := m.quota.inflight
+	m.quota.mu.Unlock()
+	if calls.Load() != 1 || inflight != nil {
+		t.Fatalf("probes = %d, in flight = %v; CachedQuota must not probe", calls.Load(), inflight != nil)
 	}
 }
 
 // TestQuotaTrustAgeFollowsInterval pins quotaMaxAge: a snapshot is trusted for
 // twice the refresh interval, not for the 10m floor alone, and both the cached
-// read and the optional-run guard use that age. The stub blocks so the refresh
-// a stale read starts cannot replace the seeded snapshot.
+// read and the optional-run guard use that age. With no snapshot at all the
+// guard lets the run through.
 func TestQuotaTrustAgeFollowsInterval(t *testing.T) {
-	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
-	m, off := quotaTestManager(t, 30*time.Minute, func(context.Context) ([]byte, error) {
-		<-block
-		return nil, errors.New("never")
-	})
+	var calls atomic.Int32
+	m, off := quotaTestManager(t, 30*time.Minute, okStub(&calls))
+	req := StartRequest{Priority: PriorityOptional, Model: "gemini-3.8-flash-high"}
+	if err := m.checkPriority(req); err != nil {
+		t.Fatalf("optional run refused with no snapshot: %v", err)
+	}
 	m.quota.mu.Lock()
 	m.quota.snap = quotaFixture(m.now(), 0.03, m.now().Add(24*time.Hour))
-	m.quota.have = true
 	m.quota.mu.Unlock()
-	req := StartRequest{Priority: PriorityOptional, Model: "gemini-3.8-flash-high"}
 	for _, tc := range []struct {
 		at      time.Duration
 		trusted bool

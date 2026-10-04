@@ -2,16 +2,11 @@ package mcptools
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tphakala/agy-mcp/v2/internal/manager"
 )
-
-// defaultUsageMaxAge is how old a reading agy_usage accepts when max_age is
-// omitted. It matches the manager's cache TTL.
-const defaultUsageMaxAge = 60 * time.Second
 
 type quotaInput struct {
 	MaxAge string `json:"max_age,omitempty" jsonschema:"how old a cached reading may be (Go duration, e.g. 10m); default 60s, and anything under 10s is raised to 10s. Use a long value (10m) to read the background snapshot instantly; use 10s to accept only a reading under 10 seconds old; a new reading takes a few seconds because it runs agy"`
@@ -26,27 +21,25 @@ type quotaBucketOutput struct {
 	Refilled          bool    `json:"refilled" jsonschema:"true when reset_time has passed since the reading, so this window counts as full for level and remaining_percent"`
 }
 
+// quotaGroupSummary is the per-group reading both quota shapes share: the
+// compact one on run results is exactly this, and agy_usage adds detail.
+type quotaGroupSummary struct {
+	Name             string `json:"name" jsonschema:"quota group name, e.g. Gemini Models; models in a group share its limits"`
+	Level            string `json:"level" jsonschema:"ok, low, critical or exhausted, set by the tightest window of the group at the time of the call; see agy_usage for the thresholds"`
+	RemainingPercent int    `json:"remaining_percent" jsonschema:"remaining quota of the tightest window, as a whole percent rounded down; level is the authority, so 0.4 percent reads 0 with level critical"`
+	Window           string `json:"window" jsonschema:"the tightest window, the one that sets level"`
+	ResetTime        string `json:"reset_time,omitempty" jsonschema:"when the tightest window resets, RFC3339 UTC; absent when agy reported none"`
+}
+
 type quotaGroupOutput struct {
-	Name             string              `json:"name" jsonschema:"quota group name, e.g. Gemini Models; models in a group share its limits"`
-	Description      string              `json:"description,omitempty" jsonschema:"what agy says the group covers"`
-	Level            string              `json:"level" jsonschema:"ok, low, critical or exhausted, set by the tightest window of the group at the time of the call; see the tool description for the thresholds"`
-	RemainingPercent int                 `json:"remaining_percent" jsonschema:"remaining quota of the tightest window, as a whole percent rounded down; level is the authority, so 0.4 percent reads 0 with level critical"`
-	Window           string              `json:"window" jsonschema:"the tightest window, the one that sets level"`
-	ResetTime        string              `json:"reset_time,omitempty" jsonschema:"when the tightest window resets, RFC3339 UTC; absent when agy reported none"`
-	Buckets          []quotaBucketOutput `json:"buckets" jsonschema:"every window of the group"`
+	quotaGroupSummary
+	Description string              `json:"description,omitempty" jsonschema:"what agy says the group covers"`
+	Buckets     []quotaBucketOutput `json:"buckets" jsonschema:"every window of the group"`
 }
 
 type quotaOutput struct {
 	CheckedAt string             `json:"checked_at" jsonschema:"when agy was asked for this reading, RFC3339 UTC"`
 	Groups    []quotaGroupOutput `json:"groups" jsonschema:"one entry per quota group; empty when agy reported none"`
-}
-
-type quotaGroupSummary struct {
-	Name             string `json:"name" jsonschema:"quota group name, e.g. Gemini Models"`
-	Level            string `json:"level" jsonschema:"ok, low, critical or exhausted"`
-	RemainingPercent int    `json:"remaining_percent" jsonschema:"remaining quota of the tightest window, whole percent rounded down"`
-	Window           string `json:"window" jsonschema:"the tightest window, the one that sets level"`
-	ResetTime        string `json:"reset_time,omitempty" jsonschema:"when the tightest window resets, RFC3339 UTC"`
 }
 
 // quotaSummaryOutput is the compact quota reading attached to run results. It is
@@ -64,29 +57,34 @@ func formatQuotaTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+func toQuotaGroupSummary(gq *manager.GroupQuota) quotaGroupSummary {
+	return quotaGroupSummary{
+		Name:             gq.Group.Name,
+		Level:            string(gq.Level),
+		RemainingPercent: gq.Percent(),
+		Window:           gq.Binding.Window,
+		ResetTime:        formatQuotaTime(gq.Binding.ResetTime),
+	}
+}
+
 // toQuotaOutput converts a snapshot and its evaluated groups (same order, see
 // manager.Manager.QuotaLevels) into the agy_usage wire shape. Arrays are never
 // null.
 func toQuotaOutput(snap manager.QuotaSnapshot, levels []manager.GroupQuota) quotaOutput {
 	out := quotaOutput{CheckedAt: formatQuotaTime(snap.CheckedAt), Groups: make([]quotaGroupOutput, 0, len(levels))}
-	now := time.Now()
 	for i := range levels {
 		gq := &levels[i]
 		g := quotaGroupOutput{
-			Name:             gq.Group.Name,
-			Description:      gq.Group.Description,
-			Level:            string(gq.Level),
-			RemainingPercent: gq.Percent(),
-			Window:           gq.Binding.Window,
-			ResetTime:        formatQuotaTime(gq.Binding.ResetTime),
-			Buckets:          make([]quotaBucketOutput, 0, len(gq.Group.Buckets)),
+			quotaGroupSummary: toQuotaGroupSummary(gq),
+			Description:       gq.Group.Description,
+			Buckets:           make([]quotaBucketOutput, 0, len(gq.Buckets)),
 		}
-		for _, b := range gq.Group.Buckets {
+		for _, b := range gq.Buckets {
 			g.Buckets = append(g.Buckets, quotaBucketOutput{
 				ID: b.ID, Name: b.Name, Window: b.Window,
 				RemainingFraction: b.RemainingFraction,
 				ResetTime:         formatQuotaTime(b.ResetTime),
-				Refilled:          !b.ResetTime.IsZero() && !b.ResetTime.After(now),
+				Refilled:          b.Refilled,
 			})
 		}
 		out.Groups = append(out.Groups, g)
@@ -98,14 +96,7 @@ func toQuotaOutput(snap manager.QuotaSnapshot, levels []manager.GroupQuota) quot
 func toQuotaSummary(snap manager.QuotaSnapshot, levels []manager.GroupQuota) *quotaSummaryOutput {
 	out := &quotaSummaryOutput{CheckedAt: formatQuotaTime(snap.CheckedAt), Groups: make([]quotaGroupSummary, 0, len(levels))}
 	for i := range levels {
-		gq := &levels[i]
-		out.Groups = append(out.Groups, quotaGroupSummary{
-			Name:             gq.Group.Name,
-			Level:            string(gq.Level),
-			RemainingPercent: gq.Percent(),
-			Window:           gq.Binding.Window,
-			ResetTime:        formatQuotaTime(gq.Binding.ResetTime),
-		})
+		out.Groups = append(out.Groups, toQuotaGroupSummary(&levels[i]))
 	}
 	return out
 }
@@ -133,14 +124,11 @@ func registerUsage(s *mcp.Server, mgr *manager.Manager) {
 			"max_age bounds how old a cached reading may be (default 60s, minimum 10s); a fresh reading takes a few seconds. " +
 			"Shells out to the agy CLI, so it fails if agy is missing from PATH or not authenticated.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in quotaInput) (*mcp.CallToolResult, quotaOutput, error) {
-		maxAge := defaultUsageMaxAge
+		var maxAge time.Duration // zero: the manager's default
 		if in.MaxAge != "" {
-			d, err := time.ParseDuration(in.MaxAge)
+			d, err := parsePositiveDuration("max_age", in.MaxAge, "10m")
 			if err != nil {
-				return nil, quotaOutput{}, fmt.Errorf("invalid max_age %q: %w", in.MaxAge, err)
-			}
-			if d < 0 {
-				return nil, quotaOutput{}, fmt.Errorf("invalid max_age %q: want a non-negative Go duration like 10m", in.MaxAge)
+				return nil, quotaOutput{}, err
 			}
 			maxAge = d
 		}

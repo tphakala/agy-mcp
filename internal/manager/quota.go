@@ -28,8 +28,8 @@ const (
 
 	usageProbeTimeout   = 30 * time.Second
 	usageProbeKillGrace = time.Second
-	// usageCacheTTL is how old a snapshot may be before a read starts a refresh.
-	usageCacheTTL = 60 * time.Second
+	// usageDefaultMaxAge is the max age Usage applies when the caller names none.
+	usageDefaultMaxAge = 60 * time.Second
 	// usageMinMaxAge floors the max_age an agy_usage caller may ask for.
 	usageMinMaxAge = 10 * time.Second
 	// usageErrorBackoff is how long a failed probe is remembered, so a broken agy
@@ -79,13 +79,19 @@ type QuotaSnapshot struct {
 	Groups    []QuotaGroup
 }
 
+// BucketQuota is a bucket evaluated at a point in time.
+type BucketQuota struct {
+	QuotaBucket
+	Refilled bool // its reset time had passed, so it counted as full
+}
+
 // GroupQuota is a group evaluated at a point in time.
 type GroupQuota struct {
 	Group     QuotaGroup
+	Buckets   []BucketQuota // Group.Buckets in order, evaluated at the same time as Level
 	Level     QuotaLevel
 	Remaining float64     // effective remaining fraction of the binding bucket
 	Binding   QuotaBucket // the bucket that sets Level
-	Refilled  bool        // some bucket's reset time had passed, so it counted as full
 }
 
 // Percent is the remaining quota as a whole percent, rounded down. The level, not
@@ -237,11 +243,11 @@ func levelOf(r float64, th quotaThresholds) QuotaLevel {
 // least effective remaining; a tie goes to the later reset, since the caller has
 // to wait for that one anyway.
 func groupQuota(g QuotaGroup, now time.Time, th quotaThresholds) GroupQuota {
-	gq := GroupQuota{Group: g, Remaining: 1}
+	gq := GroupQuota{Group: g, Buckets: make([]BucketQuota, 0, len(g.Buckets)), Remaining: 1}
 	first := true
 	for _, b := range g.Buckets {
 		r, refilled := effectiveRemaining(b, now)
-		gq.Refilled = gq.Refilled || refilled
+		gq.Buckets = append(gq.Buckets, BucketQuota{QuotaBucket: b, Refilled: refilled})
 		if first || r < gq.Remaining || (r == gq.Remaining && b.ResetTime.After(gq.Binding.ResetTime)) {
 			gq.Remaining, gq.Binding, first = r, b, false
 		}
@@ -250,65 +256,31 @@ func groupQuota(g QuotaGroup, now time.Time, th quotaThresholds) GroupQuota {
 	return gq
 }
 
-// levels evaluates every group of the snapshot at now.
-func (s QuotaSnapshot) levels(now time.Time, th quotaThresholds) []GroupQuota {
-	out := make([]GroupQuota, 0, len(s.Groups))
-	for _, g := range s.Groups {
-		out = append(out, groupQuota(g, now, th))
-	}
-	return out
-}
-
-// quotaModelFamilies maps a model family to the quota group it draws from. A
-// model belongs to a family when its lower-cased id starts with one of the
-// prefixes; "gemini " covers a display label such as "Gemini 3.8 Flash (High)",
-// which agy accepts as --model (see modelID). The family's group is the one whose
-// name or description mentions groupMarker. Adding a family is one entry.
-var quotaModelFamilies = []struct {
-	prefixes    []string
-	groupMarker string
-}{
-	{prefixes: []string{"gemini-", "gemini "}, groupMarker: "gemini"},
-}
-
-// groupForModel returns the index of the quota group model draws from. Zero or
-// several matching groups, a model outside every family, or an empty model all
-// return false, so the caller fails open rather than guessing.
+// groupForModel returns the index of the quota group model draws from. Only
+// Gemini models are matched: a lower-cased id starting "gemini-", or "gemini "
+// for a display label such as "Gemini 3.8 Flash (High)", which agy accepts as
+// --model (see modelID), maps to the one group whose name or description
+// mentions gemini. Zero or several such groups, any other model, or an empty
+// model return false, so the caller fails open rather than guessing.
 func groupForModel(groups []QuotaGroup, model string) (int, bool) {
 	lm := strings.ToLower(strings.TrimSpace(model))
-	if lm == "" {
+	if !strings.HasPrefix(lm, "gemini-") && !strings.HasPrefix(lm, "gemini ") {
 		return 0, false
 	}
-	for _, fam := range quotaModelFamilies {
-		inFamily := false
-		for _, p := range fam.prefixes {
-			if strings.HasPrefix(lm, p) {
-				inFamily = true
-				break
-			}
+	idx, n := 0, 0
+	for i, g := range groups {
+		if strings.Contains(strings.ToLower(g.Name+" "+g.Description), "gemini") {
+			idx = i
+			n++
 		}
-		if !inFamily {
-			continue
-		}
-		idx, n := 0, 0
-		for i, g := range groups {
-			if strings.Contains(strings.ToLower(g.Name+" "+g.Description), fam.groupMarker) {
-				idx = i
-				n++
-			}
-		}
-		return idx, n == 1
 	}
-	return 0, false
+	return idx, n == 1
 }
 
 // quotaDecision reports whether an optional run on model should be refused, and
-// the group it was judged against. It never refuses without a snapshot, with one
-// older than maxAge, or when the model maps to no single group.
-func quotaDecision(snap QuotaSnapshot, have bool, now time.Time, maxAge time.Duration, model string, th quotaThresholds) (bool, GroupQuota) {
-	if !have || now.Sub(snap.CheckedAt) >= maxAge {
-		return false, GroupQuota{}
-	}
+// the group it was judged against. It never refuses when the model maps to no
+// single group; the caller has already checked that snap is young enough.
+func quotaDecision(snap QuotaSnapshot, now time.Time, model string, th quotaThresholds) (bool, GroupQuota) {
 	idx, ok := groupForModel(snap.Groups, model)
 	if !ok {
 		return false, GroupQuota{}
@@ -328,8 +300,7 @@ type quotaFlight struct {
 // restarted server starts empty and the guard fails open until the first probe.
 type quotaCache struct {
 	mu        sync.Mutex
-	snap      QuotaSnapshot
-	have      bool
+	snap      QuotaSnapshot // zero CheckedAt until the first good probe
 	lastErr   error
 	lastErrAt time.Time
 	inflight  *quotaFlight
@@ -340,10 +311,15 @@ func (m *Manager) quotaThresholds() quotaThresholds {
 	return quotaThresholds{Low: m.cfg.QuotaLow, Critical: m.cfg.QuotaCritical}
 }
 
-// QuotaLevels evaluates snap at the manager's clock with its configured
-// thresholds.
+// QuotaLevels evaluates every group of snap at the manager's clock with its
+// configured thresholds.
 func (m *Manager) QuotaLevels(snap QuotaSnapshot) []GroupQuota {
-	return snap.levels(m.now(), m.quotaThresholds())
+	now, th := m.now(), m.quotaThresholds()
+	out := make([]GroupQuota, 0, len(snap.Groups))
+	for _, g := range snap.Groups {
+		out = append(out, groupQuota(g, now, th))
+	}
+	return out
 }
 
 // quotaMaxAge is how old a snapshot the guard and the piggyback still trust.
@@ -379,7 +355,6 @@ func (m *Manager) fetchQuota(f *quotaFlight) {
 			log.Printf("agy usage probe recovered")
 		}
 		c.snap = QuotaSnapshot{CheckedAt: now, Groups: groups}
-		c.have = true
 		c.lastErr = nil
 		f.snap = c.snap
 	} else {
@@ -406,10 +381,13 @@ func (m *Manager) awaitFlight(ctx context.Context, f *quotaFlight) (QuotaSnapsho
 	}
 }
 
-// Usage returns a quota snapshot no older than maxAge (floored at 10s), probing
-// agy when the cache cannot answer. Concurrent callers share one probe, and a
-// failed probe is remembered for 30s.
+// Usage returns a quota snapshot no older than maxAge (60s when zero, floored at
+// 10s), probing agy when the cache cannot answer. Concurrent callers share one
+// probe, and a failed probe is remembered for 30s.
 func (m *Manager) Usage(ctx context.Context, maxAge time.Duration) (QuotaSnapshot, error) {
+	if maxAge == 0 {
+		maxAge = usageDefaultMaxAge
+	}
 	maxAge = max(maxAge, usageMinMaxAge)
 	c := &m.quota
 	c.mu.Lock()
@@ -419,7 +397,7 @@ func (m *Manager) Usage(ctx context.Context, maxAge time.Duration) (QuotaSnapsho
 		return QuotaSnapshot{}, err
 	}
 	now := m.now()
-	if c.have && now.Sub(c.snap.CheckedAt) < maxAge {
+	if !c.snap.CheckedAt.IsZero() && now.Sub(c.snap.CheckedAt) < maxAge {
 		snap := c.snap
 		c.mu.Unlock()
 		return snap, nil
@@ -435,28 +413,16 @@ func (m *Manager) Usage(ctx context.Context, maxAge time.Duration) (QuotaSnapsho
 }
 
 // CachedQuota returns the cached snapshot when it is young enough to trust (see
-// quotaMaxAge), without ever waiting on agy. With background probing enabled it
-// also starts a refresh when the snapshot is older than the cache TTL.
+// quotaMaxAge). It is a pure read: it never waits on agy or starts a probe, and
+// keeping the snapshot fresh is the refresher's job.
 func (m *Manager) CachedQuota() (QuotaSnapshot, bool) {
 	c := &m.quota
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := m.now()
-	var snap QuotaSnapshot
-	trusted, stale := false, true
-	if c.have {
-		age := now.Sub(c.snap.CheckedAt)
-		trusted = age < m.quotaMaxAge()
-		stale = age >= usageCacheTTL
-		if trusted {
-			snap = c.snap
-		}
+	if c.snap.CheckedAt.IsZero() || m.now().Sub(c.snap.CheckedAt) >= m.quotaMaxAge() {
+		return QuotaSnapshot{}, false
 	}
-	inBackoff := c.lastErr != nil && now.Sub(c.lastErrAt) < usageErrorBackoff
-	if m.cfg.UsageInterval > 0 && c.unsafe == nil && stale && !inBackoff {
-		m.startFetchLocked()
-	}
-	return snap, trusted
+	return c.snap, true
 }
 
 // RunUsageRefresherFromConfig keeps the quota snapshot fresh every
@@ -501,8 +467,11 @@ func (m *Manager) checkPriority(req StartRequest) error {
 	if req.Priority != PriorityOptional {
 		return nil
 	}
-	snap, have := m.CachedQuota()
-	refuse, gq := quotaDecision(snap, have, m.now(), m.quotaMaxAge(), req.Model, m.quotaThresholds())
+	snap, trusted := m.CachedQuota()
+	if !trusted {
+		return nil
+	}
+	refuse, gq := quotaDecision(snap, m.now(), req.Model, m.quotaThresholds())
 	if !refuse {
 		return nil
 	}
