@@ -6,7 +6,6 @@ import (
 	"go/token"
 	"os"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -76,11 +75,13 @@ func TestFailureReasonSetDocumented(t *testing.T) {
 		t.Fatal("README has no paragraph starting \"`failure_reason` classifies\"")
 	}
 	for _, r := range reasons {
-		word := regexp.MustCompile(`\b` + regexp.QuoteMeta(r) + `\b`)
-		if !word.MatchString(schema) {
+		// Bare words like timeout and unknown also occur in ordinary prose, so
+		// require the form each document uses to list a value: "name (" in the
+		// schema text and a backticked name in the README.
+		if !strings.Contains(schema, r+" (") {
 			t.Errorf("failure_reason %q is missing from the FailureReason schema text", r)
 		}
-		if !word.MatchString(paragraph) {
+		if !strings.Contains(paragraph, "`"+r+"`") {
 			t.Errorf("failure_reason %q is missing from the README failure_reason paragraph", r)
 		}
 	}

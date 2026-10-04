@@ -137,9 +137,10 @@ func TestJoinAsWrittenAtRoot(t *testing.T) {
 	}
 }
 
-// TestDirsIncludeUnstattableCwd: an entry that matches cwd lexically does not
-// count when cwd itself cannot be stat'ed, so the implicit --add-dir stays.
-func TestDirsIncludeUnstattableCwd(t *testing.T) {
+// TestDirsIncludeMissingCwdNeverMatches: a cwd that does not exist never counts
+// as named by a caller dir, so the implicit --add-dir stays. The entry's own stat
+// already fails here, so this pins the outcome, not the lazy cwd stat.
+func TestDirsIncludeMissingCwdNeverMatches(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone")
 	if dirsInclude([]string{"."}, missing) {
 		t.Fatal("dirsInclude reported a match for a cwd that does not exist")
