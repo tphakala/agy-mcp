@@ -379,7 +379,7 @@ Choosing a tool:
 - agy_run returns a job_id in under a couple of seconds (it waits briefly for agy to name the conversation); block on it with agy_wait or poll it with agy_status. Use these for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), or to fan several tasks out in parallel.
 - Outliving the inline wait is not a failure: the job keeps running under its own supervisor and the returned job_id still resolves to its outcome. Wait on it or poll it; do not re-send the prompt.
 - When a transport failure could make it ambiguous whether a run started, supply idempotency_key and reuse that same key on the retry. The same normalized request returns the existing job; a different request with that key is refused.
-- agy_usage reports the remaining agy quota per model group with a level (ok, low, critical, exhausted), and run, status and wait results carry the same reading in quota. Before optional work (peer reviews, second opinions, rubber-duck passes) check it and pass priority optional: the server then refuses the run while the model's group is low. When a run is refused or the group is low, skip the work and tell the user instead of retrying.
+- agy_usage reports quota left; pass priority optional on skippable runs, and report a refusal instead of retrying.
 - list_models enumerates models and list_agents enumerates agents; call them only if you want to override the default model or pick a specific agent. list_sessions lists known conversations.
 
 Notes:

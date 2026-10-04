@@ -628,3 +628,18 @@ func TestQuotaFieldOmittedWhenNil(t *testing.T) {
 		t.Fatalf("runOutput without quota = %s", raw)
 	}
 }
+
+// Claude Code keeps only the first 2048 characters of a server's instructions
+// (MEASURED: the agy server's instructions arrive cut at that offset). The
+// continuation and fan-out notes must start inside that window, so a new bullet
+// above them cannot silently push them out of the client's view.
+func TestServerInstructionsKeepNotesInView(t *testing.T) {
+	t.Parallel()
+	const clientLimit = 2048
+	for _, note := range []string{"- Continue a prior thread", "- Fan out freely"} {
+		i := strings.Index(serverInstructions, note)
+		if i < 0 || i >= clientLimit {
+			t.Errorf("note %q starts at %d, want inside the first %d characters", note, i, clientLimit)
+		}
+	}
+}
