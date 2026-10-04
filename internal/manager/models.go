@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/tphakala/agy-mcp/v2/internal/proc"
 )
 
 // listModelsTimeout bounds `agy models`, and listModelsKillGrace bounds how long
@@ -76,6 +78,8 @@ func modelID(v string) string {
 // list_models and list_agents share. Only the subcommand, its timeout pair, and
 // (at the caller) the decoder differ between the two, so they run through here
 // rather than each carrying its own copy of this delicate ctx-and-error handling.
+// The quota probe shares the same body through runJSONProbe, which also lets it
+// run in its own session (see newSession there).
 //
 // This is NOT the sharing issue #160 item 7 weighed and rejected: that was about
 // folding the VERSION probe together with a listing, and the two genuinely differ
@@ -85,6 +89,19 @@ func modelID(v string) string {
 // of those decisions, so nothing delicate is being generalized across a real
 // difference here; the version probe stays separate, as that note intends.
 func (m *Manager) runJSONListing(ctx context.Context, sub string, timeout, killGrace time.Duration) ([]byte, error) {
+	return m.runJSONProbe(ctx, sub, []string{outputFormatFlag, jsonOutputFormat, sub}, false, timeout, killGrace)
+}
+
+// runJSONProbe execs agy with args and returns its stdout. On a non-zero exit it
+// returns the error together with whatever stdout agy printed, so a caller can
+// still inspect a reply that came with a failure exit; the listings ignore it.
+// label names the probe
+// in errors ("agy <label>: ..."). newSession runs agy in its own session
+// (proc.ConfigureSession): agy 1.2.x opens /dev/tty in -p mode and stops on
+// SIGTTOU in a background process group that shares a controlling terminal (see
+// proc.ConfigureSession), so the -p quota probe needs it. The listing subcommands
+// pass false; they have not been seen to touch the tty (NOT MEASURED).
+func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string, newSession bool, timeout, killGrace time.Duration) ([]byte, error) {
 	// Version-gated like the job path even though a listing itself does not need
 	// stream-json: an agy too old to drive is a configuration problem, and one
 	// clear message about it beats a listing from a binary that cannot run a job.
@@ -103,23 +120,26 @@ func (m *Manager) runJSONListing(ctx context.Context, sub string, timeout, killG
 	// subcommand; agy rejects `<sub> --output-format json` outright (the subcommand
 	// flagset does not define it). The listing banner stays on stderr, so stdout is
 	// the envelope alone.
-	cmd := probeCmd(ctx, agy, outputFormatFlag, jsonOutputFormat, sub)
+	cmd := probeCmd(ctx, agy, args...)
+	if newSession {
+		proc.ConfigureSession(cmd)
+	}
 	cmd.WaitDelay = killGrace
 	out, err := cmd.Output()
 	if err != nil {
 		// Check the deadline BEFORE classifying the exec error, exactly as
 		// readAgyVersion does. A ctx-killed process surfaces as *exec.ExitError,
 		// indistinguishable from a binary that merely exited non-zero, so without
-		// this a timeout this call imposed would surface as "agy <sub>: signal:
+		// this a timeout this call imposed would surface as "agy <label>: signal:
 		// killed" and blame agy for a deadline it set (issue #160). Name the real
 		// cause instead.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			if errors.Is(ctxErr, context.Canceled) {
 				// The caller gave up; say so rather than blaming a binary that was
 				// answering fine.
-				return nil, fmt.Errorf("agy %s was cancelled: %w", sub, ctxErr)
+				return nil, fmt.Errorf("agy %s was cancelled: %w", label, ctxErr)
 			}
-			return nil, fmt.Errorf("agy %s did not complete within %s: %w", sub, timeout, ctxErr)
+			return nil, fmt.Errorf("agy %s did not complete within %s: %w", label, timeout, ctxErr)
 		}
 		// WaitDelay fired while the deadline had NOT: agy answered and exited, but a
 		// descendant kept the output pipe open, so exec abandoned the copy. The
@@ -136,10 +156,10 @@ func (m *Manager) runJSONListing(ctx context.Context, sub string, timeout, killG
 			// "exit status 1".
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 				if stderr := strings.TrimSpace(string(ee.Stderr)); stderr != "" {
-					return nil, fmt.Errorf("agy %s: %w: %s", sub, err, stderr)
+					return out, fmt.Errorf("agy %s: %w: %s", label, err, stderr)
 				}
 			}
-			return nil, fmt.Errorf("agy %s: %w", sub, err)
+			return out, fmt.Errorf("agy %s: %w", label, err)
 		}
 	}
 	return out, nil

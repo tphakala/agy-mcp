@@ -25,6 +25,10 @@ import (
 // the encoding. The encoding has its own JSON names, so
 // renaming a StartRequest field does not change the key either.
 //
+// StartRequest.Priority is deliberately not hashed: it does not change what agy
+// runs, and a retry that flips it must replay the existing job, not be refused as
+// a different request.
+//
 // It returns "" if encoding fails, which these field types cannot cause; a job
 // stored with an empty key is compared by args, and a retry whose key came out
 // empty against a keyed job is refused.

@@ -35,6 +35,7 @@ var wantAnnotations = map[string]mcp.ToolAnnotations{
 	toolListSessions: {ReadOnlyHint: true, OpenWorldHint: new(false)},
 	toolListModels:   {ReadOnlyHint: true, OpenWorldHint: new(true)},
 	toolListAgents:   {ReadOnlyHint: true, OpenWorldHint: new(true)},
+	toolAgyUsage:     {ReadOnlyHint: true, OpenWorldHint: new(true)},
 }
 
 // eqBoolPtr compares two optional hints. Nil is distinct from false: the MCP
@@ -120,6 +121,7 @@ var wantSiblings = map[string][]string{
 	toolListModels:   {toolAgyRun, toolAgyRunSync},
 	toolListAgents:   {toolAgyRun, toolAgyRunSync},
 	toolListSessions: {toolAgyRun, toolAgyRunSync},
+	toolAgyUsage:     {toolAgyRun, toolAgyRunSync},
 }
 
 // mentions reports whether desc names tool as a whole word. A plain substring
@@ -208,6 +210,11 @@ func assertPropertiesDescribed(t *testing.T, which string, raw any) {
 		// (workspace, conversation_id) escape the requirement entirely.
 		if items, ok := prop["items"].(map[string]any); ok {
 			assertPropertiesDescribed(t, which+" "+name+" item", items)
+		}
+		// Recurse into an object-typed property too (the quota and usage fields),
+		// so the fields a client reads inside it are held to the same requirement.
+		if _, ok := prop["properties"].(map[string]any); ok {
+			assertPropertiesDescribed(t, which+" "+name, prop)
 		}
 	}
 }

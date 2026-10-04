@@ -34,6 +34,7 @@ Every job runs `agy --output-format stream-json`, and the supervisor decodes tha
 - `agy_wait`: block until an already-started job finishes (bounded, with MCP progress notifications); one call replaces an `agy_status` poll loop.
 - `list_models`: enumerate available `agy` models, as the ids the `model` parameter accepts plus their display labels.
 - `list_agents`: enumerate available `agy` agents, as the names the `agent` parameter accepts. Unlike `list_models` there is no id/label split, because `agy` takes an agent name verbatim; an empty list just means no agents are configured.
+- `agy_usage`: report the remaining `agy` quota per quota group (for example the Gemini pool) with a level of `ok`, `low`, `critical` or `exhausted`. It spends no model quota. See [Quota](#quota).
 - `list_sessions`: list known conversations so review threads can be continued. An unfiltered call omits the ephemeral per-call workspaces the agy-openai-shim helper creates; pass a `dir` to fetch a specific one.
 
 `agy_run` and `agy_run_sync` also take optional per-run controls: pick the `model`, reasoning `effort` (`low`/`medium`/`high`), execution `mode` (including a `plan`-only pass), a named `agent`, `sandbox` terminal restrictions, and a `json_schema` to constrain the result to structured output. Those run-shaping values are forwarded to `agy`; `idempotency_key` is handled only by agy-mcp and is never forwarded.
@@ -55,10 +56,10 @@ Session continuation rides `agy`'s own durable conversation store (`--conversati
 `cwd` and under every directory passed in `dirs`, without prompting. For a review that must
 not touch the repo, say so explicitly in the prompt. The tools declare this on the wire: `agy_run` and
 `agy_run_sync` are annotated `destructiveHint: true` / `openWorldHint: true`, `agy_cancel` is
-`destructiveHint: true` / `idempotentHint: true`, and `agy_status`, `agy_wait`, `list_models`,
+`destructiveHint: true` / `idempotentHint: true`, and `agy_status`, `agy_wait`, `agy_usage`, `list_models`,
 `list_agents` and `list_sessions` are `readOnlyHint: true`. Annotations are hints, so a client is free to
-ignore them; one that does gate confirmation on them may stop prompting for the four
-read-only tools.
+ignore them; one that does gate confirmation on them may stop prompting for the read-only
+tools.
 
 **Project rules load by default.** In print mode `agy` treats a directory as a workspace only when it is passed with `--add-dir`, and only a workspace gets its rule files loaded. Running `agy` inside `cwd` is not enough, so agy-mcp also passes the run's `cwd` as an `--add-dir`, and the project's `AGENTS.md` applies to the delegated run, including one at the repository root when `cwd` is a subdirectory ([#188](https://github.com/tphakala/agy-mcp/issues/188)). A workspace is not only about rules: on agy 1.2.9, `agy`'s own `/hooks` listing shows the hooks defined in the workspace's `.agents/hooks.json` as enabled when the directory is passed with `--add-dir`, and none without it. Pass `project_rules: false` for a run that must not be steered by the repository's own rules or hooks, such as an independent review or a run against a repository you do not trust. Each directory in `dirs` is passed as given and is a workspace in its own right, so listing `cwd` there makes it a workspace even with `project_rules: false`.
 
@@ -73,7 +74,7 @@ Two transports run the same core:
 
   The version is checked once per process, the first time a tool actually needs agy, and the verdict is cached. A binary that is too old is reported as `agy 1.1.15 or newer is required ...; found 1.1.7 at /usr/local/bin/agy`. A failed check is deliberately not cached, so upgrading agy is picked up without restarting the server.
 
-  A missing `agy` does not stop the server from starting. `initialize`, `tools/list`, and `list_sessions` never exec it, so the lookup is deferred: the server starts, logs a warning to stderr, serves discovery normally, and the tools that do need the binary (`agy_run`, `agy_run_sync`, `list_models`, `list_agents`) fail per call with `agy not found on PATH; set AGY_MCP_AGY_PATH`. An `agy` installed later is picked up without restarting the server. An explicit `AGY_MCP_AGY_PATH` is treated differently: it is a claim about one specific binary, so a typo or a non-executable target still fails fast at startup.
+  A missing `agy` does not stop the server from starting. `initialize`, `tools/list`, and `list_sessions` never exec it, so the lookup is deferred: the server starts, logs a warning to stderr, serves discovery normally, and the tools that do need the binary (`agy_run`, `agy_run_sync`, `agy_usage`, `list_models`, `list_agents`) fail per call with `agy not found on PATH; set AGY_MCP_AGY_PATH`. An `agy` installed later is picked up without restarting the server. An explicit `AGY_MCP_AGY_PATH` is treated differently: it is a claim about one specific binary, so a typo or a non-executable target still fails fast at startup.
 - Go 1.27+ to build.
 - The server builds and runs on Linux, macOS, and Windows. Job supervision (running agy as managed jobs via `agy_run` / `agy_run_sync` / `agy_status` / `agy_cancel`) is implemented on **Linux** and **macOS** (process groups, SIGTERM cancel, an advisory flock) and on **Windows** (Job Objects, `OpenProcess` + process creation time, `LockFileEx`); stdio/HTTP serving, `list_models`, and `list_sessions` work identically everywhere.
 
@@ -123,11 +124,12 @@ Or add to your MCP client config:
 
 ## Tools
 
-- `agy_run(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, project_rules?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, idempotency_key?)` -> `{ job_id, conversation_id?, state }`
-- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, project_rules?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, idempotency_key?, wait?)` -> `{ job_id, state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
-- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type? }`
-- `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, note? }`
+- `agy_run(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, project_rules?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, idempotency_key?, priority?)` -> `{ job_id, conversation_id?, state, quota? }`
+- `agy_run_sync(prompt, model?, effort?, mode?, agent?, sandbox?, dirs?, project_rules?, conversation_id?, continue_latest?, cwd?, timeout?, json_schema?, idempotency_key?, priority?, wait?)` -> `{ job_id, state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, quota?, note? }`
+- `agy_status(job_id)` -> `{ state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, quota? }`
+- `agy_wait(job_id, wait?)` -> `{ job_id, state, elapsed, result?, error?, failure_reason?, recovery?, conversation_id?, model?, partial?, num_turns?, usage?, step_type?, quota?, note? }`
 - `agy_cancel(job_id)` -> `{ state }`
+- `agy_usage(max_age?)` -> `{ checked_at, groups }`, each group `{ name, description?, level, remaining_percent, window, reset_time?, buckets }`
 - `list_models()` -> `{ models, model_details }`
 - `list_agents()` -> `{ agents }`
 - `list_sessions(dir?)` -> `{ sessions }`
@@ -207,6 +209,16 @@ down, before it re-takes the locks for jobs whose supervisor outlived it; a sibl
 continues the same conversation during that window is not blocked. The in-process gate is always
 restored at startup, so this gap is limited to the restart window itself. Fresh runs take no lock
 at all and are unaffected by either caveat.
+
+### Quota
+
+`agy_usage` runs `agy --output-format json -p /usage` and returns the quota per group (the Gemini pool, shared by every Gemini model, Flash and Pro alike, is one group; Claude and GPT models are another, MEASURED against agy 1.2.16; only Gemini models are matched to a group, so a run on any other model is never refused). That invocation starts no agent turn and spends no model quota (agy changelog 1.1.11; MEASURED against agy 1.2.16, which also measured that adding `--disable-slash-commands` turns `/usage` into a model prompt, so the probe never carries it, and a reply that shows a model turn switches probing off for the rest of the server process). The probe runs in its own session because agy 1.2.x otherwise stops on SIGTTOU when it shares a controlling terminal.
+
+Each group has a `level` from its tightest window (usually the 5h or the weekly limit): `exhausted` at 0, `critical` below 5 percent remaining, `low` below 25 percent, otherwise `ok`. A window whose `reset_time` has passed counts as full, so a stale reading never reports a quota that has since refilled as low. `remaining_percent` is rounded down and the level is the authority. Thresholds are set with `AGY_MCP_USAGE_LOW` and `AGY_MCP_USAGE_CRITICAL`.
+
+Readings are cached in memory per server process (60 seconds by default; `max_age` sets how old a reading may be, from 10 seconds up, and a younger reading is reused), concurrent callers share one probe, and a failed probe is remembered for 30 seconds. With `AGY_MCP_USAGE_INTERVAL` above zero (5 minutes by default) the server also refreshes the reading in the background. `agy_run`, `agy_run_sync`, `agy_status` and `agy_wait` results carry a compact `quota` field read from that cache; it never waits on agy and is absent when there is no reading younger than twice the interval (at least 10 minutes). Several servers (one per client session) each probe on their own.
+
+`priority: optional` on `agy_run` or `agy_run_sync` marks work that may be skipped, such as a peer review or a second opinion. When the run's model belongs to a group at `low`, `critical` or `exhausted`, the run is refused before any job starts, as a tool error naming the group, level, remaining percent and reset time. The refusal creates no job, so `failure_reason` is unchanged; report the skip instead of retrying. The guard fails open: no reading, a reading that is too old, a model outside a known group (or an omitted model with no `AGY_MCP_DEFAULT_MODEL`), or a failed probe with no trusted earlier reading never refuses (an earlier reading inside that window still applies), and `priority: normal` (the default) always runs. `priority` is not part of the `idempotency_key` match: a retry whose key already names a job returns that job whatever its priority and the current quota.
 
 ## Completion wake for Claude Code
 
@@ -297,6 +309,9 @@ v2 requires agy 1.1.15 and drives it through `--output-format stream-json`. The 
 | `AGY_MCP_DEFAULT_MODEL` | agy default | default model, as an id (`gemini-3.1-pro-high`), not a display label |
 | `AGY_MCP_HTTP_TOKEN` | (none) | optional bearer token for HTTP mode; empty = unauthenticated |
 | `AGY_MCP_SYNC_WAIT_CAP` | `90s` | inline-wait ceiling for `agy_run_sync` / `agy_wait` (the default when no `wait` is given, and the clamp for a larger one); the 90s default stays below common MCP clients' ~120s per-call timeout, and this variable raises or lowers it; a Go duration that does not parse as positive is ignored |
+| `AGY_MCP_USAGE_INTERVAL` | `5m` | how often the server refreshes its quota reading in the background (a Go duration of at least 1m); `0` disables background probing, leaving only explicit `agy_usage` calls to probe; a bad value fails startup |
+| `AGY_MCP_USAGE_LOW` | `25` | remaining quota percent (`25` or `25%`) below which a group reports `low`; a bad value, or `AGY_MCP_USAGE_CRITICAL` above it, fails startup |
+| `AGY_MCP_USAGE_CRITICAL` | `5` | remaining quota percent below which a group reports `critical` |
 | `AGY_MCP_WAIT_READY_FILE` | (none) | absolute path `wait-job` / `hook-wait` create once their SIGINT/SIGTERM handler is installed, so a parent can signal without racing it; must be fresh per invocation, an existing file is refused rather than overwritten; empty = nothing is written |
 
 ## Development

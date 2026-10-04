@@ -43,6 +43,13 @@ func newTestManager(t *testing.T, fake testutil.FakeAgy) (mgr *manager.Manager, 
 // for the tests that pin which tool pays it.
 func newTestManagerWithIDWait(t *testing.T, fake testutil.FakeAgy, idWait time.Duration) (mgr *manager.Manager, stateDir string) {
 	t.Helper()
+	return newTestManagerCfg(t, fake, func(c *config.Config) { c.ConversationIDWait = idWait })
+}
+
+// newTestManagerCfg is newTestManager with a hook to adjust the config before the
+// manager is built, for tests that need quota thresholds or the like.
+func newTestManagerCfg(t *testing.T, fake testutil.FakeAgy, adjust func(*config.Config)) (mgr *manager.Manager, stateDir string) {
+	t.Helper()
 	if fake.ConversationID == "" && !fake.NoConversationID {
 		fake.ConversationID = testConversationID
 	}
@@ -55,8 +62,8 @@ func newTestManagerWithIDWait(t *testing.T, fake testutil.FakeAgy, idWait time.D
 	stateDir = t.TempDir()
 	c := config.Config{AgyPath: agy, SupervisorExe: sup, StateDir: stateDir,
 		DefaultTimeout: time.Minute, MaxConcurrency: 4,
-		ConversationIDWait:    idWait,
 		ConversationCacheFile: cachePath}
+	adjust(&c)
 	return manager.New(c), stateDir
 }
 

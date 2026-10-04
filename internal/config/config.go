@@ -4,9 +4,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,6 +23,26 @@ const (
 	EnvDefaultModel = "AGY_MCP_DEFAULT_MODEL"
 	EnvStateDir     = "AGY_MCP_STATE_DIR"
 	EnvHTTPToken    = "AGY_MCP_HTTP_TOKEN"
+
+	// EnvUsageInterval is how often the server refreshes its quota snapshot in
+	// the background (a Go duration; 0 disables background probing).
+	// EnvUsageLow and EnvUsageCritical are the remaining-quota percentages below
+	// which a group reports the low and critical levels.
+	EnvUsageInterval = "AGY_MCP_USAGE_INTERVAL"
+	EnvUsageLow      = "AGY_MCP_USAGE_LOW"
+	EnvUsageCritical = "AGY_MCP_USAGE_CRITICAL"
+)
+
+// Defaults for the quota settings.
+const (
+	DefaultUsageInterval        = 5 * time.Minute
+	DefaultUsageLowPercent      = 25
+	DefaultUsageCriticalPercent = 5
+
+	// minUsageInterval is the shortest non-zero background probe interval. Each
+	// probe spawns agy (about 1.6s of CPU, MEASURED against agy 1.2.16), so a
+	// shorter period is refused rather than clamped.
+	minUsageInterval = time.Minute
 )
 
 // Config holds resolved runtime settings.
@@ -44,6 +67,14 @@ type Config struct {
 	// (last_conversations.json) is read from. Empty means agy's default
 	// location under the user's home. Primarily a test seam.
 	ConversationCacheFile string
+
+	// UsageInterval is the period of the background quota refresh; 0 disables
+	// background probing, leaving only explicit agy_usage calls to probe.
+	UsageInterval time.Duration
+	// QuotaLow and QuotaCritical are fractions in [0, 1] of remaining quota below
+	// which a group reports the low and critical levels (see manager.QuotaLevel).
+	QuotaLow      float64
+	QuotaCritical float64
 }
 
 // baseConfig returns a Config carrying exactly the defaults shared by Resolve
@@ -100,6 +131,23 @@ func Resolve() (Config, error) {
 	}
 	c.SupervisorExe = self
 
+	// Quota settings fail fast like an explicit AGY_MCP_AGY_PATH: a typo here
+	// would otherwise silently change which runs an optional priority refuses.
+	// They are not in baseConfig, which holds only what ResolveWait shares; the
+	// wait paths never read quota.
+	if c.UsageInterval, err = parseUsageInterval(os.Getenv(EnvUsageInterval)); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", EnvUsageInterval, err)
+	}
+	if c.QuotaLow, err = parsePercent(EnvUsageLow, os.Getenv(EnvUsageLow), DefaultUsageLowPercent/100.0); err != nil {
+		return Config{}, err
+	}
+	if c.QuotaCritical, err = parsePercent(EnvUsageCritical, os.Getenv(EnvUsageCritical), DefaultUsageCriticalPercent/100.0); err != nil {
+		return Config{}, err
+	}
+	if c.QuotaCritical > c.QuotaLow {
+		return Config{}, fmt.Errorf("%s (%v%%) must not exceed %s (%v%%)", EnvUsageCritical, c.QuotaCritical*100, EnvUsageLow, c.QuotaLow*100)
+	}
+
 	stateRoot, err := resolveStateDir()
 	if err != nil {
 		return Config{}, err
@@ -107,6 +155,40 @@ func Resolve() (Config, error) {
 	c.StateDir = stateRoot
 
 	return c, nil
+}
+
+// parseUsageInterval parses AGY_MCP_USAGE_INTERVAL: empty is the default, 0
+// disables background probing, and any other value must be a Go duration of at
+// least one minute.
+func parseUsageInterval(raw string) (time.Duration, error) {
+	if raw == "" {
+		return DefaultUsageInterval, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		// "0" parses as a duration, so only a malformed value reaches here.
+		return 0, fmt.Errorf("parse %q: %w", raw, err)
+	}
+	if d == 0 {
+		return 0, nil
+	}
+	if d < minUsageInterval {
+		return 0, fmt.Errorf("%q is below the %s minimum (use 0 to disable background probing)", raw, minUsageInterval)
+	}
+	return d, nil
+}
+
+// parsePercent parses a percentage in 0..100 with an optional trailing % and
+// returns it as a fraction; empty returns def. name prefixes the error.
+func parsePercent(name, raw string, def float64) (float64, error) {
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(raw), "%"), 64)
+	if err != nil || math.IsNaN(v) || v < 0 || v > 100 {
+		return 0, fmt.Errorf("%s %q: want a percentage between 0 and 100", name, raw)
+	}
+	return v / 100, nil
 }
 
 // AgyBinary returns the absolute path to the agy binary. Every site that execs
