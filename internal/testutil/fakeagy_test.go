@@ -69,6 +69,33 @@ func TestFakeAgyAnswersVersionProbe(t *testing.T) {
 	}
 }
 
+// The quota probe passes exactly four tokens. The fake answers that invocation
+// with the usage envelope and must not answer a variant that adds a flag, so a
+// probe regression (for instance --disable-slash-commands, which makes agy treat
+// /usage as a model prompt) fails the decoder instead of passing silently.
+func TestFakeAgyAnswersUsageProbe(t *testing.T) {
+	path := WriteFakeAgy(t, FakeAgy{Stdout: "unused", Usage: []FakeQuotaGroup{{
+		Name: "Gemini Models",
+		Buckets: []FakeQuotaBucket{{
+			ID: "5h", Name: "5h limit", Window: "5h", RemainingFraction: 0.5, ResetTime: "2026-10-04T11:32:45Z",
+		}},
+	}}})
+	res := runScript(t, 10*time.Second, path, "--output-format", "json", "-p", "/usage")
+	if res.ExitCode != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %q", res.ExitCode, res.Stderr)
+	}
+	for _, want := range []string{`"name":"usage"`, `"status":"SUCCESS"`, `"remaining_fraction":0.5`, `"Gemini Models"`} {
+		if !strings.Contains(res.Stdout, want) {
+			t.Errorf("stdout %q lacks %s", res.Stdout, want)
+		}
+	}
+
+	res = runScript(t, 10*time.Second, path, "--output-format", "json", "--disable-slash-commands", "-p", "/usage")
+	if strings.Contains(res.Stdout, `"name":"usage"`) {
+		t.Fatalf("a probe with --disable-slash-commands was answered as a usage command: %q", res.Stdout)
+	}
+}
+
 func TestFakeAgyNonZeroExit(t *testing.T) {
 	path := WriteFakeAgy(t, FakeAgy{Stderr: "boom", Exit: 3})
 	res := runScript(t, 10*time.Second, path)

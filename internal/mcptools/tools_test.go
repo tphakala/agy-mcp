@@ -542,3 +542,74 @@ func TestStatusOutputFailureReason(t *testing.T) {
 		t.Errorf("failure_reason must still signal the quota wall even with partial text, got %q", withText.FailureReason)
 	}
 }
+
+func TestToStartRequestValidatesPriority(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"normal", manager.PriorityNormal},
+		{"optional", manager.PriorityOptional},
+	} {
+		req, err := runInput{Prompt: "p", Priority: tc.in}.toStartRequest()
+		if err != nil {
+			t.Fatalf("priority %q: %v", tc.in, err)
+		}
+		if req.Priority != tc.want {
+			t.Errorf("priority %q mapped to %q, want %q", tc.in, req.Priority, tc.want)
+		}
+	}
+	_, err := runInput{Prompt: "p", Priority: "urgent"}.toStartRequest()
+	if err == nil || !strings.Contains(err.Error(), `invalid priority "urgent"`) {
+		t.Fatalf("priority urgent error = %v, want an invalid priority error", err)
+	}
+}
+
+func TestToQuotaOutput(t *testing.T) {
+	t.Parallel()
+	reset := time.Date(2026, 10, 4, 11, 32, 45, 0, time.FixedZone("x", 3*3600))
+	snap := manager.QuotaSnapshot{
+		CheckedAt: time.Date(2026, 10, 4, 10, 0, 0, 0, time.UTC),
+		Groups: []manager.QuotaGroup{{
+			Name:    "Gemini Models",
+			Buckets: []manager.QuotaBucket{{ID: "5h", Name: "5h limit", Window: "5h", RemainingFraction: 0.0356, ResetTime: reset}},
+		}},
+	}
+	levels := []manager.GroupQuota{{
+		Group: snap.Groups[0], Level: manager.QuotaCritical, Remaining: 0.0356, Binding: snap.Groups[0].Buckets[0],
+	}}
+	out := toQuotaOutput(snap, levels)
+	g := out.Groups[0]
+	if g.Level != "critical" || g.RemainingPercent != 3 || g.Window != "5h" || g.ResetTime != "2026-10-04T08:32:45Z" {
+		t.Fatalf("group = %+v", g)
+	}
+	if out.CheckedAt != "2026-10-04T10:00:00Z" {
+		t.Fatalf("checked_at = %q", out.CheckedAt)
+	}
+	// Arrays are never null on the wire, even with nothing in them.
+	raw, err := json.Marshal(toQuotaOutput(manager.QuotaSnapshot{}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"groups":[]`) {
+		t.Fatalf("empty output = %s, want groups as an empty array", raw)
+	}
+	sum := toQuotaSummary(snap, levels)
+	if sum.Groups[0].RemainingPercent != 3 || sum.Groups[0].Level != "critical" {
+		t.Fatalf("summary = %+v", sum.Groups[0])
+	}
+}
+
+// With no snapshot quotaFor returns nil, so quota is omitted from the wire.
+func TestQuotaFieldOmittedWhenNil(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(runOutput{JobID: "j", State: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "quota") {
+		t.Fatalf("runOutput without quota = %s", raw)
+	}
+}

@@ -319,3 +319,61 @@ func TestResolveHTTPToken(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveUsageSettings: the quota settings default to 5m / 25% / 5%, take
+// percent values from the environment, and fail startup on a bad value or on a
+// critical threshold above the low one.
+func TestResolveUsageSettings(t *testing.T) {
+	t.Setenv("AGY_MCP_STATE_DIR", t.TempDir())
+	fakeAgyOnPath(t)
+
+	c, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.UsageInterval != 5*time.Minute || c.QuotaLow != 0.25 || c.QuotaCritical != 0.05 {
+		t.Errorf("defaults = %s/%v/%v, want 5m/0.25/0.05", c.UsageInterval, c.QuotaLow, c.QuotaCritical)
+	}
+
+	t.Setenv("AGY_MCP_USAGE_INTERVAL", "0")
+	t.Setenv("AGY_MCP_USAGE_LOW", "40%")
+	t.Setenv("AGY_MCP_USAGE_CRITICAL", "10")
+	c, err = Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.UsageInterval != 0 || c.QuotaLow != 0.4 || c.QuotaCritical != 0.1 {
+		t.Errorf("overrides = %s/%v/%v, want 0/0.4/0.1", c.UsageInterval, c.QuotaLow, c.QuotaCritical)
+	}
+}
+
+func TestResolveUsageRejectsBadValues(t *testing.T) {
+	tests := []struct {
+		name, key, val string
+	}{
+		{"interval", "AGY_MCP_USAGE_INTERVAL", "10s"},
+		{"low", "AGY_MCP_USAGE_LOW", "lots"},
+		{"critical", "AGY_MCP_USAGE_CRITICAL", "150"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AGY_MCP_STATE_DIR", t.TempDir())
+			fakeAgyOnPath(t)
+			t.Setenv(tt.key, tt.val)
+			if _, err := Resolve(); err == nil || !strings.Contains(err.Error(), tt.key) {
+				t.Fatalf("Resolve error = %v, want one naming %s", err, tt.key)
+			}
+		})
+	}
+}
+
+func TestResolveUsageCriticalAboveLowFails(t *testing.T) {
+	t.Setenv("AGY_MCP_STATE_DIR", t.TempDir())
+	fakeAgyOnPath(t)
+	t.Setenv("AGY_MCP_USAGE_LOW", "10")
+	t.Setenv("AGY_MCP_USAGE_CRITICAL", "20")
+	_, err := Resolve()
+	if err == nil || !strings.Contains(err.Error(), "AGY_MCP_USAGE_LOW") || !strings.Contains(err.Error(), "AGY_MCP_USAGE_CRITICAL") {
+		t.Fatalf("Resolve error = %v, want one naming both variables", err)
+	}
+}

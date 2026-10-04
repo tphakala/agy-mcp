@@ -66,6 +66,13 @@ type Manager struct {
 	// that intermediate point and pin the release-ordering invariant (issue #81);
 	// production leaves it nil, so the check is a single never-taken branch.
 	testHookMidRelease func()
+
+	// quota is the in-memory quota snapshot (see quota.go). readUsage is the
+	// probe and now the clock behind it, both indirections defaulted in New so a
+	// test can drive the cache without a real agy or real time.
+	quota     quotaCache
+	readUsage func(context.Context) ([]byte, error)
+	now       func() time.Time
 }
 
 // New constructs a Manager.
@@ -79,7 +86,7 @@ func New(c config.Config) *Manager {
 	if cacheFile == "" {
 		cacheFile = agyCachePath()
 	}
-	return &Manager{
+	m := &Manager{
 		cfg:                  c,
 		store:                jobstore.New(c.StateDir),
 		gate:                 newGate(c.MaxConcurrency),
@@ -90,7 +97,12 @@ func New(c config.Config) *Manager {
 		restoredPollInterval: 2 * time.Second,
 		readStartTimeTicks:   readStartTimeTicks,
 		readAgyVersion:       readAgyVersion,
+		now:                  time.Now,
 	}
+	m.readUsage = func(ctx context.Context) ([]byte, error) {
+		return m.runJSONProbe(ctx, "/"+usageCommandName, usageProbeArgs(), true, usageProbeTimeout, usageProbeKillGrace)
+	}
+	return m
 }
 
 // StartRequest describes a run to start.
@@ -106,6 +118,7 @@ type StartRequest struct {
 	ConversationID   string   // optional; --conversation <id>
 	JSONSchema       string   // optional; --json-schema <inline schema or path>, constrains the final stream-json result
 	IdempotencyKey   string   // optional; retry token used only by agy-mcp, never forwarded to agy
+	Priority         string   // optional; "optional" lets StartJob refuse the run when the model's quota group is low (see checkPriority); never forwarded to agy and not part of the request key
 	ContinueLatest   bool     // resolve cwd's latest conversation before the run
 	Cwd              string   // optional; defaults to process cwd
 	Timeout          time.Duration
@@ -518,7 +531,7 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	// Job supervision is implemented on Linux (process groups, /proc) and Windows
 	// (Job Objects, OpenProcess). On other platforms refuse before doing any work, so
 	// the failure is a clear error rather than a half-spawned job. stdio/HTTP serve,
-	// list_models, list_agents, and list_sessions still work everywhere.
+	// list_models, list_agents, list_sessions, and agy_usage still work everywhere.
 	if !proc.Supported {
 		return Job{}, proc.ErrUnsupported
 	}
@@ -552,6 +565,13 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 			releaseIdem()
 		}
 	}()
+
+	// After the replay check on purpose: a retry of a job that already exists must
+	// return it whatever its priority and the quota are now. A refusal creates
+	// nothing, and the deferred release above frees the idempotency claim.
+	if err := m.checkPriority(req); err != nil {
+		return Job{}, err
+	}
 
 	// A retry that resolved to an existing job above needs no agy binary at all.
 	// A genuinely new run does, and still checks the binary before reserving a

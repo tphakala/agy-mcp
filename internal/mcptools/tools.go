@@ -32,6 +32,7 @@ type runInput struct {
 	Cwd            string   `json:"cwd,omitempty" jsonschema:"absolute path of the directory the agent runs in and may edit files under; also scopes continue_latest. Fresh runs sharing a cwd run concurrently. A relative path is resolved against the server's working directory, which is not necessarily yours, so pass an absolute one. Symlinks are resolved. Defaults to the server's own working directory. Unless project_rules is false, cwd is also passed to agy as a workspace so the project's rule files apply"`
 	Timeout        string   `json:"timeout,omitempty" jsonschema:"max wall-clock duration for the whole run (Go duration, e.g. 20m); a value over 24h is rejected. On expiry the job normally ends in state failed with failure_reason timeout. Usually agy-mcp kills the agy process tree mid-run; on agy 1.1.28 and later, if agy's own --print-timeout fires first, agy stops the turn itself and any text it had comes back as a partial result (on older agy that expiry is reported as agy_error). The kill is hard: any answer already streamed is offered back as a partial result, but work still in the model's reasoning or a tool call has produced no recoverable text yet, so a run killed before it streams its answer recovers nothing. To carry on, start a fresh agy_run with this run's conversation_id so the thread continues without restating the task; the killed turn's own reasoning is not recoverable. Omit to use the server's default"`
 	JSONSchema     string   `json:"json_schema,omitempty" jsonschema:"optional JSON Schema to enforce on the run's structured result: pass either an inline schema string or a path to a schema file, and agy constrains the final result to it (in stream-json mode the schema applies to the terminal result event). Omit for an unconstrained free-text result. Useful when the result is consumed programmatically, e.g. extraction, classification, or structured summaries"`
+	Priority       string   `json:"priority,omitempty" jsonschema:"normal (default) or optional. optional marks work that may be skipped, such as a peer review, a second opinion or a rubber-duck pass: when the run's model belongs to a quota group at low, critical or exhausted per agy_usage, the run is refused before any job starts, as a tool error naming the group, level, remaining percent and reset time, and the right response is to report the skip rather than retry. Quota that cannot be read, a stale reading, an omitted model with no server default, or a model outside a known group never refuses; normal always runs. Not forwarded to agy, and not part of idempotency_key matching: a retry whose key already names a job returns that job whatever the priority"`
 	IdempotencyKey string   `json:"idempotency_key,omitempty" jsonschema:"optional retry token for agy-mcp job creation. Reusing the same key with the same normalized run request returns the existing job instead of starting another; reusing it with a different request is rejected. Keys are remembered while the job remains in the job store (24h by default). Use this when a transport failure could leave it ambiguous whether a run already started"`
 }
 
@@ -57,6 +58,12 @@ const (
 	agyEffortHigh   = "high"
 )
 
+// Run priorities accepted by the priority field.
+const (
+	priorityNormal   = manager.PriorityNormal
+	priorityOptional = manager.PriorityOptional
+)
+
 // ToolAgyRunSync is the agy_run_sync tool name, exported so out-of-package
 // callers (the hook-wait suppression gate) can match it against a hook payload's
 // recorded tool name with a compile-time link instead of a duplicated literal.
@@ -73,6 +80,7 @@ const (
 	toolListModels   = "list_models"
 	toolListAgents   = "list_agents"
 	toolListSessions = "list_sessions"
+	toolAgyUsage     = "agy_usage"
 )
 
 // Tool annotations. ToolAnnotations models destructiveHint and openWorldHint as
@@ -146,11 +154,15 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 		Agent:          in.Agent,
 		Sandbox:        in.Sandbox,
 		IdempotencyKey: in.IdempotencyKey,
+		Priority:       in.Priority,
 		// project_rules defaults to true, so only an explicit false opts out.
 		SkipProjectRules: in.ProjectRules != nil && !*in.ProjectRules,
 	}
 	if in.Effort != "" && in.Effort != agyEffortLow && in.Effort != agyEffortMedium && in.Effort != agyEffortHigh {
 		return manager.StartRequest{}, fmt.Errorf("invalid effort %q: want %s, %s or %s", in.Effort, agyEffortLow, agyEffortMedium, agyEffortHigh)
+	}
+	if in.Priority != "" && in.Priority != priorityNormal && in.Priority != priorityOptional {
+		return manager.StartRequest{}, fmt.Errorf("invalid priority %q: want %s or %s", in.Priority, priorityNormal, priorityOptional)
 	}
 	if in.Mode != "" && in.Mode != agyModeAcceptEdits && in.Mode != agyModePlan {
 		return manager.StartRequest{}, fmt.Errorf("invalid mode %q: want %s or %s", in.Mode, agyModeAcceptEdits, agyModePlan)
@@ -191,9 +203,10 @@ func parsePositiveDuration(name, s, example string) (time.Duration, error) {
 }
 
 type runOutput struct {
-	JobID          string `json:"job_id" jsonschema:"handle for this run; pass it to agy_wait, agy_status or agy_cancel"`
-	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Rarely empty on a fresh run, when agy had not yet named the conversation; agy_status reports it moments later"`
-	State          string `json:"state" jsonschema:"running for a newly-created job; when idempotency_key replays an existing job, its current running, done, failed or cancelled state. Use agy_wait or agy_status when you need the full terminal result"`
+	JobID          string              `json:"job_id" jsonschema:"handle for this run; pass it to agy_wait, agy_status or agy_cancel"`
+	ConversationID string              `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Rarely empty on a fresh run, when agy had not yet named the conversation; agy_status reports it moments later"`
+	State          string              `json:"state" jsonschema:"running for a newly-created job; when idempotency_key replays an existing job, its current running, done, failed or cancelled state. Use agy_wait or agy_status when you need the full terminal result"`
+	Quota          *quotaSummaryOutput `json:"quota,omitempty" jsonschema:"agy quota per group as the server last read it (see agy_usage). Absent when the server has no recent reading; it never waits on agy to produce one"`
 }
 
 type statusInput struct {
@@ -229,7 +242,8 @@ type statusOutput struct {
 	// StepType answers "what is it doing" for a running job, which is the whole
 	// point of polling one. It reaches the wire as well as the progress
 	// notification because Claude Code never surfaces notifications to the model.
-	StepType string `json:"step_type,omitempty" jsonschema:"what agy is doing right now (for example agent_response or a tool call); a hint that lags by up to one poll. A terminal job keeps the last step it recorded rather than clearing it, so read it as live progress only while state is running"`
+	Quota    *quotaSummaryOutput `json:"quota,omitempty" jsonschema:"agy quota per group as the server last read it (see agy_usage). Absent when the server has no recent reading; it never waits on agy to produce one"`
+	StepType string              `json:"step_type,omitempty" jsonschema:"what agy is doing right now (for example agent_response or a tool call); a hint that lags by up to one poll. A terminal job keeps the last step it recorded rather than clearing it, so read it as live progress only while state is running"`
 }
 
 // usageOutput mirrors agy's usage object on the wire. It is declared here rather
@@ -371,6 +385,7 @@ Choosing a tool:
 - agy_run returns a job_id in under a couple of seconds (it waits briefly for agy to name the conversation); block on it with agy_wait or poll it with agy_status. Use these for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), or to fan several tasks out in parallel.
 - Outliving the inline wait is not a failure: the job keeps running under its own supervisor and the returned job_id still resolves to its outcome. Wait on it or poll it; do not re-send the prompt.
 - When a transport failure could make it ambiguous whether a run started, supply idempotency_key and reuse that same key on the retry. The same normalized request returns the existing job; a different request with that key is refused.
+- agy_usage reports the remaining agy quota per model group with a level (ok, low, critical, exhausted), and run, status and wait results carry the same reading in quota. Before optional work (peer reviews, second opinions, rubber-duck passes) check it and pass priority optional: the server then refuses the run while the model's group is low. When a run is refused or the group is low, skip the work and tell the user instead of retrying.
 - list_models enumerates models and list_agents enumerates agents; call them only if you want to override the default model or pick a specific agent. list_sessions lists known conversations.
 
 Notes:
@@ -392,7 +407,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolAgyRun,
 		Title:       "Delegate to agy (async)",
 		Annotations: annDelegate,
-		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id; block on it with agy_wait or poll it with agy_status. Prefer this over agy_run_sync for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), and to fan several tasks out in parallel; use agy_run_sync instead when you need the answer before your next step. If a transport failure could make job creation ambiguous, supply idempotency_key and reuse it on the retry. The delegated agent runs with permission checks disabled: it can edit files under cwd and under any dirs, and may reach the network. Say so in the prompt if the run must not touch the repo.",
+		Description: "Delegate a prompt to a background agy model as an async job (peer review, research, or any self-contained task) and keep working. Returns a job_id; block on it with agy_wait or poll it with agy_status. Prefer this over agy_run_sync for long runs, for open-ended work that routinely outlives an inline wait (web research, a large review), and to fan several tasks out in parallel; use agy_run_sync instead when you need the answer before your next step. If a transport failure could make job creation ambiguous, supply idempotency_key and reuse it on the retry. The delegated agent runs with permission checks disabled: it can edit files under cwd and under any dirs, and may reach the network. Say so in the prompt if the run must not touch the repo. For work that may be skipped (a peer review, a second opinion), check agy_usage and pass priority optional so the run is refused while quota is low.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
 		req, err := in.toStartRequest()
 		if err != nil {
@@ -407,7 +422,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		// report a run's conversation fill it from a Status read, which costs nothing
 		// extra because they were reading the status anyway. (list_sessions reports
 		// conversation ids too, but those come from agy's own cache, not from a run.)
-		return nil, runOutput{JobID: job.ID, ConversationID: mgr.AwaitConversationID(ctx, job), State: job.State}, nil
+		return nil, runOutput{JobID: job.ID, ConversationID: mgr.AwaitConversationID(ctx, job), State: job.State, Quota: quotaFor(mgr)}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -423,7 +438,9 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		if st.State != manager.StateRunning {
 			markCollected(mgr, in.JobID)
 		}
-		return nil, toStatusOutput(st), nil
+		out := toStatusOutput(st)
+		out.Quota = quotaFor(mgr)
+		return nil, out, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -455,6 +472,7 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 
 	registerRunSync(s, mgr)
 	registerWait(s, mgr)
+	registerUsage(s, mgr)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        toolListModels,

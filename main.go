@@ -88,7 +88,7 @@ func serve() error {
 		// that means. Without this the server looks healthy and every run fails, which
 		// is a worse diagnostic than the startup refusal this replaced. log goes to
 		// stderr; stdout is the JSON-RPC stream in stdio mode and must stay clean.
-		log.Print("agy not found on PATH: the server will serve tool discovery, but agy_run, agy_run_sync, list_models, and list_agents fail until agy is installed or AGY_MCP_AGY_PATH is set")
+		log.Print("agy not found on PATH: the server will serve tool discovery, but agy_run, agy_run_sync, agy_usage, list_models, and list_agents fail until agy is installed or AGY_MCP_AGY_PATH is set")
 	}
 	mgr := manager.New(cfg)
 	// Run startup garbage collection and concurrency-gate restoration in one
@@ -111,6 +111,9 @@ func serve() error {
 	// (especially HTTP serve mode) does not accumulate finished job dirs until the
 	// next restart. Stops when ctx is cancelled on shutdown; no-op if JobTTL<=0.
 	go mgr.RunPeriodicGCFromConfig(ctx)
+	// Keep the quota snapshot behind agy_usage and the optional-priority guard fresh;
+	// a no-op when AGY_MCP_USAGE_INTERVAL is 0.
+	go mgr.RunUsageRefresherFromConfig(ctx)
 
 	if *httpAddr != "" {
 		if err := checkLoopbackAddr(*httpAddr); err != nil {

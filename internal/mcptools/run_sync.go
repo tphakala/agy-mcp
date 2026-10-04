@@ -75,7 +75,8 @@ func registerRunSync(s *mcp.Server, mgr *manager.Manager) {
 			"If a transport failure could make job creation ambiguous, supply idempotency_key and reuse it on the retry. " +
 			"Streams progress notifications while waiting when the client asks for them. " +
 			"The delegated agent runs with permission checks disabled: it can edit files under cwd and under any " +
-			"dirs, and may reach the network. Say so in the prompt if the run must not touch the repo.",
+			"dirs, and may reach the network. Say so in the prompt if the run must not touch the repo. " +
+			"For work that may be skipped (a peer review, a second opinion, a rubber-duck pass), check agy_usage and pass priority optional so the run is refused while quota is low.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in runSyncInput) (*mcp.CallToolResult, runSyncOutput, error) {
 		wait, err := parseWait(in.Wait)
 		if err != nil {

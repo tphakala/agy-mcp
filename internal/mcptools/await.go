@@ -78,6 +78,7 @@ func awaitJob(ctx context.Context, req *mcp.CallToolRequest, mgr *manager.Manage
 		return runSyncOutput{}, fmt.Errorf("job %s status read failed: %w", jobID, err)
 	}
 	out := runSyncOutput{JobID: jobID, statusOutput: toStatusOutput(st)}
+	out.Quota = quotaFor(mgr)
 	if terminal {
 		markCollected(mgr, jobID)
 	} else {

@@ -168,7 +168,7 @@ func TestHTTPServeListsTools(t *testing.T) {
 	for _, tool := range tools.Tools {
 		got[tool.Name] = true
 	}
-	want := []string{"agy_run", "agy_status", "agy_cancel", "agy_run_sync", "agy_wait", "list_models", "list_agents", "list_sessions"}
+	want := []string{"agy_run", "agy_status", "agy_cancel", "agy_run_sync", "agy_wait", "list_models", "list_agents", "list_sessions", "agy_usage"}
 	if len(tools.Tools) != len(want) {
 		t.Fatalf("registered %d tools, want %d (%v)", len(tools.Tools), len(want), want)
 	}
@@ -203,7 +203,7 @@ func TestHTTPServeAdvertisesInstructions(t *testing.T) {
 	// Spot-check anchors, not the full text: a use-case cue, the sync entry-point
 	// tool name, the parallelism guidance that mirrors the gate's real scope, and
 	// the prompt-injection boundary that marks a delegated result as untrusted.
-	for _, want := range []string{"Peer review", "agy_run_sync", "SAME conversation_id", "report to weigh"} {
+	for _, want := range []string{"Peer review", "agy_run_sync", "SAME conversation_id", "report to weigh", "agy_usage", "priority optional"} {
 		if !strings.Contains(init.Instructions, want) {
 			t.Errorf("server instructions missing %q; got:\n%s", want, init.Instructions)
 		}

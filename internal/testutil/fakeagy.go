@@ -107,7 +107,39 @@ type FakeAgy struct {
 	// envelope with an empty (non-null) agents array, so the empty-catalog path can
 	// be exercised.
 	Agents []string
+
+	// Usage is the quota the fake reports for `agy --output-format json -p /usage`,
+	// one group per entry in the envelope's command.data.groups array. An empty
+	// Usage yields a well-formed envelope with an empty (non-null) groups array.
+	Usage []FakeQuotaGroup
+
+	// UsageRaw, when non-empty, is served verbatim for the /usage invocation
+	// instead of the envelope rendered from Usage. It lets a test serve a shape
+	// the renderer cannot produce, such as the model-turn envelope agy prints when
+	// /usage is not expanded as a command.
+	UsageRaw string
 }
+
+// FakeQuotaGroup is one quota group the fake reports for /usage.
+type FakeQuotaGroup struct {
+	Name        string
+	Description string
+	Buckets     []FakeQuotaBucket
+}
+
+// FakeQuotaBucket is one quota bucket the fake reports for /usage. ResetTime is
+// an RFC3339 string, passed through as given.
+type FakeQuotaBucket struct {
+	ID                string
+	Name              string
+	Window            string
+	RemainingFraction float64
+	ResetTime         string
+}
+
+// listingStatusSuccess is the status agy stamps on a successful JSON envelope,
+// mirrored from manager.listingEnvelopeStatusOK.
+const listingStatusSuccess = "SUCCESS"
 
 // FakeModel is one {id,label} entry the fake reports for the models listing.
 type FakeModel struct {
@@ -144,10 +176,68 @@ func (cfg FakeAgy) version() string {
 //     agentsPath. agy's agents listing carries plain name strings, not the
 //     {id,label} objects models does, which is why the two envelopes are rendered
 //     apart.
-func (cfg FakeAgy) subcommandPreamble(modelsPath, agentsPath, errPath string) string {
+//   - `agy --output-format json -p /usage`, the invocation the quota probe makes.
+//     All four tokens must match ($1=--output-format $2=json $3=-p $4=/usage), so
+//     a probe that adds any flag (notably --disable-slash-commands, which turns
+//     /usage into a model prompt) falls through to the run stream and fails the
+//     decoder, which pins the probe's argv end to end. Served from usagePath, with
+//     the configured Stderr and Exit like the listings.
+func (cfg FakeAgy) subcommandPreamble(modelsPath, agentsPath, usagePath, errPath string) string {
 	return fmt.Sprintf("if [ \"$1\" = \"--version\" ]; then printf '%%s\\n' %q; exit 0; fi\n", cfg.version()) +
 		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$2\" = \"json\" ] && [ \"$3\" = \"models\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", modelsPath, errPath, cfg.Exit) +
-		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$2\" = \"json\" ] && [ \"$3\" = \"agents\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", agentsPath, errPath, cfg.Exit)
+		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$2\" = \"json\" ] && [ \"$3\" = \"agents\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", agentsPath, errPath, cfg.Exit) +
+		fmt.Sprintf("if [ \"$1\" = \"--output-format\" ] && [ \"$2\" = \"json\" ] && [ \"$3\" = \"-p\" ] && [ \"$4\" = \"/usage\" ]; then cat %q; cat %q 1>&2; exit %d; fi\n", usagePath, errPath, cfg.Exit)
+}
+
+// usageEnvelopeJSON renders the JSON envelope agy prints for
+// `agy --output-format json -p /usage`: a SUCCESS envelope with no conversation
+// and zero turns whose command is `usage`, carrying command.data.groups
+// (MEASURED against agy 1.2.16). The groups slice is always non-nil so an empty
+// quota marshals as "groups":[] rather than null. UsageRaw wins when set.
+func (cfg FakeAgy) usageEnvelopeJSON(t *testing.T) string {
+	t.Helper()
+	if cfg.UsageRaw != "" {
+		return cfg.UsageRaw
+	}
+	type bucketObj struct {
+		ID                string  `json:"id"`
+		Name              string  `json:"name"`
+		Window            string  `json:"window"`
+		RemainingFraction float64 `json:"remaining_fraction"`
+		ResetTime         string  `json:"reset_time"`
+	}
+	type groupObj struct {
+		Name        string      `json:"name"`
+		Description string      `json:"description"`
+		Buckets     []bucketObj `json:"buckets"`
+	}
+	groups := make([]groupObj, 0, len(cfg.Usage))
+	for _, g := range cfg.Usage {
+		buckets := make([]bucketObj, 0, len(g.Buckets))
+		for _, b := range g.Buckets {
+			buckets = append(buckets, bucketObj(b))
+		}
+		groups = append(groups, groupObj{Name: g.Name, Description: g.Description, Buckets: buckets})
+	}
+	var env struct {
+		ConversationID string `json:"conversation_id"`
+		Status         string `json:"status"`
+		NumTurns       int    `json:"num_turns"`
+		Command        struct {
+			Name string `json:"name"`
+			Data struct {
+				Groups []groupObj `json:"groups"`
+			} `json:"data"`
+		} `json:"command"`
+	}
+	env.Status = listingStatusSuccess
+	env.Command.Name = "usage"
+	env.Command.Data.Groups = groups
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal fake agy usage envelope: %v", err)
+	}
+	return string(b)
 }
 
 // modelsEnvelopeJSON renders the JSON envelope agy 1.1.12+ prints for
@@ -174,7 +264,7 @@ func (cfg FakeAgy) modelsEnvelopeJSON(t *testing.T) string {
 			} `json:"data"`
 		} `json:"command"`
 	}
-	env.Status = "SUCCESS"
+	env.Status = listingStatusSuccess
 	env.Command.Name = "models"
 	env.Command.Data.Models = models
 	b, err := json.Marshal(env)
@@ -203,7 +293,7 @@ func (cfg FakeAgy) agentsEnvelopeJSON(t *testing.T) string {
 			} `json:"data"`
 		} `json:"command"`
 	}
-	env.Status = "SUCCESS"
+	env.Status = listingStatusSuccess
 	env.Command.Name = "agents"
 	env.Command.Data.Agents = agents
 	b, err := json.Marshal(env)
@@ -377,8 +467,8 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 		// combinations) so a test that sets both fails loudly rather than passing
 		// while silently exercising none of the output it staged.
 		if cfg.Stdout != "" || cfg.Stderr != "" || cfg.Status != "" || cfg.ResultError != "" ||
-			cfg.OmitResult || cfg.StreamChunks != 0 || len(cfg.Models) != 0 || len(cfg.Agents) != 0 {
-			t.Fatal("FakeAgy.IgnoreSIGTERM is mutually exclusive with the output fields (Stdout, Stderr, Status, ResultError, OmitResult, StreamChunks, Models, Agents): the hang-forever script never reaches them")
+			cfg.OmitResult || cfg.StreamChunks != 0 || len(cfg.Models) != 0 || len(cfg.Agents) != 0 || len(cfg.Usage) != 0 || cfg.UsageRaw != "" {
+			t.Fatal("FakeAgy.IgnoreSIGTERM is mutually exclusive with the output fields (Stdout, Stderr, Status, ResultError, OmitResult, StreamChunks, Models, Agents, Usage, UsageRaw): the hang-forever script never reaches them")
 		}
 		// Trap and ignore SIGTERM, then loop forever. The inner sleep is killed by
 		// the supervisor's group SIGTERM, but bash ignores it and restarts the
@@ -388,7 +478,7 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 		// do not exist: `agy models` and `agy agents` are never called on a
 		// hang-forever fake.
 		script := "#!/usr/bin/env bash\n" +
-			cfg.subcommandPreamble(filepath.Join(dir, "no-models"), filepath.Join(dir, "no-agents"), filepath.Join(dir, "no-stderr")) +
+			cfg.subcommandPreamble(filepath.Join(dir, "no-models"), filepath.Join(dir, "no-agents"), filepath.Join(dir, "no-usage"), filepath.Join(dir, "no-stderr")) +
 			"trap '' TERM\nwhile :; do sleep 1; done\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatalf("write fake agy: %v", err)
@@ -412,12 +502,16 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 	if err := os.WriteFile(agentsPath, []byte(cfg.agentsEnvelopeJSON(t)), 0o644); err != nil {
 		t.Fatalf("write fake agy agents envelope: %v", err)
 	}
+	usagePath := filepath.Join(dir, "fake-agy.usage")
+	if err := os.WriteFile(usagePath, []byte(cfg.usageEnvelopeJSON(t)), 0o644); err != nil {
+		t.Fatalf("write fake agy usage envelope: %v", err)
+	}
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 %ssleep %.3f
 cat %q
 cat %q 1>&2
 exit %d
-`, cfg.subcommandPreamble(modelsPath, agentsPath, errPath), cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
+`, cfg.subcommandPreamble(modelsPath, agentsPath, usagePath, errPath), cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake agy: %v", err)
 	}
