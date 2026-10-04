@@ -313,19 +313,25 @@ func TestUsageCacheTTLAndMaxAge(t *testing.T) {
 	if calls.Load() != 2 {
 		t.Fatalf("calls with max_age 10m = %d, want 2", calls.Load())
 	}
-	// max_age 0 is raised to the 10s floor, not treated as "always probe".
-	if _, err := m.Usage(ctx, 0); err != nil {
-		t.Fatal(err)
+	// max_age 0 means the 60s default: a 5m-old snapshot is refreshed, a 30s-old
+	// one is reused (the 10s floor alone would refresh it).
+	t0 := 61*time.Second + 5*time.Minute
+	usageAt := func(at, maxAge time.Duration, want int32, what string) {
+		t.Helper()
+		off.Store(int64(at))
+		if _, err := m.Usage(ctx, maxAge); err != nil {
+			t.Fatal(err)
+		}
+		if got := calls.Load(); got != want {
+			t.Fatalf("%s: calls = %d, want %d", what, got, want)
+		}
 	}
-	if calls.Load() != 3 {
-		t.Fatalf("calls with max_age 0 after 5m = %d, want 3", calls.Load())
-	}
-	if _, err := m.Usage(ctx, 0); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 3 {
-		t.Fatalf("a second max_age 0 call inside the floor probed again (%d calls)", calls.Load())
-	}
+	usageAt(t0, 0, 3, "max_age 0 on a 5m-old snapshot")
+	usageAt(t0+30*time.Second, 0, 3, "max_age 0 on a 30s-old snapshot")
+	usageAt(t0+61*time.Second, 0, 4, "max_age 0 on a 61s-old snapshot")
+	// A positive max_age under 10s is raised to the floor: a 5s-old snapshot is
+	// reused for max_age 1s.
+	usageAt(t0+66*time.Second, time.Second, 4, "max_age 1s on a 5s-old snapshot")
 }
 
 func TestUsageNegativeCache(t *testing.T) {
@@ -447,7 +453,7 @@ func TestUsageSingleflight(t *testing.T) {
 
 func TestUsageUnsafeLatch(t *testing.T) {
 	var calls atomic.Int32
-	m, _ := quotaTestManager(t, time.Minute, func(context.Context) ([]byte, error) {
+	m, off := quotaTestManager(t, time.Minute, func(context.Context) ([]byte, error) {
 		calls.Add(1)
 		return []byte(`{"conversation_id":"c","status":"SUCCESS","num_turns":1}`), nil
 	})
@@ -455,6 +461,8 @@ func TestUsageUnsafeLatch(t *testing.T) {
 	if !errors.Is(err, errUsageModelTurn) {
 		t.Fatalf("first Usage error = %v, want the model-turn latch", err)
 	}
+	// Past the failure backoff, so only the latch can stop a second probe.
+	off.Store(int64(usageErrorBackoff + time.Second))
 	if _, err := m.Usage(t.Context(), time.Minute); !errors.Is(err, errUsageModelTurn) {
 		t.Fatalf("second Usage error = %v", err)
 	}
@@ -538,18 +546,43 @@ func TestRunUsageRefresher(t *testing.T) {
 		t.Fatal("zero interval probed")
 	}
 
+	// waitCalls polls until at least want probes ran or 5s pass.
+	waitCalls := func(want int32) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for calls.Load() < want && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if got := calls.Load(); got < want {
+			t.Fatalf("probes = %d, want at least %d", got, want)
+		}
+	}
+	// The first probe runs at once, not after the first tick: an hour-long
+	// interval never ticks inside the wait.
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
-	go func() { m.runUsageRefresher(ctx, 20*time.Millisecond); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for calls.Load() < 2 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if calls.Load() < 2 {
-		t.Fatalf("probes = %d, want an immediate one plus at least one tick", calls.Load())
-	}
+	go func() { m.runUsageRefresher(ctx, time.Hour); close(done) }()
+	waitCalls(1)
 	cancel()
 	<-done
+
+	// Then it probes again on every tick.
+	ctx, cancel = context.WithCancel(t.Context())
+	done = make(chan struct{})
+	go func() { m.runUsageRefresher(ctx, 20*time.Millisecond); close(done) }()
+	waitCalls(3)
+	cancel()
+	<-done
+	// A probe started just before the cancel may still be running; let it
+	// finish so only a probe started after the cancel can change the count.
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		m.quota.mu.Lock()
+		idle := m.quota.inflight == nil
+		m.quota.mu.Unlock()
+		if idle {
+			break
+		}
+	}
 	n := calls.Load()
 	time.Sleep(100 * time.Millisecond)
 	if calls.Load() != n {
