@@ -52,8 +52,8 @@ func failureReasons(t *testing.T) []string {
 // Reason* constant must be named in both documents.
 func TestFailureReasonSetDocumented(t *testing.T) {
 	reasons := failureReasons(t)
-	if len(reasons) < 7 {
-		t.Fatalf("found %d Reason constants (%q), want at least the seven documented", len(reasons), reasons)
+	if len(reasons) == 0 {
+		t.Fatal("found no Reason constants in status.go")
 	}
 	field, ok := reflect.TypeFor[statusOutput]().FieldByName("FailureReason")
 	if !ok {

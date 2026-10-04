@@ -118,9 +118,10 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 	symlinkErr := os.Symlink(cwd, alias)
 	sep := string(filepath.Separator)
 	for _, tc := range []struct {
-		name string
-		req  StartRequest
-		want []string // the --add-dir values, in order
+		name        string
+		req         StartRequest
+		want        []string // the --add-dir values, in order
+		windowsOnly bool
 	}{
 		{name: "default adds cwd", req: StartRequest{Cwd: cwd}, want: []string{cwd}},
 		{name: "cwd precedes caller dirs", req: StartRequest{Cwd: cwd, Dirs: []string{other}}, want: []string{cwd, other}},
@@ -138,12 +139,12 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 		// Windows-only spellings (issue #192): agy would resolve them against a
 		// drive root or a drive's current directory, which is not measured, so
 		// they never stand in for cwd. On POSIX they are ordinary names.
-		{name: "root-relative names the drive root", req: StartRequest{Cwd: cwd, Dirs: []string{sep}}, want: []string{cwd, sep}},
-		{name: "root-relative dot-dot", req: StartRequest{Cwd: cwd, Dirs: []string{sep + "a" + sep + ".."}}, want: []string{cwd, sep + "a" + sep + ".."}},
-		{name: "drive-relative", req: StartRequest{Cwd: cwd, Dirs: []string{filepath.VolumeName(cwd) + "."}}, want: []string{cwd, filepath.VolumeName(cwd) + "."}},
+		{name: "root-relative names the drive root", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{sep}}, want: []string{cwd, sep}},
+		{name: "root-relative dot-dot", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{sep + "a" + sep + ".."}}, want: []string{cwd, sep + "a" + sep + ".."}},
+		{name: "drive-relative", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{filepath.VolumeName(cwd) + "."}}, want: []string{cwd, filepath.VolumeName(cwd) + "."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if runtime.GOOS != "windows" && (strings.HasPrefix(tc.name, "root-relative") || tc.name == "drive-relative") {
+			if tc.windowsOnly && runtime.GOOS != "windows" {
 				t.Skip("rooted and volume-relative spellings are Windows-only")
 			}
 			if slices.Contains(tc.req.Dirs, alias) && symlinkErr != nil {
@@ -161,13 +162,7 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 			}
 			tc.req.Prompt, tc.req.Timeout = "hi", time.Minute
 			args := buildAgyArgs(tc.req)
-			var got []string
-			for i, a := range args {
-				if a == addDirFlag && i+1 < len(args) {
-					got = append(got, args[i+1])
-				}
-			}
-			if !slices.Equal(got, tc.want) {
+			if got := addDirValues(args); !slices.Equal(got, tc.want) {
 				t.Fatalf("--add-dir values = %q, want %q (args %q)", got, tc.want, args)
 			}
 		})
@@ -221,15 +216,20 @@ func TestNormalizeRequestCanonicalCwdIsTheImplicitWorkspace(t *testing.T) {
 				t.Fatalf("normalizeRequest: %v", err)
 			}
 			args := buildAgyArgs(nreq)
-			var got []string
-			for i, a := range args {
-				if a == addDirFlag && i+1 < len(args) {
-					got = append(got, args[i+1])
-				}
-			}
-			if !slices.Equal(got, tc.want) {
+			if got := addDirValues(args); !slices.Equal(got, tc.want) {
 				t.Fatalf("--add-dir values = %q, want %q (args %q)", got, tc.want, args)
 			}
 		})
 	}
+}
+
+// addDirValues returns the --add-dir values in args, in order.
+func addDirValues(args []string) []string {
+	var got []string
+	for i, a := range args {
+		if a == addDirFlag && i+1 < len(args) {
+			got = append(got, args[i+1])
+		}
+	}
+	return got
 }

@@ -93,12 +93,9 @@ func requestKey(req StartRequest) string {
 //
 // A keyless continue_latest retry of such a job can be refused after the
 // conversation cache moved, because the args then carry a different
-// --conversation. That is left as it is: keyless jobs are only those written by
-// v2.8.1 or earlier, they live at most JobTTL (24h by default), and refusing is
-// the fail-safe direction. Loosening the args comparison for a --conversation
-// pair would answer a continue_latest retry with a job created by an explicit
-// conversation_id request, because keyless meta does not record which of the two
-// it was.
+// --conversation. Refusing is the fail-safe direction: keyless meta does not
+// record whether the job came from continue_latest or an explicit
+// conversation_id, and such jobs (v2.8.1 or earlier) live at most JobTTL.
 func sameRequest(meta jobstore.Meta, req StartRequest, args []string) bool {
 	if meta.RequestKey != "" {
 		return meta.RequestKey == requestKey(req)
