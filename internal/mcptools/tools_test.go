@@ -360,6 +360,35 @@ func TestToStartRequestProjectRules(t *testing.T) {
 	}
 }
 
+// TestToStartRequestProjectRulesWireName decodes the tool's JSON arguments, so
+// the project_rules wire name is pinned on every OS.
+func TestToStartRequestProjectRulesWireName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		json string
+		skip bool
+	}{
+		{name: "project_rules false", json: `{"prompt":"x","project_rules":false}`, skip: true},
+		{name: "project_rules omitted", json: `{"prompt":"x"}`, skip: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var in runInput
+			if err := json.Unmarshal([]byte(tc.json), &in); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			req, err := in.toStartRequest()
+			if err != nil {
+				t.Fatalf("toStartRequest: %v", err)
+			}
+			if req.SkipProjectRules != tc.skip {
+				t.Fatalf("SkipProjectRules = %v, want %v", req.SkipProjectRules, tc.skip)
+			}
+		})
+	}
+}
+
 // TestToStartRequestValidatesEffort: effort is an agy enum (low, medium, high),
 // so a bad value must fail fast at the tool boundary with a message that quotes
 // the bad value and names the accepted values, rather than reaching agy. An empty

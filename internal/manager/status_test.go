@@ -19,6 +19,16 @@ import (
 // mid-turn, as MEASURED against agy 1.2.9.
 const printTimeoutNotice = "[agy] print timeout after 8s with turn in progress; returning partial output"
 
+// The two stderr lines agy leaves when a run ends with a background task still
+// running. Shape MEASURED against agy 1.2.7 and 1.2.9 (see matchesBackgroundAbort
+// in status.go). The matchers ignore the grace and the count, so one fixed
+// spelling stands for both.
+const (
+	backgroundAbortIdleLine = "root agent idle; waiting up to 5s for 1 background task(s)"
+	backgroundAbortKillLine = "terminating 1 background task(s) on exit"
+	backgroundAbortNotice   = backgroundAbortIdleLine + "\n" + backgroundAbortKillLine + "\n"
+)
+
 // TestStatusInterruptedNoOutput: a job whose process is gone with no sentinel
 // and no out file is a genuine interruption, reported failed (not done). This
 // is the branch TestStatusInterruptedAfterReboot does not cover (that one has
@@ -42,58 +52,6 @@ func TestStatusInterruptedNoOutput(t *testing.T) {
 	}
 	if st.Partial {
 		t.Fatalf("a no-output interruption is not a partial result: %+v", st)
-	}
-}
-
-// TestStatusInterruptedAppliesStderrNotices: a supervisor that died after
-// persisting agy's result payload but before the exit-code sentinel leaves a job
-// that recoverInterrupted classifies from the payload. agy was already reaped by
-// then, so its stderr notices must reclassify the SUCCESS exactly as on a clean
-// exit, rather than the recovered job reading as a complete done (issue #186).
-// The json-schema rows pin the eligibility gate on this path too: a schema
-// SUCCESS without structured_output is reclassified, an ERROR keeps its reason.
-func TestStatusInterruptedAppliesStderrNotices(t *testing.T) {
-	const bgAbort = "root agent idle; waiting up to 5s for 1 background task(s)\nterminating 1 background task(s) on exit\n"
-	schemaArgs := []string{jsonSchemaFlag, "{}"}
-	for _, tc := range []struct {
-		name        string
-		args        []string
-		status      string
-		stderr      string
-		wantState   string
-		wantReason  string
-		wantPartial bool
-	}{
-		{"print timeout", nil, streamjson.StatusSuccess, printTimeoutNotice + "\n", StateFailed, ReasonTimeout, true},
-		{"background abort", nil, streamjson.StatusSuccess, bgAbort, StateFailed, ReasonBackgroundAborted, true},
-		{"no notice stays done", nil, streamjson.StatusSuccess, "some agy chatter\n", StateDone, "", false},
-		{"schema success without output, background abort", schemaArgs, streamjson.StatusSuccess, bgAbort, StateFailed, ReasonBackgroundAborted, true},
-		{"schema error keeps its reason despite background abort", schemaArgs, streamjson.StatusError, bgAbort, StateFailed, ReasonAgyError, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := newManager(t, managerOpts{})
-			dir, err := m.store.Create(jobstore.Meta{ID: "j", Args: tc.args, StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeResultPayload(t, dir, streamjson.Result{Status: tc.status, Response: "half an answer"})
-			if err := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			st, err := m.Status("j")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if st.State != tc.wantState || st.FailureReason != tc.wantReason {
-				t.Fatalf("state/reason = %q/%q, want %q/%q (%+v)", st.State, st.FailureReason, tc.wantState, tc.wantReason, st)
-			}
-			if st.Result != "half an answer" {
-				t.Errorf("result = %q, want the payload response kept", st.Result)
-			}
-			if st.Partial != tc.wantPartial {
-				t.Errorf("partial = %v, want %v", st.Partial, tc.wantPartial)
-			}
-		})
 	}
 }
 
@@ -195,7 +153,7 @@ func TestMatchesPrintTimeoutRequiresAllPhrasesOnOneLine(t *testing.T) {
 		// All three phrases present, but on separate unrelated lines: they must not
 		// combine. Matching the whole tail rather than per line would return true.
 		{"phrases split across lines", "the print timeout is 30m\none turn in progress\nwrote partial output to a file\n", false},
-		{"the background-abort markers are not a print timeout", "root agent idle; waiting up to 1m0s for 1 background task(s)\nterminating 1 background task(s) on exit\n", false},
+		{"the background-abort markers are not a print timeout", backgroundAbortNotice, false},
 		{"empty stderr", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -521,8 +479,7 @@ func terminalCases() []terminalCase {
 				Status: streamjson.StatusSuccess, Response: "I am waiting for the background task to complete.",
 				ConversationID: "cid-bg", NumTurns: 1,
 			},
-			errFile: "root agent idle; waiting up to 5s for 2 background task(s)\n" +
-				"terminating 2 background task(s) on exit\n",
+			errFile:   backgroundAbortNotice,
 			wantState: StateFailed, wantResult: "I am waiting for the background task to complete.",
 			wantPartial: true, wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 			wantConvID: "cid-bg", wantTurns: 1,
@@ -532,7 +489,7 @@ func terminalCases() []terminalCase {
 			// line, so it is a genuine success and must not be downgraded.
 			name: "a stray killed background task without the idle-wait marker stays done",
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "the real answer"},
-			errFile:   "terminating 1 background task(s) on exit\n",
+			errFile:   backgroundAbortKillLine + "\n",
 			wantState: StateDone, wantResult: "the real answer",
 		},
 		// --- clean exit, but agy's own --print-timeout cut the turn short -------
@@ -586,8 +543,7 @@ func terminalCases() []terminalCase {
 			// background command again.
 			name: "the background-abort markers take precedence over the print-timeout notice",
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "waiting on the build"},
-			errFile: "root agent idle; waiting up to 1m0s for 1 background task(s)\n" +
-				"terminating 1 background task(s) on exit\n" + printTimeoutNotice + "\n",
+			errFile:   backgroundAbortNotice + printTimeoutNotice + "\n",
 			wantState: StateFailed, wantResult: "waiting on the build", wantPartial: true,
 			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 		}, {
@@ -922,9 +878,8 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 			// the now-partial JSON.
 			name: "idle-killed schema run downgrades and keeps its structured output",
 			code: 0, args: schemaArgs,
-			res: &streamjson.Result{Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(`{"business":"ok"}`)},
-			errFile: "root agent idle; waiting up to 5s for 1 background task(s)\n" +
-				"terminating 1 background task(s) on exit\n",
+			res:       &streamjson.Result{Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(`{"business":"ok"}`)},
+			errFile:   backgroundAbortNotice,
 			wantState: StateFailed, wantResult: `{"business":"ok"}`, wantPartial: true,
 			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 		}, {
@@ -963,9 +918,8 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 			// its agy_error reason.
 			name: "idle-killed schema run without structured output reclassifies to background_aborted",
 			code: 0, args: schemaArgs,
-			res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: responseWithToolMetadata},
-			errFile: "root agent idle; waiting up to 5s for 1 background task(s)\n" +
-				"terminating 1 background task(s) on exit\n",
+			res:       &streamjson.Result{Status: streamjson.StatusSuccess, Response: responseWithToolMetadata},
+			errFile:   backgroundAbortNotice,
 			wantState: StateFailed, wantResult: responseWithToolMetadata, wantPartial: true,
 			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 		}, {
@@ -980,8 +934,7 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 			// keeps its agy_error reason.
 			name: "idle-killed schema run with no terminal payload reclassifies to background_aborted",
 			code: 0, args: schemaArgs, out: "streamed diagnostic",
-			errFile: "root agent idle; waiting up to 5s for 1 background task(s)\n" +
-				"terminating 1 background task(s) on exit\n",
+			errFile:   backgroundAbortNotice,
 			wantState: StateFailed, wantResult: "streamed diagnostic", wantPartial: true,
 			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 		},
@@ -1145,7 +1098,7 @@ func TestStatusUnreadableOutputKeepsReasonDespitePrintTimeout(t *testing.T) {
 func TestStatusUnreadableSchemaOutputKeepsReasonDespiteNotices(t *testing.T) {
 	for name, stderr := range map[string]string{
 		"print-timeout notice":     printTimeoutNotice + "\n",
-		"background-abort markers": "root agent idle; waiting up to 1m0s for 1 background task(s)\nterminating 1 background task(s) on exit\n",
+		"background-abort markers": backgroundAbortNotice,
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
@@ -1529,30 +1482,48 @@ func TestStatusCorruptResultPayloadIsStillAStreamJSONRun(t *testing.T) {
 // terminal payload when the supervisor managed to write one before dying. The
 // same Result/Partial contract applies: TestStatusTerminalContract covers the
 // sentinel paths, this covers the recovery path that bypasses them.
+//
+// The stderr rows pin that a supervisor that died after persisting agy's result
+// payload but before the exit-code sentinel still gets agy's stderr notices
+// applied: agy was already reaped by then, so they must reclassify the SUCCESS
+// exactly as on a clean exit, rather than the recovered job reading as a complete
+// done (issue #186). The json-schema rows pin the eligibility gate on this path
+// too: a schema SUCCESS without structured_output is reclassified, an ERROR keeps
+// its reason.
 func TestStatusRecoveredFromPayload(t *testing.T) {
+	schemaArgs := []string{jsonSchemaFlag, "{}"}
 	for _, tc := range []struct {
 		name        string
+		args        []string
 		res         streamjson.Result
 		out         string
+		stderr      string
 		wantState   string
+		wantReason  string
 		wantResult  string
 		wantPartial bool
 	}{
 		// A supervisor that died between writing the result and writing the
 		// sentinel left a complete, trustworthy answer.
-		{"success payload", streamjson.Result{Status: streamjson.StatusSuccess, Response: "complete"}, "streamed", StateDone, "complete", false},
-		{"error payload keeps its text", streamjson.Result{Status: streamjson.StatusError, Response: "got this far"}, "", StateFailed, "got this far", true},
-		{"a response with no status is unverified", streamjson.Result{Response: "an answer"}, "", StateDone, "an answer", true},
-		{"an empty payload falls back to the stream", streamjson.Result{}, "streamed", StateFailed, "streamed", true},
+		{"success payload", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "complete"}, "streamed", "", StateDone, "", "complete", false},
+		{"error payload keeps its text", nil, streamjson.Result{Status: streamjson.StatusError, Response: "got this far"}, "", "", StateFailed, ReasonAgyError, "got this far", true},
+		{"a response with no status is unverified", nil, streamjson.Result{Response: "an answer"}, "", "", StateDone, "", "an answer", true},
+		{"an empty payload falls back to the stream", nil, streamjson.Result{}, "streamed", "", StateFailed, ReasonAgyError, "streamed", true},
 		// The no-stream sibling, so the recovery path pins the indeterminate
 		// verdict itself and not only the fallback that usually hides it.
-		{"an empty payload with no stream is indeterminate", streamjson.Result{}, "", StateFailed, "", false},
-		{"an unrecognized status", streamjson.Result{Status: "MAX_TURNS"}, "", StateFailed, "", false},
+		{"an empty payload with no stream is indeterminate", nil, streamjson.Result{}, "", "", StateFailed, ReasonAgyError, "", false},
+		{"an unrecognized status", nil, streamjson.Result{Status: "MAX_TURNS"}, "", "", StateFailed, ReasonAgyError, "", false},
+		// Stderr notices on the recovery path (issue #186).
+		{"print timeout", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", printTimeoutNotice + "\n", StateFailed, ReasonTimeout, "half an answer", true},
+		{"background abort", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", backgroundAbortNotice, StateFailed, ReasonBackgroundAborted, "half an answer", true},
+		{"no notice stays done", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", "some agy chatter\n", StateDone, "", "half an answer", false},
+		{"schema success without output, background abort", schemaArgs, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", backgroundAbortNotice, StateFailed, ReasonBackgroundAborted, "half an answer", true},
+		{"schema error keeps its reason despite background abort", schemaArgs, streamjson.Result{Status: streamjson.StatusError, Response: "half an answer"}, "", backgroundAbortNotice, StateFailed, ReasonAgyError, "half an answer", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
 			// A dead PID from a previous boot and no sentinel: the recovery path.
-			dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
+			dir, err := m.store.Create(jobstore.Meta{ID: "j", Args: tc.args, StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1562,14 +1533,19 @@ func TestStatusRecoveredFromPayload(t *testing.T) {
 					t.Fatal(werr)
 				}
 			}
+			if tc.stderr != "" {
+				if werr := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o600); werr != nil {
+					t.Fatal(werr)
+				}
+			}
 
 			st, err := m.Status("j")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if st.State != tc.wantState || st.Result != tc.wantResult || st.Partial != tc.wantPartial {
-				t.Fatalf("status = %+v, want state %q result %q partial %v",
-					st, tc.wantState, tc.wantResult, tc.wantPartial)
+			if st.State != tc.wantState || st.FailureReason != tc.wantReason || st.Result != tc.wantResult || st.Partial != tc.wantPartial {
+				t.Fatalf("status = %+v, want state %q reason %q result %q partial %v",
+					st, tc.wantState, tc.wantReason, tc.wantResult, tc.wantPartial)
 			}
 			// A failure must say why. The table this replaced asserted it and the
 			// fold dropped it, leaving applyResult's two default messages

@@ -629,11 +629,13 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		Model:          req.Model,
 		ConversationID: req.ConversationID,
 		IdempotencyKey: req.IdempotencyKey,
-		RequestKey:     requestKey(req),
 		Prompt:         req.Prompt,
 		StartedAt:      time.Now().UTC(),
 		BootID:         readBootID(),
 		Timeout:        req.Timeout,
+	}
+	if req.IdempotencyKey != "" {
+		meta.RequestKey = requestKey(req)
 	}
 	if meta.BootID == "" {
 		// boot_id was unreadable, so this job's PID cannot be pinned to a boot. While
@@ -1121,9 +1123,12 @@ func buildAgyArgs(req StartRequest) []string {
 	// Make cwd an agy workspace so the project's rule files (AGENTS.md and the
 	// like) load. MEASURED on agy 1.2.9: in print mode running inside a directory
 	// does not activate it as a workspace, so no rules load; --add-dir does, and
-	// from a subdirectory it still finds an AGENTS.md at the repo root. agy also
-	// lists a workspace's .agents/hooks.json hooks as enabled, hence the opt-out.
-	// Not added when a caller dir already names cwd.
+	// from a subdirectory it still finds an AGENTS.md at the repo root. MEASURED
+	// on agy 1.2.16: cwd is a workspace without --add-dir (its AGENTS.md, also
+	// the repo root's from a subdirectory, and its .agents/hooks.json hooks load
+	// either way), so there the flag is redundant and the opt-out does not keep
+	// rules or hooks out. The flag stays because the floor is 1.1.15 and 1.2.9
+	// needs it. Not added when a caller dir already names cwd.
 	if !req.SkipProjectRules && req.Cwd != "" && !dirsInclude(req.Dirs, req.Cwd) {
 		args = append(args, addDirFlag, req.Cwd)
 	}

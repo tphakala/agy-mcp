@@ -44,6 +44,13 @@ func ConfigureGroup(cmd *exec.Cmd) {
 // agy child needs only its own process group and no console window, which is
 // exactly what ConfigureGroup provides. It is therefore an alias here rather than a
 // second copy of the same flags.
+//
+// MEASURED on Windows 11 25H2 (issue #172), with a probe standing in for agy and
+// spawned through the same manager, StartDetached and ConfigureSession chain: the
+// child does get a console, a windowless one (CreateFile on CONIN$ and
+// GetConsoleMode succeed, GetConsoleWindow returns 0), and the probe completed
+// without stopping, since Windows does not suspend a process that changes console
+// modes. Whether agy itself changes the console mode there is not measured.
 func ConfigureSession(cmd *exec.Cmd) {
 	ConfigureGroup(cmd)
 }
