@@ -25,7 +25,8 @@ func ensureSysProcAttr(cmd *exec.Cmd) {
 // for agy; the process tree is actually terminated via the Job Object captured by
 // Track. It ORs the flags into any CreationFlags a caller set first.
 //
-// CREATE_NO_WINDOW additionally runs the child without a console. The supervisor
+// CREATE_NO_WINDOW additionally runs the child without a console window (it
+// still gets a windowless console; see ConfigureSession). The supervisor
 // is itself started with DETACHED_PROCESS and so has no console to hand down, and
 // a console-mode child that cannot inherit one has a fresh console allocated for
 // it, which is a visible window. Suppressing it costs nothing: agy's stdio are
