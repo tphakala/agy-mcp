@@ -390,11 +390,17 @@ func TestUsageSingleflight(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 4)
 	var calls atomic.Int32
-	m, _ := quotaTestManager(t, 0, func(context.Context) ([]byte, error) {
+	// The stub honours its context, so a probe that ran on the starter's
+	// context would fail when the starter cancels and leave the cache empty.
+	m, _ := quotaTestManager(t, 0, func(ctx context.Context) ([]byte, error) {
 		calls.Add(1)
 		started <- struct{}{}
-		<-release
-		return []byte(measuredUsageEnvelope), nil
+		select {
+		case <-release:
+			return []byte(measuredUsageEnvelope), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	})
 	inflight := func() *quotaFlight {
 		m.quota.mu.Lock()
