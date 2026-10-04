@@ -98,8 +98,14 @@ func TestRunResultsCarryQuota(t *testing.T) {
 	if !hasQuota(call("agy_wait", map[string]any{"job_id": id, "wait": "30s"})) {
 		t.Fatal("agy_wait result lacks quota")
 	}
-	if !hasQuota(call("agy_run", map[string]any{"prompt": "x"})) {
+	run := call("agy_run", map[string]any{"prompt": "x"})
+	if !hasQuota(run) {
 		t.Fatal("agy_run result lacks quota")
+	}
+	// Let the async job finish before t.TempDir cleanup removes its directory.
+	runID, _ := run["job_id"].(string)
+	if st, _ := call("agy_wait", map[string]any{"job_id": runID, "wait": "30s"})["state"].(string); st != "done" {
+		t.Fatalf("agy_run job state = %q after agy_wait, want done", st)
 	}
 }
 

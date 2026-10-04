@@ -577,13 +577,28 @@ func TestToQuotaOutput(t *testing.T) {
 			Buckets: []manager.QuotaBucket{{ID: "5h", Name: "5h limit", Window: "5h", RemainingFraction: 0.0356, ResetTime: reset}},
 		}},
 	}
+	weekly := manager.QuotaBucket{ID: "weekly", Name: "Weekly limit", Window: "weekly", RemainingFraction: 0.2, ResetTime: reset.Add(-24 * time.Hour)}
 	levels := []manager.GroupQuota{{
 		Group: snap.Groups[0], Level: manager.QuotaCritical, Remaining: 0.0356, Binding: snap.Groups[0].Buckets[0],
+		Buckets: []manager.BucketQuota{
+			{QuotaBucket: snap.Groups[0].Buckets[0]},
+			{QuotaBucket: weekly, Refilled: true},
+		},
 	}}
 	out := toQuotaOutput(snap, levels)
 	g := out.Groups[0]
 	if g.Level != "critical" || g.RemainingPercent != 3 || g.Window != "5h" || g.ResetTime != "2026-10-04T08:32:45Z" {
 		t.Fatalf("group = %+v", g)
+	}
+	// Buckets come from the evaluated buckets, refilled flag included.
+	if len(g.Buckets) != 2 {
+		t.Fatalf("buckets = %+v, want 2", g.Buckets)
+	}
+	if b := g.Buckets[0]; b.ID != "5h" || b.Window != "5h" || b.RemainingFraction != 0.0356 || b.Refilled {
+		t.Fatalf("5h bucket = %+v, want unrefilled", b)
+	}
+	if b := g.Buckets[1]; b.ID != "weekly" || b.Window != "weekly" || b.RemainingFraction != 0.2 || !b.Refilled {
+		t.Fatalf("weekly bucket = %+v, want refilled", b)
 	}
 	if out.CheckedAt != "2026-10-04T10:00:00Z" {
 		t.Fatalf("checked_at = %q", out.CheckedAt)
