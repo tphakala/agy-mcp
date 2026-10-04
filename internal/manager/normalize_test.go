@@ -111,7 +111,7 @@ func TestRootRelative(t *testing.T) {
 		{d: `\\server\share\x`},
 		{d: `rel`},
 		{d: `.`},
-		{d: `/x`},
+		{d: `/x`, windows: true}, // a forward slash is a separator on Windows too
 	} {
 		want := tc.posix
 		if runtime.GOOS == "windows" {
