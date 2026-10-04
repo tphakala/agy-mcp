@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/quick"
@@ -381,39 +380,72 @@ func TestUsageNegativeCache(t *testing.T) {
 	}
 }
 
+// TestUsageSingleflight: the caller that starts a probe gives up while the probe
+// is blocked, a second caller then finds the same flight in progress instead of
+// starting another, and the probe the starter abandoned still completes and
+// fills the cache. Every step happens while the stub is blocked, so none of it
+// depends on timing: the second caller is observed through the in-flight
+// pointer, which a build that does not share the flight would replace.
 func TestUsageSingleflight(t *testing.T) {
 	release := make(chan struct{})
+	started := make(chan struct{}, 4)
 	var calls atomic.Int32
 	m, _ := quotaTestManager(t, 0, func(context.Context) ([]byte, error) {
 		calls.Add(1)
+		started <- struct{}{}
 		<-release
 		return []byte(measuredUsageEnvelope), nil
 	})
-	cancelCtx, cancel := context.WithCancel(t.Context())
-	var wg sync.WaitGroup
-	var snapErr, cancelErr error
-	var snap QuotaSnapshot
-	wg.Add(2)
-	go func() { defer wg.Done(); snap, snapErr = m.Usage(t.Context(), time.Minute) }()
-	go func() { defer wg.Done(); _, cancelErr = m.Usage(cancelCtx, time.Minute) }()
-	// Both callers must be waiting on the one probe before it is released.
-	deadline := time.Now().Add(5 * time.Second)
-	for calls.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	inflight := func() *quotaFlight {
+		m.quota.mu.Lock()
+		defer m.quota.mu.Unlock()
+		return m.quota.inflight
 	}
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	time.Sleep(20 * time.Millisecond)
+
+	starterCtx, cancelStarter := context.WithCancel(t.Context())
+	starterErr := make(chan error, 1)
+	go func() { _, err := m.Usage(starterCtx, time.Minute); starterErr <- err }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe never started")
+	}
+	flight := inflight()
+	if flight == nil {
+		t.Fatal("no flight in progress while the probe is blocked")
+	}
+
+	// The starter gives up while the probe is still blocked: it must return its
+	// own context error rather than wait for the probe.
+	cancelStarter()
+	select {
+	case err := <-starterErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("starter error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the starter stayed blocked on the probe after its context was cancelled")
+	}
+
+	// A second caller joins the flight in progress. Its context is already
+	// cancelled so the call returns at once, but it has by then either joined the
+	// flight or replaced it with one of its own.
+	gone, cancelGone := context.WithCancel(t.Context())
+	cancelGone()
+	if _, err := m.Usage(gone, time.Minute); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second caller error = %v, want context.Canceled", err)
+	}
+	if inflight() != flight {
+		t.Fatal("the second caller started its own probe instead of joining the flight")
+	}
+
 	close(release)
-	wg.Wait()
+	snap, err := m.Usage(t.Context(), time.Minute)
+	if err != nil || len(snap.Groups) != 2 {
+		t.Fatalf("Usage after the abandoned probe finished = %v, %+v", err, snap)
+	}
 	if calls.Load() != 1 {
 		t.Fatalf("probes = %d, want 1 shared", calls.Load())
-	}
-	if snapErr != nil || len(snap.Groups) != 2 {
-		t.Fatalf("waiting caller got %v, %+v", snapErr, snap)
-	}
-	if !errors.Is(cancelErr, context.Canceled) {
-		t.Fatalf("cancelled caller error = %v, want context.Canceled", cancelErr)
 	}
 }
 
@@ -459,13 +491,99 @@ func TestCachedQuotaNeverBlocks(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("CachedQuota blocked on the probe")
 	}
+}
+
+// waitQuotaIdle blocks until no probe is in flight, so a following assertion on
+// the probe count cannot race a goroutine the previous step started.
+func waitQuotaIdle(t *testing.T, m *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		m.quota.mu.Lock()
+		idle := m.quota.inflight == nil
+		m.quota.mu.Unlock()
+		if idle {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("a probe stayed in flight")
+}
+
+// TestCachedQuotaRefreshTrigger pins when CachedQuota starts a background probe:
+// with no snapshot, and with a snapshot older than the 60s cache TTL (even one
+// still trusted), but not with a fresh snapshot, not inside the failure backoff,
+// and never with background probing off.
+func TestCachedQuotaRefreshTrigger(t *testing.T) {
+	var calls atomic.Int32
+	var fail atomic.Bool
+	m, off := quotaTestManager(t, time.Minute, func(context.Context) ([]byte, error) {
+		calls.Add(1)
+		if fail.Load() {
+			return nil, errors.New("agy usage: boom")
+		}
+		return []byte(measuredUsageEnvelope), nil
+	})
+	step := func(at time.Duration, wantProbes int32, wantTrusted bool) {
+		t.Helper()
+		off.Store(int64(at))
+		_, trusted := m.CachedQuota()
+		waitQuotaIdle(t, m)
+		if got := calls.Load(); got != wantProbes {
+			t.Fatalf("at %s: probes = %d, want %d", at, got, wantProbes)
+		}
+		if trusted != wantTrusted {
+			t.Fatalf("at %s: trusted = %v, want %v", at, trusted, wantTrusted)
+		}
+	}
+	step(0, 1, false)              // no snapshot: a probe starts, nothing to trust yet
+	step(30*time.Second, 1, true)  // fresh: no probe
+	step(90*time.Second, 2, true)  // older than the TTL but still trusted: probe
+	fail.Store(true)               //
+	step(200*time.Second, 3, true) // stale again: this probe fails
+	step(220*time.Second, 3, true) // inside the 30s failure backoff: no probe
+	step(240*time.Second, 4, true) // backoff over: probe
 
 	var offCalls atomic.Int32
 	m2, _ := quotaTestManager(t, 0, func(context.Context) ([]byte, error) { offCalls.Add(1); return nil, errors.New("x") })
 	m2.CachedQuota()
-	time.Sleep(20 * time.Millisecond)
+	waitQuotaIdle(t, m2)
 	if offCalls.Load() != 0 {
 		t.Fatal("CachedQuota probed with background probing disabled")
+	}
+}
+
+// TestQuotaTrustAgeFollowsInterval pins quotaMaxAge: a snapshot is trusted for
+// twice the refresh interval, not for the 10m floor alone, and both the cached
+// read and the optional-run guard use that age. The stub blocks so the refresh
+// a stale read starts cannot replace the seeded snapshot.
+func TestQuotaTrustAgeFollowsInterval(t *testing.T) {
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	m, off := quotaTestManager(t, 30*time.Minute, func(context.Context) ([]byte, error) {
+		<-block
+		return nil, errors.New("never")
+	})
+	m.quota.mu.Lock()
+	m.quota.snap = quotaFixture(m.now(), 0.03, m.now().Add(24*time.Hour))
+	m.quota.have = true
+	m.quota.mu.Unlock()
+	req := StartRequest{Priority: PriorityOptional, Model: "gemini-3.8-flash-high"}
+	for _, tc := range []struct {
+		at      time.Duration
+		trusted bool
+	}{
+		{45 * time.Minute, true}, // between the interval and twice it
+		{59 * time.Minute, true},
+		{61 * time.Minute, false}, // past twice the interval
+	} {
+		off.Store(int64(tc.at))
+		if _, ok := m.CachedQuota(); ok != tc.trusted {
+			t.Errorf("at %s: CachedQuota trusted = %v, want %v", tc.at, ok, tc.trusted)
+		}
+		if refused := m.checkPriority(req) != nil; refused != tc.trusted {
+			t.Errorf("at %s: optional run refused = %v, want %v", tc.at, refused, tc.trusted)
+		}
 	}
 }
 
