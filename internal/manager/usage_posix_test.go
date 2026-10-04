@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -45,8 +46,13 @@ func TestUsageProbeIncludesStderrOnError(t *testing.T) {
 
 // The probe must run in its own session: agy opens /dev/tty in -p mode and stops
 // on SIGTTOU in a background process group (see proc.ConfigureSession). The fake
-// records its session id and its parent's; Setsid makes them differ.
+// records its session id and its parent's; Setsid makes them differ. It runs on
+// Linux only because macOS ps has no sid keyword; proc.ConfigureSession has its
+// own getsid tests on both platforms.
 func TestUsageProbeRunsInOwnSession(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads session ids with ps -o sid, which macOS ps does not support")
+	}
 	dir := t.TempDir()
 	sidFile := filepath.Join(dir, "sid")
 	script := filepath.Join(dir, "agy")
