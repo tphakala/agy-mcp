@@ -114,7 +114,7 @@ type StartRequest struct {
 	Agent            string   // optional; --agent <name>, selects a specific agy agent
 	Sandbox          bool     // optional; --sandbox, runs agy with terminal restrictions
 	Dirs             []string // repeated --add-dir
-	SkipProjectRules bool     // optional; omits the implicit --add-dir <Cwd> that loads the project's rule files
+	SkipProjectRules bool     // optional; omits the implicit --add-dir <Cwd>, which loads the project's rule files on agy that needs it (MEASURED: agy 1.2.16 loads them without it)
 	ConversationID   string   // optional; --conversation <id>
 	JSONSchema       string   // optional; --json-schema <inline schema or path>, constrains the final stream-json result
 	IdempotencyKey   string   // optional; retry token used only by agy-mcp, never forwarded to agy
