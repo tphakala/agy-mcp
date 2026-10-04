@@ -118,9 +118,10 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 	symlinkErr := os.Symlink(cwd, alias)
 	sep := string(filepath.Separator)
 	for _, tc := range []struct {
-		name string
-		req  StartRequest
-		want []string // the --add-dir values, in order
+		name        string
+		req         StartRequest
+		want        []string // the --add-dir values, in order
+		windowsOnly bool
 	}{
 		{name: "default adds cwd", req: StartRequest{Cwd: cwd}, want: []string{cwd}},
 		{name: "cwd precedes caller dirs", req: StartRequest{Cwd: cwd, Dirs: []string{other}}, want: []string{cwd, other}},
@@ -135,8 +136,17 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 		{name: "opted out", req: StartRequest{Cwd: cwd, SkipProjectRules: true}, want: nil},
 		{name: "opted out keeps caller dirs", req: StartRequest{Cwd: cwd, SkipProjectRules: true, Dirs: []string{cwd}}, want: []string{cwd}},
 		{name: "no cwd", req: StartRequest{}, want: nil},
+		// Windows-only spellings (issue #192): agy would resolve them against a
+		// drive root or a drive's current directory, which is not measured, so
+		// they never stand in for cwd. On POSIX they are ordinary names.
+		{name: "root-relative names the drive root", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{sep}}, want: []string{cwd, sep}},
+		{name: "root-relative dot-dot", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{sep + "a" + sep + ".."}}, want: []string{cwd, sep + "a" + sep + ".."}},
+		{name: "drive-relative dot-dot", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{filepath.VolumeName(cwd) + "x" + sep + ".."}}, want: []string{cwd, filepath.VolumeName(cwd) + "x" + sep + ".."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.windowsOnly && runtime.GOOS != "windows" {
+				t.Skip("rooted and volume-relative spellings are Windows-only")
+			}
 			if slices.Contains(tc.req.Dirs, alias) && symlinkErr != nil {
 				t.Skipf("cannot create a symlink here: %v", symlinkErr)
 			}
@@ -152,13 +162,7 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 			}
 			tc.req.Prompt, tc.req.Timeout = "hi", time.Minute
 			args := buildAgyArgs(tc.req)
-			var got []string
-			for i, a := range args {
-				if a == addDirFlag && i+1 < len(args) {
-					got = append(got, args[i+1])
-				}
-			}
-			if !slices.Equal(got, tc.want) {
+			if got := addDirValues(args); !slices.Equal(got, tc.want) {
 				t.Fatalf("--add-dir values = %q, want %q (args %q)", got, tc.want, args)
 			}
 		})
@@ -186,4 +190,46 @@ func TestStartJobRejectsConversationIDWithContinueLatest(t *testing.T) {
 	if !strings.Contains(err.Error(), "continue_latest") || !strings.Contains(err.Error(), "conversation_id") {
 		t.Fatalf("error = %v, want it to name both conflicting fields", err)
 	}
+}
+
+// TestNormalizeRequestCanonicalCwdIsTheImplicitWorkspace pins, on every OS, that
+// a trailing-separator cwd reaches the args as its canonical form, once, and that
+// a caller dir naming it still replaces the implicit one.
+func TestNormalizeRequestCanonicalCwdIsTheImplicitWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	canonical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newManager(t, managerOpts{defaultTimeout: time.Minute})
+	for _, tc := range []struct {
+		name string
+		dirs []string
+		want []string
+	}{
+		{name: "implicit", want: []string{canonical}},
+		{name: "relative dir names cwd", dirs: []string{"."}, want: []string{"."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			nreq, err := m.normalizeRequest(StartRequest{Prompt: "hi", Cwd: dir + string(filepath.Separator), Dirs: tc.dirs})
+			if err != nil {
+				t.Fatalf("normalizeRequest: %v", err)
+			}
+			args := buildAgyArgs(nreq)
+			if got := addDirValues(args); !slices.Equal(got, tc.want) {
+				t.Fatalf("--add-dir values = %q, want %q (args %q)", got, tc.want, args)
+			}
+		})
+	}
+}
+
+// addDirValues returns the --add-dir values in args, in order.
+func addDirValues(args []string) []string {
+	var got []string
+	for i, a := range args {
+		if a == addDirFlag && i+1 < len(args) {
+			got = append(got, args[i+1])
+		}
+	}
+	return got
 }

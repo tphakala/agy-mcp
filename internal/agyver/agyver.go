@@ -80,7 +80,7 @@ import (
 // single run still reads back intact and nothing agy-mcp does can flush agy's
 // store on its behalf.
 //
-// Two later releases change how a headless run ends. Neither raises the floor,
+// Three later releases change how a headless run ends. None raises the floor,
 // because agy-mcp classifies the run on both sides of each change:
 //   - 1.1.28 made an expired --print-timeout return the partial output and exit
 //     0 instead of failing. Below 1.1.28 the expiry is an in-band ERROR and is
@@ -89,6 +89,11 @@ import (
 //     agy-mcp passes the job timeout as --print-timeout and its supervisor arms
 //     the same deadline, so the two race; the hard kill won the one run MEASURED
 //     against agy 1.2.9.
+//   - 1.2.6 changed the default timeout for headless (-p) runs from 5 minutes
+//     to unlimited, per its changelog; `agy --help` on 1.2.16 shows "(default
+//     0s)" (MEASURED). agy-mcp is unaffected: buildAgyArgs always passes
+//     --print-timeout with the job timeout, and normalizeRequest never leaves
+//     that at zero.
 //   - 1.2.9 made headless runs wait for outstanding background tasks until the
 //     --print-timeout deadline, capped at 30 minutes, instead of cancelling them
 //     about 5s after the agent goes idle. A task still running at the end is

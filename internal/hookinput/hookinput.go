@@ -34,8 +34,10 @@ type payload struct {
 	ToolResponse json.RawMessage `json:"tool_response"`
 	// AgentType names the subagent that made the tool call. Per the Claude Code
 	// hooks documentation (code.claude.com/docs/en/hooks) it is present when the
-	// hook fires inside a subagent and absent on the main thread; NOT MEASURED
-	// against a live payload.
+	// hook fires inside a subagent and absent on the main thread. MEASURED against
+	// Claude Code 2.1.289: absent from a main-thread payload, "general-purpose" in
+	// a foreground or background subagent's payload, for both a Bash and an
+	// mcp__agy__ tool call.
 	AgentType string `json:"agent_type"`
 }
 

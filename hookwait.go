@@ -27,7 +27,10 @@ import (
 // to the session (agy_wait or agy_status recorded the collected marker, issue
 // #194); that case exits 0. The marker does not prove the client received the
 // response. The same holds when agy_cancel recorded the dismissed marker and the
-// job ended cancelled; a dismissed job that ended any other way still wakes. A
+// job ended cancelled; a dismissed job that ended any other way still wakes. One
+// narrow case follows: a job that had already produced its complete answer and
+// then exits non-zero under the cancel signal still reads as cancelled, so it gets
+// no wake; the caller who cancelled it reads it with agy_status. A
 // finished job with no marker still wakes. A SIGINT or SIGTERM
 // during the marker grace takes the interrupted-wake path (exit 2) like one
 // during the wait itself.

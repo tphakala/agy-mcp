@@ -136,6 +136,30 @@ func TestStartJobIdempotencyReusesExistingJob(t *testing.T) {
 	}
 }
 
+// TestStartJobOmitsRequestKeyWithoutIdempotencyKey: the request key is only ever
+// compared on an idempotency_key replay, so a keyless job does not persist one.
+func TestStartJobOmitsRequestKeyWithoutIdempotencyKey(t *testing.T) {
+	m := newManager(t, managerOpts{
+		agyPath:        "/usr/bin/agy",
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
+		defaultTimeout: time.Minute,
+		maxConcurrency: 4,
+		withCacheFile:  true,
+	})
+	job, err := m.StartJob(StartRequest{Prompt: "review", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	deferJobDone(t, m, job.ID)
+	meta, err := m.store.Load(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.RequestKey != "" {
+		t.Fatalf("keyless job persisted request_key %q, want none", meta.RequestKey)
+	}
+}
+
 func TestStartJobIdempotencyReplaysTerminalState(t *testing.T) {
 	m := newManager(t, managerOpts{
 		agyPath:        "/usr/bin/agy",

@@ -25,7 +25,8 @@ func ensureSysProcAttr(cmd *exec.Cmd) {
 // for agy; the process tree is actually terminated via the Job Object captured by
 // Track. It ORs the flags into any CreationFlags a caller set first.
 //
-// CREATE_NO_WINDOW additionally runs the child without a console. The supervisor
+// CREATE_NO_WINDOW additionally runs the child without a console window (it
+// still gets a windowless console; see ConfigureSession). The supervisor
 // is itself started with DETACHED_PROCESS and so has no console to hand down, and
 // a console-mode child that cannot inherit one has a fresh console allocated for
 // it, which is a visible window. Suppressing it costs nothing: agy's stdio are
@@ -44,6 +45,13 @@ func ConfigureGroup(cmd *exec.Cmd) {
 // agy child needs only its own process group and no console window, which is
 // exactly what ConfigureGroup provides. It is therefore an alias here rather than a
 // second copy of the same flags.
+//
+// MEASURED on Windows 11 25H2 (issue #172), with a probe standing in for agy and
+// spawned through the same manager, StartDetached and ConfigureSession chain: the
+// child does get a console, a windowless one (CreateFile on CONIN$ and
+// GetConsoleMode succeed, GetConsoleWindow returns 0), and the probe completed
+// without stopping, since Windows does not suspend a process that changes console
+// modes. Whether agy itself changes the console mode there is not measured.
 func ConfigureSession(cmd *exec.Cmd) {
 	ConfigureGroup(cmd)
 }

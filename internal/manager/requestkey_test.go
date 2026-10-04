@@ -66,6 +66,21 @@ func TestRequestKeyGolden(t *testing.T) {
 	}
 }
 
+// TestRequestKeyFieldsAreOmitempty pins the rule requestKey documents: every
+// field has a JSON name and the omitempty option, so a field added later does not
+// change the key of a request that leaves it out.
+func TestRequestKeyFieldsAreOmitempty(t *testing.T) {
+	for f := range reflect.TypeFor[requestKeyFields]().Fields() {
+		name, opts, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			t.Errorf("%s has no JSON name (tag %q)", f.Name, f.Tag.Get("json"))
+		}
+		if !slices.Contains(strings.Split(opts, ","), "omitempty") {
+			t.Errorf("%s json tag %q lacks omitempty", f.Name, f.Tag.Get("json"))
+		}
+	}
+}
+
 func TestRequestKeyNormalizesEquivalentRequests(t *testing.T) {
 	base := StartRequest{Prompt: "review", Cwd: "/repo", Timeout: time.Minute}
 	withEmptyDirs := base

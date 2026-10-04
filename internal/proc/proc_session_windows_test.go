@@ -12,6 +12,8 @@ import (
 // SIGTTOU, so the controlling-terminal fix is a no-op concept here; the agy child
 // still needs its own process group and no console window, exactly what
 // ConfigureGroup provides. ConfigureSession must therefore set the same flags.
+// The console the child gets is windowless, not absent: see ConfigureSession for
+// what was measured on Windows (issue #172).
 func TestConfigureSessionSetsProcessGroupAndNoWindow(t *testing.T) {
 	cmd := exec.Command("cmd.exe", "/c", "exit")
 	ConfigureSession(cmd)

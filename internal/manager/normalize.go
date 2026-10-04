@@ -53,34 +53,65 @@ func normalizeCwd(cwd string) (string, error) {
 // while a POSIX kernel resolves ".." from the link's target. So an entry must also be
 // the same directory as cwd when the OS resolves it as written. The same check
 // lets an entry that differs from cwd only in letter case count as cwd, but only
-// where the filesystem itself says they are one directory. Whenever the two
-// disagree, or either cannot be stat'ed, the entry does not count: agy then gets
+// where the filesystem itself says they are one directory. A rooted or
+// volume-relative entry (see rootRelative) never counts. Whenever the checks
+// disagree, or cwd cannot be stat'ed, the entry does not count: agy then gets
 // cwd as well as the entry, and a duplicate --add-dir was MEASURED harmless on
-// agy 1.2.9 (macOS), while dropping cwd would lose the project's rule files.
+// agy 1.2.9 (macOS), while dropping cwd would lose the project's rule files on
+// agy that needs --add-dir to load them.
 func dirsInclude(dirs []string, cwd string) bool {
-	cwdInfo, err := os.Stat(cwd)
-	if err != nil {
+	if cwd == "" {
 		return false
 	}
+	var cwdInfo os.FileInfo // stat'ed on the first entry that passes the lexical check
 	for _, d := range dirs {
 		if d == "" {
 			// filepath.Join(cwd, "") is cwd itself, so an empty entry would count as
 			// a match and drop the implicit workspace while naming no directory.
 			continue
 		}
-		asWritten := d
+		if rootRelative(d) {
+			continue
+		}
+		joined, asWritten := d, d
 		if !filepath.IsAbs(d) {
 			// Joined by hand, not with filepath.Join, so ".." is left for the OS.
-			asWritten = cwd + string(filepath.Separator) + d
-			d = filepath.Join(cwd, d)
+			asWritten = joinAsWritten(cwd, d)
+			joined = filepath.Join(cwd, d)
 		}
-		n, err := normalizeCwd(d)
+		n, err := normalizeCwd(joined)
 		if err != nil || (n != cwd && !strings.EqualFold(n, cwd)) {
 			continue
+		}
+		if cwdInfo == nil {
+			if cwdInfo, err = os.Stat(cwd); err != nil {
+				return false
+			}
 		}
 		if info, err := os.Stat(asWritten); err == nil && os.SameFile(info, cwdInfo) {
 			return true
 		}
 	}
 	return false
+}
+
+// joinAsWritten appends d to cwd with one separator and no cleaning, so ".." is
+// left for the OS to resolve. A cwd that already ends in a separator (a
+// filesystem root) gets none added, which would give "//dir". cwd must be
+// non-empty.
+func joinAsWritten(cwd, d string) string {
+	if os.IsPathSeparator(cwd[len(cwd)-1]) {
+		return cwd + d
+	}
+	return cwd + string(filepath.Separator) + d
+}
+
+// rootRelative reports whether d is neither absolute nor relative to cwd: a
+// rooted path without a volume (`\x`) or one with a volume but no root
+// (`C:repo`). These are Windows-only shapes; agy would resolve them against a
+// drive root or a drive's current directory, which is not measured, so they
+// never stand in for cwd (issue #192). On POSIX it is always false. d must be
+// non-empty.
+func rootRelative(d string) bool {
+	return !filepath.IsAbs(d) && (filepath.VolumeName(d) != "" || os.IsPathSeparator(d[0]))
 }
