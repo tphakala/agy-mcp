@@ -141,7 +141,7 @@ func TestBuildAgyArgsProjectRules(t *testing.T) {
 		// they never stand in for cwd. On POSIX they are ordinary names.
 		{name: "root-relative names the drive root", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{sep}}, want: []string{cwd, sep}},
 		{name: "root-relative dot-dot", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{sep + "a" + sep + ".."}}, want: []string{cwd, sep + "a" + sep + ".."}},
-		{name: "drive-relative", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{filepath.VolumeName(cwd) + "."}}, want: []string{cwd, filepath.VolumeName(cwd) + "."}},
+		{name: "drive-relative dot-dot", windowsOnly: true, req: StartRequest{Cwd: cwd, Dirs: []string{filepath.VolumeName(cwd) + "x" + sep + ".."}}, want: []string{cwd, filepath.VolumeName(cwd) + "x" + sep + ".."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.windowsOnly && runtime.GOOS != "windows" {
