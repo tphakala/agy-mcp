@@ -18,12 +18,12 @@ import (
 //
 // It returns on ESRCH (no member left) or EPERM (no member this process may
 // signal; MEASURED on macOS 26.7.1 for a group whose members are all unreaped
-// zombies). Any other error, a non-positive pgid (which would target the
-// caller's own group), or a group still signalable at timeout fails the test.
-func KillProcessGroup(t *testing.T, pgid int, timeout time.Duration) {
-	t.Helper()
+// zombies). Any other error, a non-positive pgid (0 would target the caller's
+// own group), or a group still signalable at timeout fails the test.
+func KillProcessGroup(tb testing.TB, pgid int, timeout time.Duration) {
+	tb.Helper()
 	if pgid <= 0 {
-		t.Errorf("KillProcessGroup: refusing non-positive pgid %d", pgid)
+		tb.Errorf("KillProcessGroup: refusing non-positive pgid %d", pgid)
 		return
 	}
 	deadline := time.Now().Add(timeout)
@@ -33,11 +33,11 @@ func KillProcessGroup(t *testing.T, pgid int, timeout time.Duration) {
 			return
 		}
 		if err != nil {
-			t.Errorf("KillProcessGroup: kill(-%d, SIGKILL): %v", pgid, err)
+			tb.Errorf("KillProcessGroup: kill(-%d, SIGKILL): %v", pgid, err)
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Errorf("process group %d still has live members %v after SIGKILL", pgid, timeout)
+			tb.Errorf("process group %d still has live members %v after SIGKILL", pgid, timeout)
 			return
 		}
 		time.Sleep(pollInterval)

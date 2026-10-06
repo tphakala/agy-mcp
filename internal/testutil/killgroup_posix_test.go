@@ -32,7 +32,7 @@ func TestKillProcessGroupLeavesNoLiveMember(t *testing.T) {
 		close(reaped)
 	}()
 	t.Cleanup(func() {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		KillProcessGroup(t, pgid, 10*time.Second)
 		select {
 		case <-reaped:
 		case <-time.After(10 * time.Second):
@@ -49,5 +49,49 @@ func TestKillProcessGroupLeavesNoLiveMember(t *testing.T) {
 
 	if err := syscall.Kill(-pgid, 0); !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
 		t.Fatalf("Kill(-%d, 0) = %v after KillProcessGroup, want ESRCH or EPERM: a member is still live", pgid, err)
+	}
+}
+
+// errRecorder captures Errorf calls so a test can assert KillProcessGroup's
+// failure branches without failing itself.
+type errRecorder struct {
+	testing.TB
+	errs []string
+}
+
+func (r *errRecorder) Errorf(format string, args ...any) {
+	r.errs = append(r.errs, fmt.Sprintf(format, args...))
+}
+
+// A non-positive pgid must be refused before kill(2): kill(-0, ...) would
+// signal the caller's own process group. Do not check this test by deleting
+// the guard: the resulting kill(0, SIGKILL) kills the test run itself.
+func TestKillProcessGroupRefusesNonPositivePgid(t *testing.T) {
+	rec := &errRecorder{TB: t}
+	KillProcessGroup(rec, 0, time.Second)
+	if len(rec.errs) != 1 {
+		t.Fatalf("errors = %q, want exactly one refusal", rec.errs)
+	}
+}
+
+// A group still signalable when the timeout expires fails the test. A negative
+// timeout has expired before the first kill, which succeeds because the target
+// was running when it was sent.
+func TestKillProcessGroupReportsTimeout(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pgid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+
+	rec := &errRecorder{TB: t}
+	KillProcessGroup(rec, pgid, -time.Nanosecond)
+	if len(rec.errs) != 1 {
+		t.Fatalf("errors = %q, want exactly one timeout failure", rec.errs)
 	}
 }
