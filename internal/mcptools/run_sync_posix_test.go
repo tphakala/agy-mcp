@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -333,7 +332,9 @@ func TestAgyRunSyncReturnsConversationID(t *testing.T) {
 
 // killJobGroup arranges for a still-running job's process group to be SIGKILLed
 // when the test ends, so a fake agy does not outlive its test and keep writing
-// into a TempDir state dir that is being removed.
+// into a TempDir state dir that is being removed. It waits until the group has
+// no live member (testutil.KillProcessGroup, issue #196), because kill(2)
+// returns before its targets have exited.
 //
 // Cancelling the job does not achieve this, which is why this kills the group
 // directly: agy_cancel signals the supervisor pid alone (proc.Signal is explicitly
@@ -346,13 +347,13 @@ func killJobGroup(t *testing.T, stateDir, jobID string) {
 	t.Helper()
 	t.Cleanup(func() {
 		// No readable meta means no pid to signal: the job either never recorded
-		// one or is already gone. ESRCH on an exited group is the ordinary case,
-		// so the Kill error is discarded.
+		// one or is already gone. An already-exited group is the ordinary case
+		// and is not an error for the helper.
 		meta, err := jobstore.LoadDir(filepath.Join(stateDir, "jobs", jobID))
 		if err != nil || meta.PID <= 0 {
 			return
 		}
-		_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
+		testutil.KillProcessGroup(t, meta.PID, 10*time.Second)
 	})
 }
 
