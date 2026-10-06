@@ -659,9 +659,10 @@ func TestStartJobSerializesSameConversation(t *testing.T) {
 //
 // Only tests whose fake supervisor actually writes into the job dir and completes
 // on its own need it. Tests that expect StartJob to fail (no supervisor spawned),
-// that kill a sleeping supervisor (killJob), or that use a non-writing supervisor
-// such as `sleep` are not exposed; a supervisor that is SIGKILLed never writes an
-// exit code, so waiting for one there would time out.
+// or that use a non-writing supervisor such as `sleep` are not exposed. Tests that
+// kill a sleeping supervisor (killJob) are exposed to the same race, but a
+// SIGKILLed supervisor never writes an exit code, so waiting for one there would
+// time out; killJob instead waits for the process group to empty (issue #196).
 func deferJobDone(t *testing.T, m *Manager, id string) {
 	t.Helper()
 	t.Cleanup(func() {

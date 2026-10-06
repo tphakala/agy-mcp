@@ -118,9 +118,7 @@ func TestTrackTerminateKillsGroup(t *testing.T) {
 	if err := g.Terminate(syscall.SIGKILL); err != nil {
 		t.Fatalf("Terminate: %v", err)
 	}
-	if err := cmd.Wait(); err == nil {
-		t.Fatal("expected the killed process to exit non-nil")
-	}
+	requireKilledBy(t, cmd, syscall.SIGKILL)
 	if err := g.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
@@ -189,10 +187,15 @@ func TestConfigureSessionClearsConflictingGroupAttrs(t *testing.T) {
 // must also be gone: it is reparented to init on the leader's death and reaped there,
 // so signalling it settles on ESRCH. A leader-only kill leaves the grandchild alive
 // (confirmed out of band), so this assertion genuinely exercises the group kill.
+//
+// The leader execs sleep so it cannot exit on its own. With `wait` as its last
+// command it exited 0 on darwin (issue #184), which means the group kill reached
+// the grandchild and the shell ran to exit before its own SIGKILL took effect.
+// The kernel ordering behind that is NOT MEASURED.
 func TestConfigureSessionGroupStillTerminable(t *testing.T) {
-	// `sleep 60 &` is the grandchild; `echo $!` reports its PID; `wait` keeps the
-	// leader alive until the group is killed.
-	cmd := exec.Command("sh", "-c", "sleep 60 & echo $! ; wait")
+	// `sleep 60 &` is the grandchild; `echo $!` reports its PID; `exec sleep 60`
+	// keeps the leader alive until the group is killed, and only a signal ends it.
+	cmd := exec.Command("sh", "-c", "sleep 60 & echo $! ; exec sleep 60")
 	ConfigureSession(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -227,9 +230,7 @@ func TestConfigureSessionGroupStillTerminable(t *testing.T) {
 	if err := g.Terminate(syscall.SIGKILL); err != nil {
 		t.Fatalf("Terminate: %v", err)
 	}
-	if err := cmd.Wait(); err == nil {
-		t.Fatal("expected the killed leader to exit non-nil")
-	}
+	requireKilledBy(t, cmd, syscall.SIGKILL)
 
 	// The group kill must reach the grandchild too; it settles on ESRCH once reaped.
 	deadline := time.Now().Add(5 * time.Second)
@@ -245,5 +246,19 @@ func TestConfigureSessionGroupStillTerminable(t *testing.T) {
 	}
 	if err := g.Close(); err != nil {
 		t.Errorf("Close: %v", err)
+	}
+}
+
+// requireKilledBy waits for cmd and fails unless it was terminated by sig.
+// A plain err != nil check also accepts a non-zero exit or another signal.
+func requireKilledBy(t *testing.T, cmd *exec.Cmd, sig syscall.Signal) {
+	t.Helper()
+	err := cmd.Wait()
+	if cmd.ProcessState == nil {
+		t.Fatalf("wait did not produce a process state: %v", err)
+	}
+	ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() || ws.Signal() != sig {
+		t.Fatalf("process state = %q (wait err = %v), want terminated by signal %v", cmd.ProcessState.String(), err, sig)
 	}
 }

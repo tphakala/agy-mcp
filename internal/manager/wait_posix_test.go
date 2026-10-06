@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
@@ -106,7 +105,8 @@ func TestWaitTerminalDeadlineOverrun(t *testing.T) {
 	// run raced the old 5s drain budget (issue #163). killJob only registers a
 	// t.Cleanup, so the job keeps running through the deadline assertion below; by
 	// the time that cleanup fires the still-running job only needs to stop writing
-	// into the TempDir state dir before it is removed, which SIGKILL does.
+	// into the TempDir state dir before it is removed; killJob kills the group and
+	// waits for it to empty first (issue #196).
 	killJob(t, m, job.ID)
 	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(100*time.Millisecond), nil)
 	if err != nil {
@@ -132,7 +132,8 @@ func TestWaitTerminalContextCancel(t *testing.T) {
 	// sleeps 2s, and polling for that under a loaded -race run raced the old 5s
 	// drain budget (issue #163). The cancel assertion below is what the test is
 	// about; the still-running job only needs to stop writing into the TempDir
-	// state dir before it is removed, which SIGKILL does.
+	// state dir before it is removed; killJob kills the group and waits for it to
+	// empty first (issue #196).
 	killJob(t, m, job.ID)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -297,23 +298,23 @@ func TestStatusFailsOnInBandError(t *testing.T) {
 
 // killJob arranges for a still-running job's process group to be SIGKILLed when
 // the test ends, so a fake agy does not outlive its test and keep writing into a
-// TempDir state dir that is being removed. Cancel is not an alternative: it
-// signals the supervisor pid alone and the fake supervisor forwards nothing, so
-// the fake agy it runs in the foreground survives.
+// TempDir state dir that is being removed. The cleanup waits until the group has
+// no live member (testutil.KillProcessGroup, issue #196), because kill(2) returns
+// before its targets have exited. Cancel is not an alternative: it signals the
+// supervisor pid alone and the fake supervisor forwards nothing, so the fake agy
+// it runs in the foreground survives.
 //
-// The PID guard is load-bearing rather than defensive: syscall.Kill(-0, ...)
-// would signal the test runner's own process group. The Kill error is discarded
-// because ESRCH, for a group that has already exited, is the ordinary case; the
-// pid is read from disk, so a recycled one is possible in principle and unguarded
-// here, which is tolerable only because this is test-only cleanup.
-//
-// Like the inline cleanups it replaced, it signals and returns without waiting for
-// the group to die, which is enough for the purpose.
+// The PID guard is load-bearing rather than defensive: a group kill with pid 0
+// would signal the test runner's own process group. An already-exited group is
+// the ordinary case and is not an error; the pid is read from disk, so a recycled
+// one is possible in principle and unguarded here, which is tolerable only because
+// this is test-only cleanup. The helper stops on EPERM, so it never fights a
+// group owned by another user.
 func killJob(t *testing.T, m *Manager, id string) {
 	t.Helper()
 	t.Cleanup(func() {
 		if meta, err := m.store.Load(id); err == nil && meta.PID > 0 {
-			_ = syscall.Kill(-meta.PID, syscall.SIGKILL)
+			testutil.KillProcessGroup(t, meta.PID, 10*time.Second)
 		}
 	})
 }
