@@ -20,6 +20,12 @@ import (
 // signal; MEASURED on macOS 26.7.1 for a group whose members are all unreaped
 // zombies). Any other error, a non-positive pgid (0 would target the caller's
 // own group), or a group still signalable at timeout fails the test.
+//
+// Precondition: every member is reaped once it dies. The caller reaps the
+// leader (the manager's supervisor goroutine does, at manager.go's cmd.Wait),
+// and orphaned members are reaped by init. On Linux kill(2) may still succeed
+// against an unreaped zombie (NOT MEASURED), so a zombie nobody reaps would
+// hold this helper until the timeout and fail the test.
 func KillProcessGroup(tb testing.TB, pgid int, timeout time.Duration) {
 	tb.Helper()
 	if pgid <= 0 {
