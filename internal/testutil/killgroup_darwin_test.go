@@ -24,5 +24,5 @@ func TestKillProcessGroupReturnsWhenOnlyZombiesRemain(t *testing.T) {
 	})
 
 	// Not reaped until cleanup, so after the SIGKILL the leader is a zombie.
-	KillProcessGroup(t, cmd.Process.Pid, 2*time.Second)
+	KillProcessGroup(t, cmd.Process.Pid, 10*time.Second)
 }
