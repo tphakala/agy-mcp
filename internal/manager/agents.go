@@ -28,8 +28,8 @@ const (
 // plain []string for that reason.
 //
 // An empty cwd is the unchanged listing: what agy lists from the server's own
-// directory with no workspace. A cwd is normalized and passed exactly as agy_run
-// passes it (see workspaceDirs), because agy lists a directory's .agents/agents/
+// directory with no workspace. A cwd is normalized and passed as agy_run
+// passes cwd with project_rules at its default and no dirs (see workspaceDirs), because agy lists a directory's .agents/agents/
 // only when it is a workspace given as --add-dir, not from its working directory
 // (MEASURED against agy 1.3.1: from a git subdirectory it finds the repository
 // root's agents, outside a git repository it does not). The process also runs in
