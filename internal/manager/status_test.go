@@ -724,7 +724,7 @@ func terminalCases() []terminalCase {
 			// Synthetic: no captured RESOURCE_EXHAUSTED sample exists.
 			name: "a RESOURCE_EXHAUSTED status is a quota wall",
 			code: 3, res: &streamjson.Result{Status: streamjson.StatusError, Error: "request failed"},
-			errFile:   agyErrorPrefix + `{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true,"error_id":"e-1"}` + "\n",
+			errFile:   wireAgyErrorPrefix + `{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true,"error_id":"e-1"}` + "\n",
 			wantState: StateFailed, wantErrSub: "request failed", wantReason: ReasonQuotaExhausted,
 			wantRetryable: new(true), wantErrorID: "e-1",
 		}, {
@@ -736,7 +736,7 @@ func terminalCases() []terminalCase {
 		}, {
 			name: "a malformed AGY_ERROR line changes nothing",
 			code: 3, res: &streamjson.Result{Status: streamjson.StatusError, Error: "boom"},
-			errFile:   agyErrorPrefix + `{"retryable":fal` + "\n",
+			errFile:   wireAgyErrorPrefix + `{"retryable":fal` + "\n",
 			wantState: StateFailed, wantErrSub: "boom", wantReason: ReasonAgyError,
 		}, {
 			name: "a success payload ignores an AGY_ERROR line",

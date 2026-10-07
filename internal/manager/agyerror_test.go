@@ -17,6 +17,10 @@ const (
 	measuredAgyErrorLine1 = "Selected model is not supported in the selected location. For a full list of available locations and deployment endpoints, please refer to Antigravity documentation at https://antigravity.google/docs/enterprise."
 	// measuredAgyErrorID is a redacted stand-in for the measured error_id shape.
 	measuredAgyErrorID = "00000000-0000-4000-8000-000000000000-1"
+	// wireAgyErrorPrefix is the literal text agy writes before the object. It is
+	// spelled out here rather than taken from agyErrorPrefix, so a typo in the
+	// production constant fails the tests instead of moving the fixtures with it.
+	wireAgyErrorPrefix = "AGY_ERROR: "
 )
 
 // measuredAgyErrorJSON is the object on line 2, with the project and region
@@ -25,10 +29,10 @@ var measuredAgyErrorJSON = `{"short_error":"NOT_FOUND (code 404): Publisher mode
 	` was not found or your project does not have access to it. Ensure you are using a valid model name and that the model is available in the specified region.","retryable":false,"error_id":"` + measuredAgyErrorID + `"}`
 
 // measuredAgyErrorStderr is the two-line stderr agy 1.3.1 wrote (exit 3).
-var measuredAgyErrorStderr = "error: " + measuredAgyErrorLine1 + "\n" + agyErrorPrefix + measuredAgyErrorJSON + "\n"
+var measuredAgyErrorStderr = "error: " + measuredAgyErrorLine1 + "\n" + wireAgyErrorPrefix + measuredAgyErrorJSON + "\n"
 
 func TestParseAgyErrorTail(t *testing.T) {
-	line := func(obj string) string { return agyErrorPrefix + obj + "\n" }
+	line := func(obj string) string { return wireAgyErrorPrefix + obj + "\n" }
 	for _, tc := range []struct {
 		name          string
 		tail          string
@@ -39,12 +43,12 @@ func TestParseAgyErrorTail(t *testing.T) {
 		wantStatus    string
 	}{
 		{name: "measured 1.3.1 stderr", tail: measuredAgyErrorStderr, wantOK: true, wantRetryable: new(false), wantErrorID: measuredAgyErrorID, wantStatus: "NOT_FOUND"},
-		{name: "1.2.9 variant with a capitalised first line", tail: "Error: " + measuredAgyErrorLine1 + "\n" + agyErrorPrefix + measuredAgyErrorJSON + "\n", wantOK: true, wantRetryable: new(false), wantErrorID: measuredAgyErrorID, wantStatus: "NOT_FOUND"},
+		{name: "1.2.9 variant with a capitalised first line", tail: "Error: " + measuredAgyErrorLine1 + "\n" + wireAgyErrorPrefix + measuredAgyErrorJSON + "\n", wantOK: true, wantRetryable: new(false), wantErrorID: measuredAgyErrorID, wantStatus: "NOT_FOUND"},
 		{name: "no AGY_ERROR line", tail: "error: " + measuredAgyErrorLine1 + "\n"},
 		{name: "prefix indented", tail: "  " + line(measuredAgyErrorJSON)},
 		{name: "prefix not at column 0", tail: "x " + line(measuredAgyErrorJSON)},
 		{name: "lowercase prefix", tail: "agy_error: " + measuredAgyErrorJSON + "\n"},
-		{name: "JSON cut mid-string", tail: agyErrorPrefix + measuredAgyErrorJSON[:60]},
+		{name: "JSON cut mid-string", tail: wireAgyErrorPrefix + measuredAgyErrorJSON[:60]},
 		{name: "trailing garbage after the object", tail: line(measuredAgyErrorJSON + " junk")},
 		{name: "null payload", tail: line("null")},
 		{name: "array payload", tail: line(`[{"retryable":false}]`)},
@@ -56,9 +60,9 @@ func TestParseAgyErrorTail(t *testing.T) {
 		{name: "unrecognized short_error", tail: line(`{"short_error":"oops","retryable":true}`), wantOK: true, wantRetryable: new(true)},
 		{name: "synthetic RESOURCE_EXHAUSTED, no captured sample", tail: line(`{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true}`), wantOK: true, wantRetryable: new(true), wantStatus: "RESOURCE_EXHAUSTED"},
 		{name: "two lines, last valid wins", tail: line(`{"retryable":true,"error_id":"first"}`) + line(`{"retryable":false,"error_id":"last"}`), wantOK: true, wantRetryable: new(false), wantErrorID: "last"},
-		{name: "two lines, last malformed, no fallback", tail: line(`{"retryable":true,"error_id":"first"}`) + agyErrorPrefix + `{"retryable":fal`},
+		{name: "two lines, last malformed, no fallback", tail: line(`{"retryable":true,"error_id":"first"}`) + wireAgyErrorPrefix + `{"retryable":fal`},
 		{name: "CRLF line endings", tail: strings.ReplaceAll(measuredAgyErrorStderr, "\n", "\r\n"), wantOK: true, wantRetryable: new(false), wantErrorID: measuredAgyErrorID, wantStatus: "NOT_FOUND"},
-		{name: "two spaces after the prefix", tail: agyErrorPrefix + " " + measuredAgyErrorJSON + "\n", wantOK: true, wantRetryable: new(false), wantErrorID: measuredAgyErrorID, wantStatus: "NOT_FOUND"},
+		{name: "two spaces after the prefix", tail: wireAgyErrorPrefix + " " + measuredAgyErrorJSON + "\n", wantOK: true, wantRetryable: new(false), wantErrorID: measuredAgyErrorID, wantStatus: "NOT_FOUND"},
 		// encoding/json matches keys case-insensitively; accepted and pinned so a
 		// move to strict decoding is a visible decision.
 		{name: "upper-case key is accepted", tail: line(`{"RETRYABLE":false}`), wantOK: true, wantRetryable: new(false)},
@@ -105,7 +109,7 @@ func TestReadAgyErrorFromJobDir(t *testing.T) {
 	}{
 		{name: "no err file"},
 		{name: "line at the end of a large file", stderr: filler + measuredAgyErrorStderr, wantOK: true},
-		{name: "a single line longer than the tail", stderr: agyErrorPrefix + `{"retryable":false,"error_id":"e-1","pad":"` + strings.Repeat("x", errTailBytes) + `"}` + "\n"},
+		{name: "a single line longer than the tail", stderr: wireAgyErrorPrefix + `{"retryable":false,"error_id":"e-1","pad":"` + strings.Repeat("x", errTailBytes) + `"}` + "\n"},
 		{name: "exactly errTailBytes with the line first", stderr: exactSizeWithLineFirst(errTailBytes), wantOK: true},
 		{name: "errTailBytes+1 cuts the first line", stderr: exactSizeWithLineFirst(errTailBytes + 1)},
 	} {
@@ -122,7 +126,7 @@ func TestReadAgyErrorFromJobDir(t *testing.T) {
 // exactSizeWithLineFirst returns a stderr of exactly size bytes whose first line
 // is the measured AGY_ERROR line, padded with filler lines.
 func exactSizeWithLineFirst(size int) string {
-	first := agyErrorPrefix + measuredAgyErrorJSON + "\n"
+	first := wireAgyErrorPrefix + measuredAgyErrorJSON + "\n"
 	pad := size - len(first)
 	// One filler line of pad bytes, newline-terminated.
 	return first + strings.Repeat("f", pad-1) + "\n"
