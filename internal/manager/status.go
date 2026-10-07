@@ -51,7 +51,7 @@ const (
 // state already is the reason), and a running or done job has no failure to
 // name.
 const (
-	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient
+	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient unless Status.Retryable is false
 	ReasonTimeout        = "timeout"         // the run outlived its timeout: agy-mcp killed it, or (agy 1.1.28 and later) agy's own --print-timeout cut the turn short
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
@@ -96,7 +96,15 @@ type Status struct {
 	// done job leaves it empty. Error still carries the human-readable detail,
 	// including a quota wall's reset time when agy's message gives one, which this
 	// field deliberately does not parse out.
-	FailureReason  string
+	FailureReason string
+	// Retryable is agy's own verdict on whether the failure is worth retrying,
+	// read from the structured AGY_ERROR line on its stderr (issue #183). Nil when
+	// no usable line was parsed, which means "no verdict", not "permanent". Set
+	// only alongside StateFailed.
+	Retryable *bool
+	// ErrorID is agy's identifier for the failure from the same line; empty when
+	// absent or not a plain id.
+	ErrorID        string
 	ConversationID string
 	// Model is the model id agy-mcp resolved for this run and persisted to meta:
 	// the request's model, or AGY_MCP_DEFAULT_MODEL when none was given, reduced to
@@ -285,6 +293,13 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// one in its payload, but may exit non-zero with it only on stderr), so
 		// classify the message rather than flatly calling every crash agy_error.
 		st.FailureReason = classifyAgyError(st.Error)
+		// agy's structured stderr line supplies the retryable verdict and can
+		// promote the reason to quota_exhausted (issue #183). A SUCCESS payload
+		// means agy vouched for the turn in band, so a stray line is not attached
+		// to it.
+		if !hasResult || res.Status != streamjson.StatusSuccess {
+			st = applyAgyError(dir, st)
+		}
 	}
 	// Every non-zero exit is a run cut short: a cancel, a timeout, a crash, an
 	// OOM kill, agy exiting 1, and a 127 that is a real agy exit rather than a
@@ -462,6 +477,11 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 			// reporting a failure with a blank cause.
 			st.Error = "agy reported an error without a message"
 		}
+		// agy's structured stderr line can promote this to quota_exhausted and
+		// supplies the retryable verdict (issue #183). Every caller reaches here
+		// with a payload, which the supervisor writes only after agy was reaped, so
+		// stderr is final.
+		st = applyAgyError(dir, st)
 	case res.Status == streamjson.StatusSuccess:
 		if schemaSuccessWithoutOutput(meta, res) {
 			st.State = StateFailed
@@ -976,9 +996,11 @@ func matchesBackgroundAbort(stderr string) bool {
 
 // classifyAgyError maps an error message agy produced (a terminal ERROR
 // payload, or a non-zero exit's stderr tail) to a failure reason. A provider
-// quota, rate-limit or AI credits wall is the one transient, retryable case and
-// is told apart as ReasonQuotaExhausted; everything else agy reports is
-// ReasonAgyError.
+// quota, rate-limit or AI credits wall is the one case treated as transient
+// (unless agy's structured line marks it not retryable) and is told apart as
+// ReasonQuotaExhausted; everything else agy reports is
+// ReasonAgyError. applyAgyError may then promote the result to
+// ReasonQuotaExhausted from agy's structured status; it never demotes.
 //
 // It is only ever called on the branches that would otherwise be a flat
 // ReasonAgyError, so it never has to name the structural reasons (timeout,

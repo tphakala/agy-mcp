@@ -500,3 +500,31 @@ func TestAwaitConversationIDStopsOnContextCancellation(t *testing.T) {
 		t.Fatalf("AwaitConversationID took %s against a %s budget: cancellation did not end the wait", elapsed, m.conversationIDWait)
 	}
 }
+
+// TestStatusReadsAgyErrorLineFromRealRun runs the fake agy and supervisor end to
+// end: agy's structured AGY_ERROR stderr line, captured into the job's err file,
+// supplies the retryable verdict and error id (issue #183).
+func TestStatusReadsAgyErrorLineFromRealRun(t *testing.T) {
+	m := waitManager(t, testutil.FakeAgy{Exit: 3, Status: "ERROR", ResultError: measuredAgyErrorLine1, Stderr: measuredAgyErrorStderr})
+	job, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartJob: %v", err)
+	}
+	deferJobDone(t, m, job.ID)
+	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(15*time.Second), nil)
+	if err != nil {
+		t.Fatalf("WaitTerminal: %v", err)
+	}
+	if !terminal || st.State != StateFailed || st.FailureReason != ReasonAgyError {
+		t.Fatalf("state %q reason %q terminal %v, want failed/agy_error/true", st.State, st.FailureReason, terminal)
+	}
+	if st.Error != measuredAgyErrorLine1 {
+		t.Fatalf("error = %q, want agy's own message", st.Error)
+	}
+	if st.Retryable == nil || *st.Retryable || st.ErrorID != measuredAgyErrorID {
+		t.Fatalf("retryable %v error_id %q, want false and %q", derefBool(st.Retryable), st.ErrorID, measuredAgyErrorID)
+	}
+	if st.ConversationID == "" {
+		t.Fatal("conversation_id is empty, want the fake agy's default id")
+	}
+}

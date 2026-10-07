@@ -214,14 +214,18 @@ type statusOutput struct {
 	Error   string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
 	// FailureReason classifies a failure so a caller can branch on the cause
 	// without scraping Error; see manager's Reason constants.
-	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota, rate-limit or AI credits wall; this is transient: wait for the quota to reset before retrying (error carries the reset time when agy's message gives one, and agy_usage reports quota reset times), and recovery spells this out when no partial result was returned), timeout (the run outlived its timeout: agy-mcp killed it, or on agy 1.1.28 and later agy's own --print-timeout expired mid-turn and agy returned only what it had, possibly nothing), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), background_aborted (agy ended the run itself, by a clean exit or in a job recovered from its result after its supervisor died, but its stderr shows it went idle with outstanding background shell tasks and killed them at exit, so the response is only progress narration rather than completed work; re-run with any verification in the foreground rather than as a background task), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
+	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota, rate-limit or AI credits wall; this is transient: wait for the quota to reset before retrying (error carries the reset time when agy's message gives one, and agy_usage reports quota reset times), and recovery spells this out when no partial result was returned; when retryable is false, recovery says to wait for a reset only when error names one, and otherwise to fix the cause), timeout (the run outlived its timeout: agy-mcp killed it, or on agy 1.1.28 and later agy's own --print-timeout expired mid-turn and agy returned only what it had, possibly nothing), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), background_aborted (agy ended the run itself, by a clean exit or in a job recovered from its result after its supervisor died, but its stderr shows it went idle with outstanding background shell tasks and killed them at exit, so the response is only progress narration rather than completed work; re-run with any verification in the foreground rather than as a background task), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
 	// Recovery is tool-facing advice, not a property of the job: it is present
 	// only when a run ended terminally with no text to offer but is still
 	// actionable (for example a timeout, a cancel, a crash, or an agy error
 	// before any answer was streamed), which otherwise reads as a bare empty
 	// failure (issue #151). A quota_exhausted failure is the one case whose advice
 	// is given even without a conversation to continue: wait for the reset instead.
-	Recovery       string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result text: present only on a terminal failed or cancelled job that produced no text. Usually the job also has a conversation_id and the advice is to start a fresh agy_run with it to continue the thread without restating the task (the killed turn's own reasoning is not recoverable). Another exception, the other way, is a failure_reason of quota_exhausted, which is transient: the advice is to wait for the quota reset and then retry, and it is given even when no conversation_id was named. A background_aborted failure gets no recovery note, since simply carrying on with the same task would launch the same background command again; its error says to re-run with the verification in the foreground instead. Absent whenever any result, even a partial one, was recovered"`
+	Recovery string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result text: present only on a terminal failed or cancelled job that produced no text. Usually the job also has a conversation_id and the advice is to start a fresh agy_run with it to continue the thread without restating the task (the killed turn's own reasoning is not recoverable). Another exception, the other way, is a failure_reason of quota_exhausted, which is transient: the advice is to wait for the quota reset and then retry, and it is given even when no conversation_id was named. A background_aborted failure gets no recovery note, since simply carrying on with the same task would launch the same background command again; its error says to re-run with the verification in the foreground instead. When retryable is false, the advice is to fix the cause rather than continue the conversation, and a quota_exhausted note keeps its wait-for-reset advice without naming conversation_id but adds that the cause may need fixing first when the error names no reset time. Absent whenever any result, even a partial one, was recovered"`
+	// Retryable and ErrorID come from the structured AGY_ERROR line agy writes to
+	// stderr when it fails a request (issue #183); see manager.Status.Retryable.
+	Retryable      *bool  `json:"retryable,omitempty" jsonschema:"agy's own verdict on whether this failure is worth retrying, read from the structured error line agy writes to stderr. Present only on a failed job whose stderr carried one; absent means agy gave no verdict, not that the failure is permanent. false means the same request fails the same way (for example a model that is not available in the account's region): change the request instead of re-running it or continuing its conversation. A quota_exhausted failure keeps its wait-for-reset advice even then; see recovery"`
+	ErrorID        string `json:"error_id,omitempty" jsonschema:"agy's identifier for this failure, from the same stderr line as retryable; quote it when reporting the failure. Present only when agy gave one"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Empty until agy names a fresh run's conversation, which takes about a second, so agy_status, agy_wait and agy_run_sync all report none when asked inside that window; ask again once the run is under way"`
 	// Model echoes the resolved model so a caller can see which one actually ran;
 	// see manager.Status.Model.
@@ -251,6 +255,10 @@ type usageOutput struct {
 	TotalTokens     int `json:"total_tokens" jsonschema:"input plus output tokens"`
 }
 
+// quotaTransientAdvice is the quota_exhausted recovery advice when agy gave no
+// not-retryable verdict; the caller appends how to retry.
+const quotaTransientAdvice = "This is transient, not a hard failure: wait for the quota reset (the error message carries the reset time when agy gives one, and agy_usage reports reset times), then retry"
+
 // toStatusOutput converts a manager status into its wire shape, shared by
 // agy_status, agy_run_sync and agy_wait so they cannot drift.
 func toStatusOutput(st manager.Status) statusOutput {
@@ -260,6 +268,8 @@ func toStatusOutput(st manager.Status) statusOutput {
 		Result:         st.Result,
 		Error:          st.Error,
 		FailureReason:  st.FailureReason,
+		Retryable:      st.Retryable,
+		ErrorID:        st.ErrorID,
 		ConversationID: st.ConversationID,
 		Model:          st.Model,
 		Partial:        st.Partial,
@@ -287,14 +297,24 @@ func toStatusOutput(st manager.Status) statusOutput {
 	// limit, then retry". It takes priority over the generic issue #151 hint and,
 	// unlike it, fires even when no conversation was named, since waiting for the
 	// reset and retrying is advice a fresh run can act on too.
+	//
+	// When agy itself said retryable=false (issue #183), the same request fails the
+	// same way, so neither text advises continuing the conversation: the quota note
+	// keeps its wait-for-reset advice, drops the conversation clause and adds that
+	// the cause may need fixing first, and the generic note says to fix the cause. This only changes the text; whether a
+	// note is present is decided by the conditions below, as before.
+	notRetryable := out.Retryable != nil && !*out.Retryable
 	switch {
 	case out.FailureReason == manager.ReasonQuotaExhausted && out.Result == "":
-		advice := "agy's model quota, rate limit or AI credits balance is exhausted. " +
-			"This is transient, not a hard failure: wait for the quota reset (the error message carries the reset time when agy gives one, and agy_usage reports reset times), then retry"
-		if out.ConversationID != "" {
-			advice += " with this conversation_id to continue the thread without restating the task."
-		} else {
-			advice += " the run."
+		advice := "agy's model quota, rate limit or AI credits balance is exhausted. "
+		switch {
+		case notRetryable:
+			advice += "agy marked this error not retryable: when the error message gives a reset time, wait for that reset (agy_usage reports reset times), then retry the run; " +
+				"otherwise fix the cause it names (for example an exhausted AI credits balance) before retrying."
+		case out.ConversationID != "":
+			advice += quotaTransientAdvice + " with this conversation_id to continue the thread without restating the task."
+		default:
+			advice += quotaTransientAdvice + " the run."
 		}
 		out.Recovery = advice
 	// A background-aborted run is excluded even when its narration came back empty:
@@ -305,8 +325,14 @@ func toStatusOutput(st manager.Status) statusOutput {
 	case out.Result == "" && out.ConversationID != "" &&
 		out.FailureReason != manager.ReasonBackgroundAborted &&
 		(out.State == manager.StateFailed || out.State == manager.StateCancelled):
-		out.Recovery = "no result text was recovered. " +
-			"Start a fresh agy_run with this conversation_id to continue the thread without restating the task."
+		if notRetryable {
+			out.Recovery = "no result text was recovered, and agy reported this error as not retryable, " +
+				"so re-running the same request or continuing its conversation would fail the same way. " +
+				"Fix the cause named in error (for example choose another model) before starting a new run."
+		} else {
+			out.Recovery = "no result text was recovered. " +
+				"Start a fresh agy_run with this conversation_id to continue the thread without restating the task."
+		}
 	}
 	return out
 }

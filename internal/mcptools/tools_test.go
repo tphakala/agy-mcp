@@ -672,3 +672,98 @@ func TestServerInstructionsKeepNotesInView(t *testing.T) {
 		}
 	}
 }
+
+// TestStatusOutputRecoveryNotRetryable: when agy reported retryable=false (issue
+// #183), the recovery text stops advising a continuation, while whether a note is
+// present is unchanged.
+func TestStatusOutputRecoveryNotRetryable(t *testing.T) {
+	t.Parallel()
+	no, yes := new(false), new(true)
+	const genericHint = "no result text was recovered. Start a fresh agy_run with this conversation_id to continue the thread without restating the task."
+	failed := func(r *bool, mut func(*manager.Status)) manager.Status {
+		st := manager.Status{State: manager.StateFailed, FailureReason: manager.ReasonAgyError, ConversationID: "c1", Retryable: r}
+		if mut != nil {
+			mut(&st)
+		}
+		return st
+	}
+	quota := func(r *bool, mut func(*manager.Status)) manager.Status {
+		st := failed(r, func(s *manager.Status) { s.FailureReason = manager.ReasonQuotaExhausted })
+		if mut != nil {
+			mut(&st)
+		}
+		return st
+	}
+
+	t.Run("generic note says fix the cause", func(t *testing.T) {
+		t.Parallel()
+		got := toStatusOutput(failed(no, nil)).Recovery
+		if got == "" || strings.Contains(got, "conversation_id") || !strings.Contains(got, "not retryable") {
+			t.Errorf("Recovery = %q, want a not-retryable note without conversation_id", got)
+		}
+	})
+	t.Run("retryable true or unknown keeps today's text", func(t *testing.T) {
+		t.Parallel()
+		for _, r := range []*bool{yes, nil} {
+			if got := toStatusOutput(failed(r, nil)).Recovery; got != genericHint {
+				t.Errorf("Recovery = %q, want %q", got, genericHint)
+			}
+		}
+	})
+	t.Run("quota note keeps the reset advice, drops the conversation clause and names the verdict", func(t *testing.T) {
+		t.Parallel()
+		got := toStatusOutput(quota(no, nil)).Recovery
+		if !strings.Contains(got, "reset") || strings.Contains(got, "conversation_id") {
+			t.Errorf("Recovery = %q, want reset advice without conversation_id", got)
+		}
+		if !strings.Contains(got, "not retryable") || !strings.Contains(got, "fix the cause") || strings.Contains(got, "transient") {
+			t.Errorf("Recovery = %q, want it to say agy marked the error not retryable and to fix the cause, without calling it transient", got)
+		}
+	})
+	t.Run("quota note with no verdict keeps the conversation clause", func(t *testing.T) {
+		t.Parallel()
+		if got := toStatusOutput(quota(nil, nil)).Recovery; !strings.Contains(got, "conversation_id") {
+			t.Errorf("Recovery = %q, want conversation_id", got)
+		}
+	})
+	t.Run("a result keeps recovery absent", func(t *testing.T) {
+		t.Parallel()
+		if got := toStatusOutput(failed(no, func(s *manager.Status) { s.Result = "partial" })).Recovery; got != "" {
+			t.Errorf("Recovery = %q, want none", got)
+		}
+	})
+	t.Run("no conversation keeps recovery absent", func(t *testing.T) {
+		t.Parallel()
+		if got := toStatusOutput(failed(no, func(s *manager.Status) { s.ConversationID = "" })).Recovery; got != "" {
+			t.Errorf("Recovery = %q, want none", got)
+		}
+	})
+	t.Run("a promoted quota job with no conversation gets the quota note", func(t *testing.T) {
+		t.Parallel()
+		got := toStatusOutput(quota(yes, func(s *manager.Status) { s.ConversationID = "" })).Recovery
+		if !strings.HasSuffix(got, "then retry the run.") {
+			t.Errorf("Recovery = %q, want a note ending %q", got, "then retry the run.")
+		}
+	})
+	t.Run("wire", func(t *testing.T) {
+		t.Parallel()
+		b, err := json.Marshal(toStatusOutput(failed(no, func(s *manager.Status) { s.ErrorID = "e-1" })))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"retryable":false`, `"error_id":"e-1"`} {
+			if !strings.Contains(string(b), want) {
+				t.Errorf("wire output missing %s: %s", want, b)
+			}
+		}
+		b, err = json.Marshal(toStatusOutput(failed(nil, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, bad := range []string{`"retryable"`, `"error_id"`} {
+			if strings.Contains(string(b), bad) {
+				t.Errorf("wire output has %s with no verdict: %s", bad, b)
+			}
+		}
+	})
+}
