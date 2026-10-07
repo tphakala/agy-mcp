@@ -272,11 +272,12 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 // other bytes, where redactAgyErrorLines does not see it; cutSplicedAgyError
 // first cuts such a segment at the marker. It also cuts a marker in another case
 // or without the space after its colon, as a precaution: agy has not been seen to
-// write either. Whether agy prints
-// an AGY_ERROR line on --version is NOT MEASURED. MEASURED against agy 1.3.1 on
-// 2026-10-07 (`agy --version` with stdout and stderr captured apart): stdout is
-// "1.3.1", stderr is empty, the exit status is 0. The reduction runs before the
-// bound, so the cut never leaves a fragment of a line that was not reduced.
+// write either. MEASURED against agy 1.3.1 on 2026-10-07 (`agy --version` with
+// stdout and stderr captured apart): stdout is "1.3.1", stderr is empty, the exit
+// status is 0. That covers a normal run only; whether agy ever prints an
+// AGY_ERROR line on --version, for example in a failure state, is NOT MEASURED.
+// The reduction runs before the bound, so the cut never leaves a fragment of a
+// line that was not reduced.
 // Callers pass the unreduced output to agyver.Parse first, because the reduction
 // can drop a version that shares a line with an AGY_ERROR segment it cannot
 // decode. The result is a quoted string, or, when nothing is left of non-empty
