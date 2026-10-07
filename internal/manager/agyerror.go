@@ -36,8 +36,9 @@ type agyErrorPayload struct {
 }
 
 // parseAgyErrorTail extracts agy's structured error from the tail of a stderr
-// file. truncated says the tail starts mid-file, so its first line may be a
-// fragment. It reports ok == false on any doubt (no line, a cut or malformed
+// file. truncated says the tail's first line is cut (the tail starts mid-line),
+// so that line is dropped as a fragment; a tail that starts mid-file on a line
+// boundary is not truncated. It reports ok == false on any doubt (no line, a cut or malformed
 // object, a wrongly typed field, nothing usable), so a caller keeps its prior
 // derivation unchanged.
 //
@@ -101,17 +102,19 @@ func validAgyErrorID(id string) bool {
 }
 
 // readAgyError reads the job's stderr tail and parses it. It reads one byte more
-// than errTailBytes, so a file of exactly errTailBytes is not mistaken for a cut
-// one (tailFile returns exactly n bytes once the file is at least n long).
+// than errTailBytes and inspects that extra byte: a newline there means the
+// errTailBytes window starts on a whole line, anything else means its first line
+// is cut (tailFile returns exactly n bytes once the file is at least n long).
 func readAgyError(dir string) (agyErrorInfo, bool) {
 	raw, err := tailFile(jobstore.ErrPath(dir), errTailBytes+1)
 	if err != nil {
 		return agyErrorInfo{}, false
 	}
-	truncated := int64(len(raw)) > errTailBytes
-	if truncated {
+	truncated := false
+	if int64(len(raw)) > errTailBytes {
 		// Keep the window at errTailBytes. A rune split by this cut can only sit in
 		// the first line, which parseAgyErrorTail drops when truncated.
+		truncated = raw[0] != '\n'
 		raw = raw[1:]
 	}
 	return parseAgyErrorTail(raw, truncated)

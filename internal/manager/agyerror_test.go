@@ -109,6 +109,10 @@ func TestReadAgyErrorFromJobDir(t *testing.T) {
 		{name: "a single line longer than the tail", stderr: wireAgyErrorPrefix + `{"retryable":false,"error_id":"e-1","pad":"` + strings.Repeat("x", errTailBytes) + `"}` + "\n"},
 		{name: "exactly errTailBytes with the line first", stderr: exactSizeWithLineFirst(errTailBytes), wantOK: true},
 		{name: "errTailBytes+1 cuts the first line", stderr: exactSizeWithLineFirst(errTailBytes + 1)},
+		// The window starts on the AGY_ERROR prefix in both rows below; only the byte
+		// before it says whether that is a whole line or the tail of a longer one.
+		{name: "a newline before the window keeps a whole first line", stderr: "\n" + exactSizeWithLineFirst(errTailBytes), wantOK: true},
+		{name: "a line continuing from before the window is dropped", stderr: "x" + exactSizeWithLineFirst(errTailBytes)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
