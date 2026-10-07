@@ -371,6 +371,10 @@ type terminalCase struct {
 	wantReason  string // FailureReason; required on every failed row, forbidden elsewhere
 	wantConvID  string // conversation carried off the payload, "" not asserted
 	wantTurns   int    // agy's own accounting, 0 not asserted
+	// wantRetryable and wantErrorID are asserted on every row (nil and "" mean
+	// none), so no row without an AGY_ERROR line can gain either.
+	wantRetryable *bool
+	wantErrorID   string
 }
 
 // terminalCases is the whole Result/Partial contract in one table, consumed by
@@ -697,6 +701,53 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantResult: "partial text", wantPartial: true,
 			wantErrSub: "model unavailable", wantReason: ReasonAgyError,
 		},
+		// --- agy's structured AGY_ERROR stderr line (issue #183) ------------------
+		{
+			name: "exit 3 with an error payload reads agy's AGY_ERROR line",
+			code: 3, res: &streamjson.Result{Status: streamjson.StatusError, Error: measuredAgyErrorLine1, ConversationID: "c1"},
+			errFile:   measuredAgyErrorStderr,
+			wantState: StateFailed, wantErrSub: measuredAgyErrorLine1, wantReason: ReasonAgyError, wantConvID: "c1",
+			wantRetryable: new(false), wantErrorID: measuredAgyErrorID,
+		}, {
+			name: "exit 0 error payload reads agy's AGY_ERROR line",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusError, Error: measuredAgyErrorLine1, ConversationID: "c1"},
+			errFile:   measuredAgyErrorStderr,
+			wantState: StateFailed, wantErrSub: measuredAgyErrorLine1, wantReason: ReasonAgyError, wantConvID: "c1",
+			wantRetryable: new(false), wantErrorID: measuredAgyErrorID,
+		}, {
+			// The error text stays the raw stderr tail; only the new fields are added.
+			name: "exit 3 with no payload reads agy's AGY_ERROR line",
+			code: 3, errFile: measuredAgyErrorStderr,
+			wantState: StateFailed, wantErrSub: "exit 3: ", wantReason: ReasonAgyError,
+			wantRetryable: new(false), wantErrorID: measuredAgyErrorID,
+		}, {
+			// Synthetic: no captured RESOURCE_EXHAUSTED sample exists.
+			name: "a RESOURCE_EXHAUSTED status is a quota wall",
+			code: 3, res: &streamjson.Result{Status: streamjson.StatusError, Error: "request failed"},
+			errFile:   agyErrorPrefix + `{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true,"error_id":"e-1"}` + "\n",
+			wantState: StateFailed, wantErrSub: "request failed", wantReason: ReasonQuotaExhausted,
+			wantRetryable: new(true), wantErrorID: "e-1",
+		}, {
+			name: "a wording-matched quota wall is not demoted by another status",
+			code: 3, res: &streamjson.Result{Status: streamjson.StatusError, Error: "Individual quota reached. Resets in 21m50s."},
+			errFile:   measuredAgyErrorStderr,
+			wantState: StateFailed, wantErrSub: "Individual quota reached", wantReason: ReasonQuotaExhausted,
+			wantRetryable: new(false), wantErrorID: measuredAgyErrorID,
+		}, {
+			name: "a malformed AGY_ERROR line changes nothing",
+			code: 3, res: &streamjson.Result{Status: streamjson.StatusError, Error: "boom"},
+			errFile:   agyErrorPrefix + `{"retryable":fal` + "\n",
+			wantState: StateFailed, wantErrSub: "boom", wantReason: ReasonAgyError,
+		}, {
+			name: "a success payload ignores an AGY_ERROR line",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "final"},
+			errFile: measuredAgyErrorStderr, wantState: StateDone, wantResult: "final",
+		}, {
+			name: "a non-zero exit after a SUCCESS payload ignores an AGY_ERROR line",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "final"},
+			errFile:   measuredAgyErrorStderr,
+			wantState: StateFailed, wantResult: "final", wantErrSub: "exit 1", wantReason: ReasonAgyError,
+		},
 	}
 }
 
@@ -729,6 +780,10 @@ func TestStatusTerminalContractTableIsWellFormed(t *testing.T) {
 		}
 		if tc.wantState != StateFailed && tc.wantReason != "" {
 			t.Errorf("row %q is not a failure yet declares failure_reason %q", tc.name, tc.wantReason)
+		}
+		// Retryable and ErrorID are set only alongside StateFailed.
+		if tc.wantState != StateFailed && (tc.wantRetryable != nil || tc.wantErrorID != "") {
+			t.Errorf("row %q is not a failure yet declares retryable or error_id", tc.name)
 		}
 	}
 }
@@ -799,6 +854,12 @@ func assertTerminalStatus(t *testing.T, st Status, tc terminalCase) {
 	}
 	if tc.wantTurns != 0 && st.NumTurns != tc.wantTurns {
 		t.Errorf("num_turns = %d, want %d carried off the payload", st.NumTurns, tc.wantTurns)
+	}
+	if !equalBoolPtr(st.Retryable, tc.wantRetryable) {
+		t.Errorf("retryable = %v, want %v", derefBool(st.Retryable), derefBool(tc.wantRetryable))
+	}
+	if st.ErrorID != tc.wantErrorID {
+		t.Errorf("error_id = %q, want %q", st.ErrorID, tc.wantErrorID)
 	}
 }
 
