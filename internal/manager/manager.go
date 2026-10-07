@@ -285,8 +285,8 @@ var (
 	// textRunRE matches a run of characters between line and carriage-return
 	// terminators, so a replacement over it never touches a terminator.
 	textRunRE = regexp.MustCompile(`[^\r\n]+`)
-	// agyErrorMarkerRE finds the AGY_ERROR marker in any case.
-	agyErrorMarkerRE = regexp.MustCompile(`(?i)agy_error`)
+	// agyErrorMarkerRE finds the AGY_ERROR marker in any case, with its colon.
+	agyErrorMarkerRE = regexp.MustCompile(`(?i)agy_error\s*:`)
 )
 
 // cutSplicedAgyError cuts every run of text at an AGY_ERROR marker unless the run
