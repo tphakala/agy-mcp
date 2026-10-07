@@ -194,6 +194,8 @@ func TestKeepTail(t *testing.T) {
 		{"the tail and not the head", "abcdef", 3, "def"},
 		{"a split rune is dropped", "\u00e9abc", 4, "abc"},
 		{"empty", "", 4, ""},
+		{"zero keeps nothing", "abc", 0, ""},
+		{"a negative limit keeps nothing", "abc", -1, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := keepTail(tc.s, tc.limit); got != tc.want {

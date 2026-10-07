@@ -215,8 +215,10 @@ const probeStderrLimit = 1 << 20
 // (issue #211).
 const probeErrorLimit = 64 << 10
 
-// keepTail returns the last limit bytes of s, without a rune the cut split.
+// keepTail returns the last limit bytes of s, without a rune the cut split. A
+// negative limit keeps nothing.
 func keepTail(s string, limit int) string {
+	limit = max(limit, 0)
 	if len(s) <= limit {
 		return s
 	}
