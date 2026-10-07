@@ -261,8 +261,10 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 // and region, so each such line is reduced to its canonical status
 // (redactAgyErrorLines), as the job path and the probes do (issues #205, #209 and
 // #211). Because stdout and stderr share one pipe, a stderr write can land after
-// other bytes or in another spelling, where redactAgyErrorLines does not see it;
-// cutSplicedAgyError first cuts such a segment at the marker. Whether agy prints
+// other bytes, where redactAgyErrorLines does not see it; cutSplicedAgyError
+// first cuts such a segment at the marker. It also cuts a marker in another case
+// or without the space after its colon, as a precaution: agy has not been seen to
+// write either. Whether agy prints
 // an AGY_ERROR line on --version is NOT MEASURED. MEASURED against agy 1.3.1 on
 // 2026-10-07 (`agy --version` with stdout and stderr captured apart): stdout is
 // "1.3.1", stderr is empty, the exit status is 0. The reduction runs before the
@@ -271,8 +273,8 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 // can drop a version that shares a line with an AGY_ERROR segment it cannot
 // decode. The result is a quoted string, or, when nothing is left of non-empty
 // output, a plain phrase, so the message does not claim that agy printed nothing.
-// Both steps key on the text AGY_ERROR, so a marker split by other bytes is not
-// recognised.
+// Both steps key on the text AGY_ERROR and its colon, so a marker split by other
+// bytes is not recognised.
 func versionOutputForMessage(raw string) string {
 	reduced := strings.TrimSpace(redactAgyErrorLines(cutSplicedAgyError(raw)))
 	if reduced == "" && strings.TrimSpace(raw) != "" {
@@ -289,11 +291,11 @@ var (
 	agyErrorMarkerRE = regexp.MustCompile(`(?i)agy_error\s*:`)
 )
 
-// cutSplicedAgyError cuts every run of text at an AGY_ERROR marker unless the run
-// starts with the exact agyErrorPrefix, which redactAgyErrorLines reduces. What
-// precedes the marker is kept; the rest of the run is dropped. Line and
-// carriage-return terminators are kept, so a later run is never joined onto a cut
-// one.
+// cutSplicedAgyError cuts every run of text at an AGY_ERROR marker, the text
+// AGY_ERROR in any case followed by a colon, unless the run starts with the exact
+// agyErrorPrefix, which redactAgyErrorLines reduces. What precedes the marker is
+// kept; the rest of the run is dropped. Line and carriage-return terminators are
+// kept, so a later run is never joined onto a cut one.
 func cutSplicedAgyError(raw string) string {
 	// The marker regexp has no literal prefix and is slow on large output, and
 	// the usual output holds no marker at all.
