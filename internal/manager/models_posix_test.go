@@ -160,3 +160,34 @@ func TestProbeErrorsRedactAgyErrorLines(t *testing.T) {
 		})
 	}
 }
+
+// TestProbeErrorsOmitSeparatorWhenRedactedStderrIsEmpty: a stderr that holds only
+// an AGY_ERROR line the reduction drops (here, one whose object does not decode)
+// leaves nothing to show, so the error is the bare "agy <label>: exit status N"
+// with no dangling separator (issue #209). TestListModelsOmitsWhitespaceOnlyStderr
+// cannot tell a guard on the redacted text from one on the raw stderr, since both
+// are empty after trimming there.
+func TestProbeErrorsOmitSeparatorWhenRedactedStderrIsEmpty(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stderr: wireAgyErrorPrefix + "{not json\n", Exit: 3})
+
+	for _, tc := range []struct {
+		name string
+		want string
+		call func(m *Manager) error
+	}{
+		{"models", "agy models: exit status 3", func(m *Manager) error { _, err := m.ListModels(t.Context()); return err }},
+		{"agents", "agy agents: exit status 3", func(m *Manager) error { _, err := m.ListAgents(t.Context(), ""); return err }},
+		{"usage", "agy /usage: exit status 3", func(m *Manager) error { _, err := m.readUsage(t.Context()); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
+			err := tc.call(m)
+			if err == nil {
+				t.Fatal("probe succeeded, want an error")
+			}
+			if err.Error() != tc.want {
+				t.Errorf("err = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
