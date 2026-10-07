@@ -114,11 +114,10 @@ func TestRedactAgyErrorLines(t *testing.T) {
 	const reduced = wireAgyErrorPrefix + "NOT_FOUND (code 404)"
 	line := func(obj string) string { return wireAgyErrorPrefix + obj }
 	for _, tc := range []struct {
-		name     string
-		tail     string
-		dropHead bool
-		want     string
-		leakOK   bool
+		name   string
+		tail   string
+		want   string
+		leakOK bool
 	}{
 		{name: "measured stderr is reduced", tail: strings.TrimRight(measuredAgyErrorStderr, "\n"),
 			want: "error: " + measuredAgyErrorLine1 + "\n" + reduced},
@@ -137,13 +136,11 @@ func TestRedactAgyErrorLines(t *testing.T) {
 		{name: "an indented prefix stays verbatim (known gap)", tail: "  " + line(measuredAgyErrorJSON),
 			want: "  " + line(measuredAgyErrorJSON), leakOK: true},
 		{name: "text without an AGY_ERROR line is byte-identical", tail: "  lead\n\n\tmid \nend", want: "  lead\n\n\tmid \nend"},
-		{name: "dropHead drops the fragment", tail: "frag\nkeep", dropHead: true, want: "keep"},
-		{name: "dropHead on a lone fragment", tail: "frag", dropHead: true, want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := redactAgyErrorLines(tc.tail, tc.dropHead)
+			got := redactAgyErrorLines(tc.tail)
 			if got != tc.want {
-				t.Errorf("redactAgyErrorLines(%q, %v) = %q, want %q", tc.tail, tc.dropHead, got, tc.want)
+				t.Errorf("redactAgyErrorLines(%q) = %q, want %q", tc.tail, got, tc.want)
 			}
 			if !tc.leakOK {
 				assertNoLeak(t, got)

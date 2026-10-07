@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
-	"unicode"
 
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
@@ -98,28 +97,14 @@ func decodeAgyErrorLine(line string) (agyErrorPayload, bool) {
 }
 
 // redactAgyErrorLines returns tail with every AGY_ERROR line (the prefix at
-// column 0) reduced to the prefix plus the canonical status of its short_error,
-// for example "AGY_ERROR: NOT_FOUND (code 404)", so the cloud project and region
-// that short_error carries never reach Status.Error (issue #205). A line whose
-// object does not decode, or whose short_error has no canonical status, is
-// dropped. "Parses" here means both. Every other line is copied unchanged with
-// its terminator. A prefix that is not at column 0 is not recognised, the same
-// scope as parseAgyErrorTail, so such a line stays verbatim.
-//
-// dropHead drops the tail's first line through its first newline (all of it when
-// there is none): the caller sets it when that line is the cut end of an
-// AGY_ERROR line. Trailing whitespace is trimmed, so a dropped last line leaves
-// no dangling newline, the rule cleanTail applies to every tail.
-func redactAgyErrorLines(tail string, dropHead bool) string {
-	if !dropHead && !strings.Contains(tail, agyErrorPrefix) {
+// column 0, the scope parseAgyErrorTail uses) reduced to the prefix plus the
+// canonical status of its short_error, for example "AGY_ERROR: NOT_FOUND (code
+// 404)", so the cloud project and region that short_error carries never reach
+// Status.Error (issue #205). A line whose object does not decode, or whose
+// short_error has no canonical status, is dropped; other lines are kept as is.
+func redactAgyErrorLines(tail string) string {
+	if !strings.Contains(tail, agyErrorPrefix) {
 		return tail
-	}
-	if dropHead {
-		_, rest, found := strings.Cut(tail, "\n")
-		if !found {
-			return ""
-		}
-		tail = rest
 	}
 	var out strings.Builder
 	for line := range strings.Lines(tail) {
@@ -137,7 +122,8 @@ func redactAgyErrorLines(tail string, dropHead bool) string {
 			out.WriteString(agyErrorPrefix + strings.TrimSuffix(m, ":") + term)
 		}
 	}
-	return strings.TrimRightFunc(out.String(), unicode.IsSpace)
+	// A dropped last line must not leave a dangling newline.
+	return trimStderrTail(out.String())
 }
 
 // validAgyErrorID reports whether id is a short plain identifier.

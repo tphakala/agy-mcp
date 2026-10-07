@@ -294,8 +294,7 @@ func toStatusOutput(st manager.Status) statusOutput {
 	// that streamed partial text, flipping recovery from absent to present for a
 	// job shape that already occurred). A quota wall gets its own message because
 	// the action differs: wait for the quota reset before retrying rather than
-	// continue a lost thread (when agy marks the error not retryable and names no
-	// reset time, the note says to fix the cause instead; see below). It takes
+	// continue a lost thread (see below for a not-retryable quota wall). It takes
 	// priority over the generic issue #151 hint and, unlike it, fires even when no
 	// conversation was named, since waiting for the reset and retrying is advice a
 	// fresh run can act on too.

@@ -923,8 +923,9 @@ func copyWindow(raw string, fromStart bool) (window string, headInAgyError bool)
 }
 
 // readStderrCopy reads the stderr tail that an error message copies. raw is the
-// tail exactly as cleanTail returns it. shown is raw with its AGY_ERROR lines
-// reduced by redactAgyErrorLines (issue #205), and is never empty when raw is not:
+// tail exactly as cleanTail returns it. shown is raw without a cut AGY_ERROR
+// first line and with its other AGY_ERROR lines reduced by redactAgyErrorLines
+// (issue #205), and is never empty when raw is not:
 // a reduction that empties a non-empty tail yields agyErrorWithheld, so a caller
 // cannot report "no stderr output" for stderr that had content.
 //
@@ -939,7 +940,13 @@ func readStderrCopy(dir string) (shown, raw string, err error) {
 	}
 	window, head := copyWindow(b, int64(len(b)) < n)
 	raw = trimStderrTail(window)
-	shown = redactAgyErrorLines(raw, head)
+	shown = raw
+	if head {
+		// Drop the cut AGY_ERROR fragment through its newline (all of it when
+		// there is none).
+		_, shown, _ = strings.Cut(raw, "\n")
+	}
+	shown = redactAgyErrorLines(shown)
 	if shown == "" && raw != "" {
 		shown = agyErrorWithheld
 	}
