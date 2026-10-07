@@ -293,16 +293,18 @@ func toStatusOutput(st manager.Status) statusOutput {
 	// (dropping the guard on the quota branch would break that for a quota wall
 	// that streamed partial text, flipping recovery from absent to present for a
 	// job shape that already occurred). A quota wall gets its own message because
-	// the action differs: not "continue a lost thread" but "wait out a transient
-	// limit, then retry". It takes priority over the generic issue #151 hint and,
-	// unlike it, fires even when no conversation was named, since waiting for the
-	// reset and retrying is advice a fresh run can act on too.
+	// the action differs: wait for the quota reset before retrying (see below for
+	// a not-retryable quota wall). It takes
+	// priority over the generic issue #151 hint and, unlike it, fires even when no
+	// conversation was named, since waiting for the reset and retrying is advice a
+	// fresh run can act on too.
 	//
 	// When agy itself said retryable=false (issue #183), the same request fails the
 	// same way, so neither text advises continuing the conversation: the quota note
 	// keeps its wait-for-reset advice, drops the conversation clause and adds that
-	// the cause may need fixing first, and the generic note says to fix the cause. This only changes the text; whether a
-	// note is present is decided by the conditions below, as before.
+	// the cause may need fixing first, and the generic note says to fix the cause.
+	// This only changes the text; whether a note is present is decided by the
+	// conditions below, as before.
 	notRetryable := out.Retryable != nil && !*out.Retryable
 	switch {
 	case out.FailureReason == manager.ReasonQuotaExhausted && out.Result == "":

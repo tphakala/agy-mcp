@@ -97,6 +97,72 @@ func TestParseAgyErrorTail(t *testing.T) {
 	}
 }
 
+// leakWords are the fragments of measuredAgyErrorJSON's short_error that must
+// never reach a copied stderr tail (issue #205).
+var leakWords = []string{"example-project", "example-region", "short_error", "Publisher model"}
+
+func assertNoLeak(t *testing.T, got string) {
+	t.Helper()
+	for _, w := range leakWords {
+		if strings.Contains(got, w) {
+			t.Errorf("%q leaks %q", got, w)
+		}
+	}
+}
+
+func TestRedactAgyErrorLines(t *testing.T) {
+	const reduced = wireAgyErrorPrefix + "NOT_FOUND (code 404)"
+	line := func(obj string) string { return wireAgyErrorPrefix + obj }
+	for _, tc := range []struct {
+		name   string
+		tail   string
+		want   string
+		leakOK bool
+	}{
+		{name: "measured stderr is reduced", tail: strings.TrimRight(measuredAgyErrorStderr, "\n"),
+			want: "error: " + measuredAgyErrorLine1 + "\n" + reduced},
+		{name: "CRLF terminators are kept", tail: "error: x\r\n" + line(measuredAgyErrorJSON) + "\r\nafter",
+			want: "error: x\r\n" + reduced + "\r\nafter"},
+		{name: "every line is reduced, not only the last",
+			tail: line(measuredAgyErrorJSON) + "\nmiddle\n" + line(measuredAgyErrorJSON),
+			want: reduced + "\nmiddle\n" + reduced},
+		{name: "a cut JSON object is dropped", tail: "a\n" + line(measuredAgyErrorJSON[:60]) + "\nb", want: "a\nb"},
+		{name: "trailing garbage drops the line", tail: "a\n" + line(measuredAgyErrorJSON+" junk"), want: "a"},
+		{name: "no canonical status drops the line", tail: line(`{"short_error":"oops","retryable":true}`), want: ""},
+		{name: "a status without a code drops the line", tail: line(`{"short_error":"NOT_FOUND: x"}`), want: ""},
+		{name: "a dropped last line leaves no dangling newline", tail: "a\n" + line("{bad"), want: "a"},
+		// Settled gap: a prefix is recognised only at the start of a line (after a
+		// newline or a bare carriage return). Pinned so widening it is a deliberate
+		// change.
+		{name: "an indented prefix stays verbatim (known gap)", tail: "  " + line(measuredAgyErrorJSON),
+			want: "  " + line(measuredAgyErrorJSON), leakOK: true},
+		{name: "text without an AGY_ERROR line is byte-identical", tail: "  lead\n\n\tmid \nend", want: "  lead\n\n\tmid \nend"},
+		// A bare carriage return separates lines too, so text around a CR-separated
+		// AGY_ERROR line is kept and the line itself is reduced.
+		{name: "a CR-only separator keeps the ordinary text after the line",
+			tail: line(measuredAgyErrorJSON) + "\rordinary output", want: reduced + "\rordinary output"},
+		{name: "a CR-only separator before the line reduces it",
+			tail: "progress 50%\r" + line(measuredAgyErrorJSON) + "\nafter", want: "progress 50%\r" + reduced + "\nafter"},
+		{name: "a malformed CR-separated line drops the rest of the line",
+			tail: "before\r" + line("{bad") + "\rmore\nnext", want: "before\nnext"},
+		{name: "a CR as JSON whitespace inside the object still reduces the whole line",
+			tail: "a\n" + line(`{"retryable":false,`+"\r"+strings.TrimPrefix(measuredAgyErrorJSON, "{")) + "\nb",
+			want: "a\n" + reduced + "\nb"},
+		{name: "a raw CR inside short_error drops the rest of the line",
+			tail: line(`{"short_error":"NOT_FOUND (code 404): x`+"\r"+`example-project"}`) + "\nb", want: "b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactAgyErrorLines(tc.tail)
+			if got != tc.want {
+				t.Errorf("redactAgyErrorLines(%q) = %q, want %q", tc.tail, got, tc.want)
+			}
+			if !tc.leakOK {
+				assertNoLeak(t, got)
+			}
+		})
+	}
+}
+
 func TestReadAgyErrorFromJobDir(t *testing.T) {
 	filler := strings.Repeat("some agy chatter line\n", 150) // 3300 bytes
 	for _, tc := range []struct {

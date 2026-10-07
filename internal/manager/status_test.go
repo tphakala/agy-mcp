@@ -278,7 +278,12 @@ func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got := errorSummary(dir, tc.code)
+			got, classify := errorSummary(dir, tc.code)
+			// None of these stderr texts holds an AGY_ERROR line, so the reduction
+			// changes nothing and the classified text is the shown text.
+			if classify != got {
+				t.Errorf("classifyMsg = %q, want it equal to msg %q", classify, got)
+			}
 			if tc.wantPrefix {
 				if !strings.HasPrefix(got, tc.want) {
 					t.Errorf("errorSummary = %q, want prefix %q", got, tc.want)
@@ -290,6 +295,124 @@ func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCopyWindow(t *testing.T) {
+	a := func(n int) string { return strings.Repeat("a", n) }
+	for _, tc := range []struct {
+		name      string
+		raw       string
+		fromStart bool
+		wantHead  bool
+	}{
+		{name: "short raw from the file start", raw: "abc", fromStart: true},
+		{name: "a whole AGY_ERROR line opens the window", raw: "junk\n" + wireAgyErrorPrefix + a(errTailBytes-len(wireAgyErrorPrefix)), fromStart: true},
+		{name: "the window opens inside an AGY_ERROR line whose start is in the lookback", raw: "old\n" + wireAgyErrorPrefix + a(3000), fromStart: true, wantHead: true},
+		{name: "the window opens inside the prefix itself", raw: "old\nAGY_ERROR: {" + a(errTailBytes-len("ERROR: {")), fromStart: true, wantHead: true},
+		{name: "the window opens inside an ordinary line", raw: "old\n" + a(3000), fromStart: true},
+		{name: "a lone AGY_ERROR line from the file start", raw: wireAgyErrorPrefix + a(3000), fromStart: true, wantHead: true},
+		{name: "a lone ordinary line from the file start", raw: a(3000), fromStart: true},
+		{name: "no line start found and the read did not reach the file start", raw: a(3000), fromStart: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			window, head := copyWindow(tc.raw, tc.fromStart)
+			if want := tc.raw[max(0, len(tc.raw)-errTailBytes):]; window != want {
+				t.Errorf("window = %d bytes, want the last %d bytes of raw", len(window), len(want))
+			}
+			if head != tc.wantHead {
+				t.Errorf("headInAgyError = %v, want %v", head, tc.wantHead)
+			}
+		})
+	}
+}
+
+func TestErrorSummaryReducesAgyErrorLines(t *testing.T) {
+	const reduced = wireAgyErrorPrefix + "NOT_FOUND (code 404)"
+	measuredReduced := "error: " + measuredAgyErrorLine1 + "\n" + reduced
+	// longLine is an AGY_ERROR line longer than errTailBytes whose leaky text sits
+	// near its start, so the errTailBytes window opens inside it.
+	longLine := wireAgyErrorPrefix + `{"short_error":"NOT_FOUND (code 404): example-project ` + strings.Repeat("x", 2500) + `","retryable":false}`
+	for _, tc := range []struct {
+		name         string
+		stderr       string
+		want         string
+		wantSuffix   string // when set, msg is only checked to end with it
+		wantClassify string // "" means msg itself
+	}{
+		{name: "measured stderr", stderr: measuredAgyErrorStderr,
+			want:         "exit 3: " + measuredReduced,
+			wantClassify: "exit 3: " + strings.TrimRight(measuredAgyErrorStderr, "\n")},
+		{name: "measured stderr after filler that pushes the window into the lookback",
+			stderr:     strings.Repeat("filler line\n", 275) + measuredAgyErrorStderr,
+			wantSuffix: measuredReduced, wantClassify: "-",
+		},
+		{name: "the window opens inside a long AGY_ERROR line, then another line", stderr: longLine + "\nlast line\n",
+			want: "exit 3: last line", wantClassify: "-"},
+		{name: "the window opens inside a long AGY_ERROR line with nothing after it", stderr: longLine + "\n",
+			want: "exit 3: " + agyErrorWithheld, wantClassify: "-"},
+		{name: "only a malformed AGY_ERROR line", stderr: wireAgyErrorPrefix + `{"retryable":fal` + "\n",
+			want:         "exit 3: " + agyErrorWithheld,
+			wantClassify: "exit 3: " + wireAgyErrorPrefix + `{"retryable":fal`},
+		{name: "an ordinary first line longer than the lookback is kept",
+			stderr: strings.Repeat("x", errTailBytes+agyErrorLookback+10) + "\nend",
+			want:   "exit 3: " + strings.Repeat("x", errTailBytes-len("\nend")) + "\nend"},
+		{name: "a newline-free stderr longer than the lookback is kept",
+			stderr: strings.Repeat("y", errTailBytes+agyErrorLookback+10),
+			want:   "exit 3: " + strings.Repeat("y", errTailBytes)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, classify := errorSummary(dir, 3)
+			if tc.wantSuffix != "" {
+				// The window keeps only the last errTailBytes of the filler, so the
+				// start of the message is not pinned byte for byte.
+				if !strings.HasPrefix(got, "exit 3: ") || !strings.Contains(got, "filler line") || !strings.HasSuffix(got, tc.wantSuffix) {
+					t.Errorf("msg = %q, want filler text ending in %q", got, tc.wantSuffix)
+				}
+			} else if got != tc.want {
+				t.Errorf("msg = %q, want %q", got, tc.want)
+			}
+			assertNoLeak(t, got)
+			switch tc.wantClassify {
+			case "":
+				if classify != got {
+					t.Errorf("classifyMsg = %q, want it equal to msg", classify)
+				}
+			case "-":
+				// The unreduced text is exactly what the pre-reduction reader,
+				// cleanTail, returns for the same file.
+				tail, err := cleanTail(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := "exit 3: " + tail; classify != want {
+					t.Errorf("classifyMsg = %q, want %q", classify, want)
+				}
+			default:
+				if classify != tc.wantClassify {
+					t.Errorf("classifyMsg = %q, want %q", classify, tc.wantClassify)
+				}
+			}
+		})
+	}
+
+	t.Run("an ordinary cut tail is byte-identical to cleanTail", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(jobstore.ErrPath(dir), []byte(strings.Repeat("plain text ", 300)+"\nend"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		tail, err := cleanTail(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, classify := errorSummary(dir, 3)
+		if got != "exit 3: "+tail || classify != got {
+			t.Errorf("msg = %q, classifyMsg = %q, want both %q", got, classify, "exit 3: "+tail)
+		}
+	})
 }
 
 // The same absence, seen through Status, which is where a caller actually meets
@@ -715,11 +838,25 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantErrSub: measuredAgyErrorLine1, wantReason: ReasonAgyError, wantConvID: "c1",
 			wantRetryable: new(false), wantErrorID: measuredAgyErrorID,
 		}, {
-			// The error text stays the raw stderr tail; only the new fields are added.
+			// The error text is the stderr tail with its AGY_ERROR line reduced to the
+			// canonical status (issue #205); the retryable and error_id fields come
+			// from the line itself.
 			name: "exit 3 with no payload reads agy's AGY_ERROR line",
 			code: 3, errFile: measuredAgyErrorStderr,
-			wantState: StateFailed, wantErrSub: "exit 3: ", wantReason: ReasonAgyError,
+			wantState: StateFailed, wantErrSub: "exit 3: error: " + measuredAgyErrorLine1 + "\n" + wireAgyErrorPrefix + "NOT_FOUND (code 404)", wantReason: ReasonAgyError,
 			wantRetryable: new(false), wantErrorID: measuredAgyErrorID,
+		}, {
+			name: "a 127 reduces agy's AGY_ERROR line in the stderr it appends",
+			code: jobstore.ExitSpawnFail, errFile: measuredAgyErrorStderr,
+			wantState: StateFailed, wantErrSub: "; stderr: error: " + measuredAgyErrorLine1 + "\n" + wireAgyErrorPrefix + "NOT_FOUND (code 404)", wantReason: ReasonSpawnFailed,
+		}, {
+			// Synthetic wording. The status UNAVAILABLE does not promote in
+			// applyAgyError, so the quota_exhausted reason can only come from
+			// classifying the stderr text before the reduction removed "quota".
+			name: "classification reads short_error wording before the reduction",
+			code: 3, errFile: wireAgyErrorPrefix + `{"short_error":"UNAVAILABLE (code 503): Individual quota reached. Resets in 21m50s.","retryable":true,"error_id":"e-2"}` + "\n",
+			wantState: StateFailed, wantErrSub: "exit 3: AGY_ERROR: UNAVAILABLE (code 503)", wantReason: ReasonQuotaExhausted,
+			wantRetryable: new(true), wantErrorID: "e-2",
 		}, {
 			// Synthetic: no captured RESOURCE_EXHAUSTED sample exists.
 			name: "a RESOURCE_EXHAUSTED status is a quota wall",
@@ -846,6 +983,9 @@ func assertTerminalStatus(t *testing.T, st Status, tc terminalCase) {
 	} else if !strings.Contains(st.Error, tc.wantErrSub) {
 		t.Errorf("error = %q, want it to mention %q", st.Error, tc.wantErrSub)
 	}
+	// No row may surface the cloud project or region that short_error carries
+	// (issue #205).
+	assertNoLeak(t, st.Error)
 	if st.FailureReason != tc.wantReason {
 		t.Errorf("failure_reason = %q, want %q", st.FailureReason, tc.wantReason)
 	}
