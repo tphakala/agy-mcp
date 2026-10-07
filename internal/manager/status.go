@@ -219,8 +219,7 @@ func recoverInterrupted(dir string, meta jobstore.Meta, st Status) Status {
 		// The payload is only written once agy has been reaped, so its stderr is
 		// final and the clean-exit notices apply exactly as they do on code 0. The
 		// branches below have no payload: agy may still be running in its own
-		// session, so its stderr is not read there. The same holds for the AGY_ERROR
-		// line an ERROR payload gets read for in applyResult (issue #183).
+		// session, so its stderr is not read there.
 		return applyCleanExitNotices(dir, meta, applyResult(dir, meta, st, res), res, true)
 	}
 	out, rerr := readFile(jobstore.OutPath(dir))

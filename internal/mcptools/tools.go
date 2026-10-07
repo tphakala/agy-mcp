@@ -221,8 +221,6 @@ type statusOutput struct {
 	// before any answer was streamed), which otherwise reads as a bare empty
 	// failure (issue #151). A quota_exhausted failure is the one case whose advice
 	// is given even without a conversation to continue: wait for the reset instead.
-	// When agy reported retryable=false only the text changes, never whether the
-	// note is present.
 	Recovery string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result text: present only on a terminal failed or cancelled job that produced no text. Usually the job also has a conversation_id and the advice is to start a fresh agy_run with it to continue the thread without restating the task (the killed turn's own reasoning is not recoverable). Another exception, the other way, is a failure_reason of quota_exhausted, which is transient: the advice is to wait for the quota reset and then retry, and it is given even when no conversation_id was named. A background_aborted failure gets no recovery note, since simply carrying on with the same task would launch the same background command again; its error says to re-run with the verification in the foreground instead. When retryable is false, the advice is to fix the cause rather than continue the conversation, and a quota_exhausted note then says to retry the run without naming conversation_id. Absent whenever any result, even a partial one, was recovered"`
 	// Retryable and ErrorID come from the structured AGY_ERROR line agy writes to
 	// stderr when it fails a request (issue #183); see manager.Status.Retryable.

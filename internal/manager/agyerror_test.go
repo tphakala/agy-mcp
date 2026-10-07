@@ -79,16 +79,13 @@ func TestParseAgyErrorTail(t *testing.T) {
 				t.Fatalf("ok = %v, want %v (info %+v)", ok, tc.wantOK, info)
 			}
 			if !ok {
-				if info.retryable != nil || info.errorID != "" || info.status != "" {
+				if info != (agyErrorInfo{}) {
 					t.Fatalf("a failed parse must return the zero info, got %+v", info)
 				}
 				return
 			}
-			switch {
-			case (info.retryable == nil) != (tc.wantRetryable == nil):
-				t.Fatalf("retryable = %v, want %v", info.retryable, tc.wantRetryable)
-			case info.retryable != nil && *info.retryable != *tc.wantRetryable:
-				t.Fatalf("retryable = %v, want %v", *info.retryable, *tc.wantRetryable)
+			if !equalBoolPtr(info.retryable, tc.wantRetryable) {
+				t.Fatalf("retryable = %v, want %v", derefBool(info.retryable), derefBool(tc.wantRetryable))
 			}
 			if info.errorID != tc.wantErrorID {
 				t.Errorf("errorID = %q, want %q", info.errorID, tc.wantErrorID)
@@ -190,16 +187,13 @@ func TestStatusRecoveredReadsAgyError(t *testing.T) {
 		}
 		return st
 	}
-	rec, live := stage(t, true), stage(t, false)
-	for name, st := range map[string]Status{"recovered": rec, "live": live} {
+	for _, recovered := range []bool{true, false} {
+		st := stage(t, recovered)
 		if st.State != StateFailed || st.FailureReason != ReasonAgyError {
-			t.Fatalf("%s: state %q reason %q, want failed/agy_error", name, st.State, st.FailureReason)
+			t.Fatalf("recovered=%v: state %q reason %q, want failed/agy_error", recovered, st.State, st.FailureReason)
 		}
 		if st.Retryable == nil || *st.Retryable || st.ErrorID != measuredAgyErrorID {
-			t.Fatalf("%s: retryable %v error_id %q, want false and %q", name, derefBool(st.Retryable), st.ErrorID, measuredAgyErrorID)
+			t.Fatalf("recovered=%v: retryable %v error_id %q, want false and %q", recovered, derefBool(st.Retryable), st.ErrorID, measuredAgyErrorID)
 		}
-	}
-	if rec.FailureReason != live.FailureReason || !equalBoolPtr(rec.Retryable, live.Retryable) || rec.ErrorID != live.ErrorID {
-		t.Fatalf("recovered %+v and live %+v disagree", rec, live)
 	}
 }

@@ -11,11 +11,6 @@ import (
 // agyErrorPrefix opens agy's structured error line on stderr (issue #183).
 const agyErrorPrefix = "AGY_ERROR: "
 
-// agyStatusResourceExhausted is the canonical status agy puts at the head of
-// short_error for a quota or rate-limit wall. NOT MEASURED: no such sample has
-// been captured; the mapping follows agy's canonical status naming.
-const agyStatusResourceExhausted = "RESOURCE_EXHAUSTED"
-
 // maxAgyErrorIDLen bounds an accepted error_id, so a hostile or garbled value
 // never reaches the wire.
 const maxAgyErrorIDLen = 128
@@ -35,9 +30,9 @@ type agyErrorInfo struct {
 
 // agyErrorPayload is the wire shape of the object after the prefix.
 type agyErrorPayload struct {
-	ShortError *string `json:"short_error"`
-	Retryable  *bool   `json:"retryable"`
-	ErrorID    *string `json:"error_id"`
+	ShortError string `json:"short_error"`
+	Retryable  *bool  `json:"retryable"`
+	ErrorID    string `json:"error_id"`
 }
 
 // parseAgyErrorTail extracts agy's structured error from the tail of a stderr
@@ -57,13 +52,12 @@ func parseAgyErrorTail(tail string, truncated bool) (agyErrorInfo, bool) {
 		tail = rest
 	}
 	var last string
-	var seen bool
 	for line := range strings.Lines(tail) {
 		if strings.HasPrefix(line, agyErrorPrefix) {
-			last, seen = line, true
+			last = line
 		}
 	}
-	if !seen {
+	if last == "" {
 		return agyErrorInfo{}, false
 	}
 	raw := strings.TrimSpace(strings.TrimPrefix(last, agyErrorPrefix))
@@ -77,13 +71,11 @@ func parseAgyErrorTail(tail string, truncated bool) (agyErrorInfo, bool) {
 		return agyErrorInfo{}, false
 	}
 	info := agyErrorInfo{retryable: p.Retryable}
-	if p.ShortError != nil {
-		if m := agyErrorStatusRE.FindStringSubmatch(*p.ShortError); m != nil {
-			info.status = m[1]
-		}
+	if m := agyErrorStatusRE.FindStringSubmatch(p.ShortError); m != nil {
+		info.status = m[1]
 	}
-	if p.ErrorID != nil && validAgyErrorID(*p.ErrorID) {
-		info.errorID = *p.ErrorID
+	if validAgyErrorID(p.ErrorID) {
+		info.errorID = p.ErrorID
 	}
 	if info.retryable == nil && info.errorID == "" && info.status == "" {
 		return agyErrorInfo{}, false
@@ -126,14 +118,13 @@ func readAgyError(dir string) (agyErrorInfo, bool) {
 }
 
 // applyAgyError attaches agy's structured error verdict to a failed status st
-// (issue #183). It sets Retryable and ErrorID, and promotes the reason to
-// ReasonQuotaExhausted when the canonical status is RESOURCE_EXHAUSTED; it never
-// changes any other reason, so a wording-matched quota wall is never demoted.
-// It returns st unchanged when stderr has no usable line.
+// (issue #183): Retryable, ErrorID, and a promotion to ReasonQuotaExhausted when
+// the canonical status reads as a quota wall (never a demotion). It returns st
+// unchanged when stderr has no usable line.
 //
-// MEASURED against agy 1.2.9 and 1.3.1: exit 3, two stderr lines, and the
-// AGY_ERROR object has exactly the keys short_error, retryable, error_id. The
-// RESOURCE_EXHAUSTED-to-quota promotion is NOT MEASURED.
+// MEASURED against agy 1.2.9 and 1.3.1: exit 3, and the AGY_ERROR object has
+// exactly the keys short_error, retryable, error_id. A RESOURCE_EXHAUSTED status
+// has NOT been captured; its promotion follows agy's canonical status naming.
 func applyAgyError(dir string, st Status) Status {
 	info, ok := readAgyError(dir)
 	if !ok {
@@ -141,7 +132,7 @@ func applyAgyError(dir string, st Status) Status {
 	}
 	st.Retryable = info.retryable
 	st.ErrorID = info.errorID
-	if info.status == agyStatusResourceExhausted {
+	if isQuotaError(info.status) {
 		st.FailureReason = ReasonQuotaExhausted
 	}
 	return st
