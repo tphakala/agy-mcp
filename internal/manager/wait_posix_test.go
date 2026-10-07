@@ -510,6 +510,7 @@ func TestStatusReadsAgyErrorLineFromRealRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartJob: %v", err)
 	}
+	deferJobDone(t, m, job.ID)
 	st, terminal, err := m.WaitTerminal(t.Context(), job.ID, time.Now().Add(15*time.Second), nil)
 	if err != nil {
 		t.Fatalf("WaitTerminal: %v", err)

@@ -51,7 +51,7 @@ const (
 // state already is the reason), and a running or done job has no failure to
 // name.
 const (
-	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient
+	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient unless Status.Retryable is false
 	ReasonTimeout        = "timeout"         // the run outlived its timeout: agy-mcp killed it, or (agy 1.1.28 and later) agy's own --print-timeout cut the turn short
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
@@ -996,8 +996,9 @@ func matchesBackgroundAbort(stderr string) bool {
 
 // classifyAgyError maps an error message agy produced (a terminal ERROR
 // payload, or a non-zero exit's stderr tail) to a failure reason. A provider
-// quota, rate-limit or AI credits wall is the one transient, retryable case and
-// is told apart as ReasonQuotaExhausted; everything else agy reports is
+// quota, rate-limit or AI credits wall is the one case treated as transient
+// (unless agy's structured line marks it not retryable) and is told apart as
+// ReasonQuotaExhausted; everything else agy reports is
 // ReasonAgyError. applyAgyError may then promote the result to
 // ReasonQuotaExhausted from agy's structured status; it never demotes.
 //
