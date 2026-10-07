@@ -203,8 +203,8 @@ func TestVersionParseErrorNamesOutputReducedToNothing(t *testing.T) {
 		report := m.Doctor(t.Context())
 		detail := findCheck(t, report, checkAgyVersionName).Detail
 		for site, msg := range map[string]string{"agyBinaryChecked": err.Error(), "doctor": detail} {
-			if !strings.Contains(msg, "held only AGY_ERROR lines") {
-				t.Errorf("%s message for %q should say the output held only AGY_ERROR lines: %s", site, raw, msg)
+			if !strings.Contains(msg, "reduced to nothing once AGY_ERROR lines were left out") {
+				t.Errorf("%s message for %q should say the output reduced to nothing: %s", site, raw, msg)
 			}
 			if strings.Contains(msg, `""`) || strings.Contains(msg, "not json") {
 				t.Errorf("%s message for %q quotes an empty or raw output: %s", site, raw, msg)
@@ -268,4 +268,45 @@ func TestVersionOutputForMessage(t *testing.T) {
 			t.Errorf("whitespace-only output = %s, want the quoted empty string", got)
 		}
 	})
+}
+
+// TestVersionOutputForMessageCutsAgyErrorNotAtLineStart: readAgyVersion merges
+// stdout and stderr, so an AGY_ERROR line can land after other bytes or in another
+// spelling, where redactAgyErrorLines does not recognise it. The text from such a
+// marker to the end of its segment is cut, line terminators are kept, and a later
+// line that starts with the exact prefix is still reduced (issue #211).
+func TestVersionOutputForMessageCutsAgyErrorNotAtLineStart(t *testing.T) {
+	obj := measuredAgyErrorJSON
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string // the unquoted result
+	}{
+		{"after other text", "loading " + wireAgyErrorPrefix + obj + "\n", "loading"},
+		{"lowercase at column 0", "agy_error: " + obj + "\n", `""`},
+		{"without the space", "AGY_ERROR:" + obj + "\n", `""`},
+		{"after an escape sequence", "\x1b[31m" + wireAgyErrorPrefix + obj + "\n", "\x1b[31m"},
+		{
+			"a cut line does not swallow its newline",
+			"loading " + wireAgyErrorPrefix + obj + "\n" + wireAgyErrorPrefix + obj + "\n",
+			"loading \nAGY_ERROR: NOT_FOUND (code 404)",
+		},
+		{
+			"a cut segment does not swallow its carriage return",
+			"loading " + wireAgyErrorPrefix + obj + "\r" + wireAgyErrorPrefix + obj + "\n",
+			"loading \rAGY_ERROR: NOT_FOUND (code 404)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := versionOutputForMessage(tc.raw)
+			for _, leak := range []string{"example-project", "example-region", "short_error"} {
+				if strings.Contains(got, leak) {
+					t.Errorf("result leaks %q: %s", leak, got)
+				}
+			}
+			if want := strconv.Quote(tc.want); tc.want != `""` && got != want {
+				t.Errorf("got %s, want %s", got, want)
+			}
+		})
+	}
 }
