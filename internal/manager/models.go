@@ -111,7 +111,9 @@ func (m *Manager) runJSONListing(ctx context.Context, sub, dir string, workspace
 // still inspect a reply that came with a failure exit; the listings ignore it.
 // The error carries agy's stderr with each AGY_ERROR line reduced to its canonical
 // status (redactAgyErrorLines), so the cloud project and region do not reach the
-// tool caller (issue #209).
+// tool caller (issue #209), except in a line that straddles the start of the last
+// 32 KiB of stderr that os/exec keeps: it loses its prefix and is kept as is (the
+// probe has no cut-line handling).
 // label names the probe
 // in errors ("agy <label>: ..."). newSession runs agy in its own session
 // (proc.ConfigureSession): agy 1.2.x opens /dev/tty in -p mode and stops on
