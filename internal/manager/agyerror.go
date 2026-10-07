@@ -22,8 +22,8 @@ var agyErrorStatusRE = regexp.MustCompile(`^([A-Z][A-Z_]*) \(code \d+\):`)
 // agyErrorInfo is what agy-mcp keeps from an AGY_ERROR line. It deliberately has
 // no field for short_error itself: that text carries the cloud project and
 // region and is never copied into a status field (redactAgyErrorLines keeps it
-// out of the stderr tail copied into Status.Error for lines with the prefix at
-// column 0; see copyWindow for the over-long line gap).
+// out of the stderr tail copied into Status.Error for lines that start with the
+// prefix; see copyWindow for the over-long line gap).
 type agyErrorInfo struct {
 	retryable *bool  // nil: key absent
 	errorID   string // "" when absent or failing validation
@@ -98,30 +98,57 @@ func decodeAgyErrorLine(line string) (agyErrorPayload, bool) {
 }
 
 // redactAgyErrorLines returns tail with every AGY_ERROR line (the prefix at
-// column 0, the scope parseAgyErrorTail uses) reduced to the prefix plus the
-// canonical status of its short_error, for example "AGY_ERROR: NOT_FOUND (code
-// 404)", so the cloud project and region that short_error carries do not reach
-// Status.Error through such a line (issue #205; copyWindow documents the
-// over-long line gap). A line whose object does not decode, or whose
-// short_error has no canonical status, is dropped; other lines are kept as is.
+// column 0, or after a bare carriage return when the whole line does not
+// decode) reduced to the prefix plus the canonical status of its short_error,
+// for example "AGY_ERROR: NOT_FOUND (code 404)", so the cloud project and
+// region that short_error carries do not reach Status.Error through such a line
+// (issue #205; copyWindow documents the over-long line gap). A line whose
+// object does not decode, or whose short_error has no canonical status, is
+// dropped; on the carriage-return path, a segment that does not decode drops
+// the rest of its line, while text after a segment that decoded is kept. Other
+// lines are kept as is.
 func redactAgyErrorLines(tail string) string {
 	if !strings.Contains(tail, agyErrorPrefix) {
 		return tail
 	}
 	var out strings.Builder
 	for line := range strings.Lines(tail) {
-		if !strings.HasPrefix(line, agyErrorPrefix) {
+		if !strings.Contains(line, agyErrorPrefix) {
 			out.WriteString(line)
 			continue
 		}
 		body := strings.TrimRight(line, "\r\n")
 		term := line[len(body):]
-		p, ok := decodeAgyErrorLine(body)
-		if !ok {
-			continue
+		// The whole line is decoded first: JSON allows a bare carriage return as
+		// whitespace inside the object.
+		if strings.HasPrefix(body, agyErrorPrefix) {
+			if p, ok := decodeAgyErrorLine(body); ok {
+				if m := agyErrorStatusRE.FindString(p.ShortError); m != "" {
+					out.WriteString(agyErrorPrefix + strings.TrimSuffix(m, ":") + term)
+				}
+				continue
+			}
 		}
-		if m := agyErrorStatusRE.FindString(p.ShortError); m != "" {
-			out.WriteString(agyErrorPrefix + strings.TrimSuffix(m, ":") + term)
+		// Otherwise a bare carriage return separates lines (progress output): each
+		// CR-separated AGY_ERROR segment is reduced and the text around it kept. A
+		// segment that does not decode drops the rest of the line, which may be the
+		// rest of its object.
+		var kept []string
+		for seg := range strings.SplitSeq(body, "\r") {
+			if !strings.HasPrefix(seg, agyErrorPrefix) {
+				kept = append(kept, seg)
+				continue
+			}
+			p, ok := decodeAgyErrorLine(seg)
+			if !ok {
+				break
+			}
+			if m := agyErrorStatusRE.FindString(p.ShortError); m != "" {
+				kept = append(kept, agyErrorPrefix+strings.TrimSuffix(m, ":"))
+			}
+		}
+		if len(kept) > 0 {
+			out.WriteString(strings.Join(kept, "\r") + term)
 		}
 	}
 	// A dropped last line must not leave a dangling newline.

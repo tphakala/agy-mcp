@@ -908,7 +908,9 @@ func trimStderrTail(s string) string {
 // that line is looked for in the bytes before the window. When none is found and
 // raw does not start the file, nothing shows the line is an AGY_ERROR line, so it
 // is kept: an AGY_ERROR line longer than agyErrorLookback is the known gap, which
-// the measured line (well under 1 KiB) does not approach.
+// the measured line (well under 1 KiB) does not approach. The line start is
+// looked for after a newline only, so a cut AGY_ERROR segment that follows a
+// bare carriage return is a second gap.
 func copyWindow(raw string, fromStart bool) (window string, headInAgyError bool) {
 	winStart := max(0, len(raw)-errTailBytes)
 	window = raw[winStart:]

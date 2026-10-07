@@ -131,11 +131,25 @@ func TestRedactAgyErrorLines(t *testing.T) {
 		{name: "no canonical status drops the line", tail: line(`{"short_error":"oops","retryable":true}`), want: ""},
 		{name: "a status without a code drops the line", tail: line(`{"short_error":"NOT_FOUND: x"}`), want: ""},
 		{name: "a dropped last line leaves no dangling newline", tail: "a\n" + line("{bad"), want: "a"},
-		// Settled gap: only a column-0 prefix is recognised, the scope parseAgyErrorTail
-		// has. Pinned so widening it is a deliberate change.
+		// Settled gap: a prefix is recognised only at the start of a line (after a
+		// newline or a bare carriage return). Pinned so widening it is a deliberate
+		// change.
 		{name: "an indented prefix stays verbatim (known gap)", tail: "  " + line(measuredAgyErrorJSON),
 			want: "  " + line(measuredAgyErrorJSON), leakOK: true},
 		{name: "text without an AGY_ERROR line is byte-identical", tail: "  lead\n\n\tmid \nend", want: "  lead\n\n\tmid \nend"},
+		// A bare carriage return separates lines too, so text around a CR-separated
+		// AGY_ERROR line is kept and the line itself is reduced.
+		{name: "a CR-only separator keeps the ordinary text after the line",
+			tail: line(measuredAgyErrorJSON) + "\rordinary output", want: reduced + "\rordinary output"},
+		{name: "a CR-only separator before the line reduces it",
+			tail: "progress 50%\r" + line(measuredAgyErrorJSON) + "\nafter", want: "progress 50%\r" + reduced + "\nafter"},
+		{name: "a malformed CR-separated line drops the rest of the line",
+			tail: "before\r" + line("{bad") + "\rmore\nnext", want: "before\nnext"},
+		{name: "a CR as JSON whitespace inside the object still reduces the whole line",
+			tail: "a\n" + line(`{"retryable":false,`+"\r"+strings.TrimPrefix(measuredAgyErrorJSON, "{")) + "\nb",
+			want: "a\n" + reduced + "\nb"},
+		{name: "a raw CR inside short_error drops the rest of the line",
+			tail: line(`{"short_error":"NOT_FOUND (code 404): x`+"\r"+`example-project"}`) + "\nb", want: "b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := redactAgyErrorLines(tc.tail)
