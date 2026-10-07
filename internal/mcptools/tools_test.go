@@ -713,11 +713,27 @@ func TestStatusOutputRecoveryNotRetryable(t *testing.T) {
 	t.Run("quota note keeps the reset advice, drops the conversation clause and names the verdict", func(t *testing.T) {
 		t.Parallel()
 		got := toStatusOutput(quota(no, nil)).Recovery
-		if !strings.Contains(got, "reset") || strings.Contains(got, "conversation_id") {
-			t.Errorf("Recovery = %q, want reset advice without conversation_id", got)
+		if !strings.Contains(got, "wait for that reset") || !strings.Contains(got, "then retry the run") || strings.Contains(got, "conversation_id") {
+			t.Errorf("Recovery = %q, want the wait-for-reset and retry-the-run advice without conversation_id", got)
 		}
 		if !strings.Contains(got, "not retryable") || !strings.Contains(got, "fix the cause") || strings.Contains(got, "transient") {
 			t.Errorf("Recovery = %q, want it to say agy marked the error not retryable and to fix the cause, without calling it transient", got)
+		}
+	})
+	// The literals are written out, not built from quotaTransientAdvice, so a reword
+	// of the production text fails here instead of moving the expectation with it.
+	t.Run("quota note for a retryable or absent verdict is pinned exactly", func(t *testing.T) {
+		t.Parallel()
+		const withConv = "agy's model quota, rate limit or AI credits balance is exhausted. This is transient, not a hard failure: wait for the quota reset (the error message carries the reset time when agy gives one, and agy_usage reports reset times), then retry with this conversation_id to continue the thread without restating the task."
+		const noConv = "agy's model quota, rate limit or AI credits balance is exhausted. This is transient, not a hard failure: wait for the quota reset (the error message carries the reset time when agy gives one, and agy_usage reports reset times), then retry the run."
+		for _, r := range []*bool{yes, nil} {
+			if got := toStatusOutput(quota(r, nil)).Recovery; got != withConv {
+				t.Errorf("Recovery with a conversation = %q, want %q", got, withConv)
+			}
+			noID := func(s *manager.Status) { s.ConversationID = "" }
+			if got := toStatusOutput(quota(r, noID)).Recovery; got != noConv {
+				t.Errorf("Recovery without a conversation = %q, want %q", got, noConv)
+			}
 		}
 	})
 	t.Run("quota note with no verdict keeps the conversation clause", func(t *testing.T) {
