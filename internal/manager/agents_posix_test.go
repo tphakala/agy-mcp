@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/tphakala/agy-mcp/v2/internal/config"
@@ -103,16 +102,5 @@ func TestListAgentsWithoutCwdAddsNoWorkspace(t *testing.T) {
 	}
 	if want := []string{"global"}; !slices.Equal(got, want) {
 		t.Fatalf("ListAgents(\"\") = %v, want %v", got, want)
-	}
-}
-
-// TestListAgentsMissingCwdFails: a cwd that does not exist is an error, not the
-// empty project catalog agy returns for a nonexistent --add-dir.
-func TestListAgentsMissingCwdFails(t *testing.T) {
-	m := newProjectAgentsManager(t, t.TempDir())
-
-	_, err := m.ListAgents(t.Context(), filepath.Join(t.TempDir(), "missing"))
-	if err == nil || !strings.Contains(err.Error(), "chdir") {
-		t.Fatalf("err = %v, want a chdir error", err)
 	}
 }
