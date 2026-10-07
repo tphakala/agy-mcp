@@ -293,8 +293,8 @@ func toStatusOutput(st manager.Status) statusOutput {
 	// (dropping the guard on the quota branch would break that for a quota wall
 	// that streamed partial text, flipping recovery from absent to present for a
 	// job shape that already occurred). A quota wall gets its own message because
-	// the action differs: wait for the quota reset before retrying rather than
-	// continue a lost thread (see below for a not-retryable quota wall). It takes
+	// the action differs: wait for the quota reset before retrying (see below for
+	// a not-retryable quota wall). It takes
 	// priority over the generic issue #151 hint and, unlike it, fires even when no
 	// conversation was named, since waiting for the reset and retrying is advice a
 	// fresh run can act on too.

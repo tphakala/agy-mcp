@@ -22,7 +22,8 @@ var agyErrorStatusRE = regexp.MustCompile(`^([A-Z][A-Z_]*) \(code \d+\):`)
 // agyErrorInfo is what agy-mcp keeps from an AGY_ERROR line. It deliberately has
 // no field for short_error itself: that text carries the cloud project and
 // region and is never copied into a status field (redactAgyErrorLines keeps it
-// out of the stderr tail copied into Status.Error).
+// out of the stderr tail copied into Status.Error for lines with the prefix at
+// column 0; see copyWindow for the over-long line gap).
 type agyErrorInfo struct {
 	retryable *bool  // nil: key absent
 	errorID   string // "" when absent or failing validation
@@ -99,8 +100,9 @@ func decodeAgyErrorLine(line string) (agyErrorPayload, bool) {
 // redactAgyErrorLines returns tail with every AGY_ERROR line (the prefix at
 // column 0, the scope parseAgyErrorTail uses) reduced to the prefix plus the
 // canonical status of its short_error, for example "AGY_ERROR: NOT_FOUND (code
-// 404)", so the cloud project and region that short_error carries never reach
-// Status.Error (issue #205). A line whose object does not decode, or whose
+// 404)", so the cloud project and region that short_error carries do not reach
+// Status.Error through such a line (issue #205; copyWindow documents the
+// over-long line gap). A line whose object does not decode, or whose
 // short_error has no canonical status, is dropped; other lines are kept as is.
 func redactAgyErrorLines(tail string) string {
 	if !strings.Contains(tail, agyErrorPrefix) {
