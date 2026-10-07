@@ -235,3 +235,33 @@ func findCheck(t *testing.T, r DoctorReport, name string) CheckResult {
 	t.Fatalf("report has no %q check; checks: %v", name, r.Checks)
 	return CheckResult{}
 }
+
+// TestDoctorVersionCheckRedactsAgyErrorInUnparseableOutput: the doctor check
+// quotes unparseable version output, so an AGY_ERROR line in it is reduced and the
+// project and region stay out of the report, including the reachable check that
+// re-runs the gate when the version check did not prime the cache (issue #211).
+func TestDoctorVersionCheckRedactsAgyErrorInUnparseableOutput(t *testing.T) {
+	m := New(config.Config{AgyPath: "/nonexistent/agy", StateDir: t.TempDir(), MaxConcurrency: 4})
+	m.readAgyVersion = func(context.Context, string) (string, error) {
+		return measuredAgyErrorStderr, nil
+	}
+
+	report := m.Doctor(t.Context())
+	ver := findCheck(t, report, checkAgyVersionName)
+	if ver.Status != CheckFail {
+		t.Fatalf("version check = %v (%s), want FAIL for unparseable output", ver.Status, ver.Detail)
+	}
+	if !strings.Contains(ver.Detail, "AGY_ERROR: NOT_FOUND (code 404)") {
+		t.Errorf("version detail lacks the reduced line: %s", ver.Detail)
+	}
+	for _, c := range []CheckResult{ver, findCheck(t, report, checkAgyReachableName)} {
+		for _, leak := range []string{"example-project", "example-region"} {
+			if strings.Contains(c.Detail, leak) {
+				t.Errorf("%s detail leaks %q: %s", c.Name, leak, c.Detail)
+			}
+		}
+	}
+	if report.OK() {
+		t.Fatal("report is OK despite an unreadable version")
+	}
+}

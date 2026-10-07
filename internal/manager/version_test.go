@@ -3,12 +3,15 @@ package manager
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/tphakala/agy-mcp/v2/internal/agyver"
 	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/proc"
 )
 
 // versionManager builds a manager whose agy path resolves without a real binary
@@ -139,4 +142,130 @@ func TestAgyBinaryCheckedWithoutBinary(t *testing.T) {
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("probe ran %d times for a binary that could not be resolved", n)
 	}
+}
+
+// TestVersionGateRedactsAgyErrorInUnparseableOutput: when the version output does
+// not parse and holds an AGY_ERROR line, every consumer of the gate's error gets
+// the reduced line, not the cloud project and region its short_error carries
+// (issue #211). Every row fails at the gate before any exec, so no fake agy is
+// needed.
+func TestVersionGateRedactsAgyErrorInUnparseableOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(m *Manager) error
+	}{
+		{"agyBinaryChecked", func(m *Manager) error { _, err := m.agyBinaryChecked(t.Context()); return err }},
+		{"StartJob", func(m *Manager) error {
+			if !proc.Supported {
+				t.Skip("StartJob refuses on platforms without job supervision before it reaches the version gate")
+			}
+			_, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
+			return err
+		}},
+		{"ListModels", func(m *Manager) error { _, err := m.ListModels(t.Context()); return err }},
+		{"ListAgents", func(m *Manager) error { _, err := m.ListAgents(t.Context(), ""); return err }},
+		{"readUsage", func(m *Manager) error { _, err := m.readUsage(t.Context()); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := versionManager(t, measuredAgyErrorStderr, nil)
+			err := tc.call(m)
+			if err == nil {
+				t.Fatal("unparseable version output must be an error")
+			}
+			msg := err.Error()
+			for _, leak := range []string{"example-project", "example-region"} {
+				if strings.Contains(msg, leak) {
+					t.Errorf("error leaks %q: %s", leak, msg)
+				}
+			}
+			for _, want := range []string{"Selected model is not supported", "AGY_ERROR: NOT_FOUND (code 404)"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error lacks %q: %s", want, msg)
+				}
+			}
+		})
+	}
+}
+
+// TestVersionParseErrorNamesOutputReducedToNothing: output whose every non-blank
+// line is an AGY_ERROR line the reduction drops must not quote as "", which would
+// read as "agy printed nothing" (issue #211). The same holds for the doctor check.
+func TestVersionParseErrorNamesOutputReducedToNothing(t *testing.T) {
+	for _, raw := range []string{
+		wireAgyErrorPrefix + "{not json\n",
+		wireAgyErrorPrefix + `{"short_error":"oops"}` + "\n",
+	} {
+		m, _ := versionManager(t, raw, nil)
+		_, err := m.agyBinaryChecked(t.Context())
+		if err == nil {
+			t.Fatalf("output %q must be an error", raw)
+		}
+		report := m.Doctor(t.Context())
+		detail := findCheck(t, report, checkAgyVersionName).Detail
+		for site, msg := range map[string]string{"agyBinaryChecked": err.Error(), "doctor": detail} {
+			if !strings.Contains(msg, "held only AGY_ERROR lines") {
+				t.Errorf("%s message for %q should say the output held only AGY_ERROR lines: %s", site, raw, msg)
+			}
+			if strings.Contains(msg, `""`) || strings.Contains(msg, "not json") {
+				t.Errorf("%s message for %q quotes an empty or raw output: %s", site, raw, msg)
+			}
+		}
+	}
+}
+
+// TestAgyBinaryCheckedParsesUnreducedOutput: the reduction can drop a version that
+// shares a carriage-return-split line with an AGY_ERROR segment it cannot decode,
+// so agyver.Parse must see the unreduced output and only the failure message is
+// reduced (issue #211). The doctor check parses the same way.
+func TestAgyBinaryCheckedParsesUnreducedOutput(t *testing.T) {
+	raw := wireAgyErrorPrefix + "{not json\r" + agyver.Required.String() + "\n"
+	m, _ := versionManager(t, raw, nil)
+	if _, err := m.agyBinaryChecked(t.Context()); err != nil {
+		t.Fatalf("agyBinaryChecked refused a parseable version: %v", err)
+	}
+	m, _ = versionManager(t, raw, nil)
+	if got := findCheck(t, m.Doctor(t.Context()), checkAgyVersionName); got.Status != CheckPass {
+		t.Fatalf("doctor version check = %v (%s), want PASS", got.Status, got.Detail)
+	}
+}
+
+func TestVersionOutputForMessage(t *testing.T) {
+	unquote := func(t *testing.T, s string) string {
+		t.Helper()
+		u, err := strconv.Unquote(s)
+		if err != nil {
+			t.Fatalf("result %q is not a quoted string: %v", s, err)
+		}
+		return u
+	}
+	t.Run("bounds the reduced text to its tail", func(t *testing.T) {
+		got := unquote(t, versionOutputForMessage("HEAD"+strings.Repeat("x", probeErrorLimit)+"TAIL"))
+		if len(got) > probeErrorLimit || !strings.HasSuffix(got, "TAIL") || strings.Contains(got, "HEAD") {
+			t.Errorf("got %d bytes, want at most %d from the tail", len(got), probeErrorLimit)
+		}
+	})
+	t.Run("reduces before it cuts", func(t *testing.T) {
+		// The last probeErrorLimit bytes start 20 bytes into the JSON object, so
+		// cutting first would keep a prefix-less fragment holding the project.
+		line := wireAgyErrorPrefix + measuredAgyErrorJSON + "\n"
+		raw := line + strings.Repeat("y", probeErrorLimit-len(line)+len(wireAgyErrorPrefix)+20)
+		got := unquote(t, versionOutputForMessage(raw))
+		if strings.Contains(got, "example-project") || !strings.HasPrefix(got, "AGY_ERROR: NOT_FOUND (code 404)") {
+			t.Errorf("reduction did not run before the cut: %.120q", got)
+		}
+	})
+	t.Run("keeps valid UTF-8 across the cut", func(t *testing.T) {
+		got := unquote(t, versionOutputForMessage("é"+strings.Repeat("z", probeErrorLimit-1)))
+		if !utf8.ValidString(got) {
+			t.Error("result is not valid UTF-8")
+		}
+	})
+	t.Run("quotes other output as before and keeps empty output empty", func(t *testing.T) {
+		if got, want := versionOutputForMessage("who knows\n"), strconv.Quote("who knows"); got != want {
+			t.Errorf("got %s, want %s", got, want)
+		}
+		if got := versionOutputForMessage("  \n"); got != `""` {
+			t.Errorf("whitespace-only output = %s, want the quoted empty string", got)
+		}
+	})
 }

@@ -191,9 +191,7 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 			// agy_usage (issue #209; the job path does the same, issue #205).
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 				reduced := strings.TrimSpace(redactAgyErrorLines(stderr.String()))
-				if len(reduced) > probeErrorLimit {
-					reduced = strings.ToValidUTF8(reduced[len(reduced)-probeErrorLimit:], "")
-				}
+				reduced = keepTail(reduced, probeErrorLimit)
 				// A copy, so errors.As on the returned error cannot reach the raw text.
 				clean := &exec.ExitError{ProcessState: ee.ProcessState, Stderr: []byte(reduced)}
 				if reduced != "" {
@@ -211,9 +209,19 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 // short banner or error, so the limit is only a guard against a runaway writer.
 const probeStderrLimit = 1 << 20
 
-// probeErrorLimit bounds the reduced stderr placed in the returned error to its
-// last bytes, as os/exec's own capture did before stderr was read whole.
+// probeErrorLimit bounds the reduced agy text placed in an error to its last
+// bytes: the probe stderr in runJSONProbe, as os/exec's own capture did before
+// stderr was read whole, and the version output in versionOutputForMessage
+// (issue #211).
 const probeErrorLimit = 64 << 10
+
+// keepTail returns the last limit bytes of s, without a rune the cut split.
+func keepTail(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return strings.ToValidUTF8(s[len(s)-limit:], "")
+}
 
 // probeStderr collects a probe's stderr up to probeStderrLimit and discards the
 // rest. It keeps the head, never a tail, so every line it holds is whole except

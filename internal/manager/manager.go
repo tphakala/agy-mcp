@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -170,7 +171,7 @@ func (m *Manager) agyBinaryChecked(ctx context.Context) (string, error) {
 	}
 	v, perr := agyver.Parse(raw)
 	if perr != nil {
-		return "", fmt.Errorf("parse agy version from %q (%s): %w", strings.TrimSpace(raw), agy, perr)
+		return "", fmt.Errorf("parse agy version from %s (%s): %w", versionOutputForMessage(raw), agy, perr)
 	}
 	if !v.AtLeast(agyver.Required) {
 		return "", fmt.Errorf(
@@ -250,6 +251,29 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 		}
 	}
 	return string(out), nil
+}
+
+// versionOutputForMessage returns the text a message quotes in place of the raw
+// output of `agy --version`, for use after agyver.Parse has failed on it. Every
+// message that quotes that output goes through here. readAgyVersion folds stderr
+// into the output, and an AGY_ERROR line's short_error carries the cloud project
+// and region, so each such line is reduced to its canonical status
+// (redactAgyErrorLines), as the job path and the probes do (issues #205, #209 and
+// #211). Whether agy prints such a line on --version is NOT MEASURED; MEASURED
+// against agy 1.3.1: a successful --version prints only the version on stdout and
+// exits 0. The reduction runs before the bound, so the cut never leaves a fragment
+// of a line that was not reduced. Callers pass the unreduced output to
+// agyver.Parse first, because the reduction can drop a version that shares a line
+// with an AGY_ERROR segment it cannot decode. The result is a quoted string, or,
+// when the reduction leaves nothing of non-empty output, a plain phrase, so the
+// message does not claim that agy printed nothing. An AGY_ERROR prefix in the
+// middle of a line, not at column 0 or after a carriage return, is not reduced.
+func versionOutputForMessage(raw string) string {
+	reduced := strings.TrimSpace(redactAgyErrorLines(raw))
+	if reduced == "" && strings.TrimSpace(raw) != "" {
+		return "agy's output, which held only AGY_ERROR lines left out of this message"
+	}
+	return strconv.Quote(keepTail(reduced, probeErrorLimit))
 }
 
 // conversationIDPoll is how often the conversation-id wait re-reads the
