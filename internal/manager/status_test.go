@@ -79,6 +79,9 @@ func TestClassifyAgyError(t *testing.T) {
 		// disk-quota exclusion to the quota token alone: a whole-function early
 		// return on "disk quota" would misclassify this as a hard error.
 		"disk quota note aside, you hit a rate limit; retry later",
+		// agy's AI credits wall (issue #202); wording from agy's changelog for
+		// 1.2.15, NOT MEASURED. Matches no other token above.
+		"Your AI credits balance is too low to continue.", // credits wall (both phrases on one line)
 	}
 	for _, msg := range quota {
 		if got := classifyAgyError(msg); got != ReasonQuotaExhausted {
@@ -95,6 +98,13 @@ func TestClassifyAgyError(t *testing.T) {
 		// wall; it must fall to ReasonAgyError so the caller is not told to wait
 		// for a reset that never comes.
 		"write /var/data/out.tmp: disk quota exceeded",
+		// Near-misses of the credits wall (issue #202): each lacks one phrase, splits
+		// the phrases across lines, or names a prepaid credits balance, which is not
+		// agy's AI credits wall.
+		"AI credits balance refreshed",
+		"sample rate too low for playback",
+		"AI credits balance: 40\nlatency too low to measure",
+		"Prepaid credits balance is too low to process request. Please add funds.",
 	}
 	for _, msg := range other {
 		if got := classifyAgyError(msg); got != ReasonAgyError {
@@ -433,6 +443,15 @@ func terminalCases() []terminalCase {
 			},
 			wantState: StateFailed, wantErrSub: "Resets in 21m50s", wantReason: ReasonQuotaExhausted,
 		}, {
+			// agy's AI credits wall (issue #202) is the same retryable class, carried
+			// in an ERROR payload like a quota wall.
+			name: "a credits wall in an error payload is retryable",
+			code: 0, res: &streamjson.Result{
+				Status: streamjson.StatusError,
+				Error:  "Your AI credits balance is too low to continue.",
+			},
+			wantState: StateFailed, wantErrSub: "credits balance", wantReason: ReasonQuotaExhausted,
+		}, {
 			// The bug: a response with no status used to report done and NOT partial,
 			// so a future agy that renames the status field would have a run cut
 			// short by MAX_TURNS reported as a clean, complete answer.
@@ -663,6 +682,12 @@ func terminalCases() []terminalCase {
 			name: "a non-zero exit with a quota wall on stderr is retryable",
 			code: 1, errFile: "Error: 429 Too Many Requests: rate limit exceeded",
 			wantState: StateFailed, wantErrSub: "rate limit", wantReason: ReasonQuotaExhausted,
+		}, {
+			// The credits wall on one stderr line among others still classifies (the
+			// matcher is line-scoped, not whole-message).
+			name: "a non-zero exit with a credits wall on a stderr line is retryable",
+			code: 1, errFile: "starting turn\nYour AI credits balance is too low to continue.\n",
+			wantState: StateFailed, wantErrSub: "credits balance", wantReason: ReasonQuotaExhausted,
 		}, {
 			// A payload's own message outranks the stderr tail: agy reports failures
 			// it survives in band, where the exit code says less.

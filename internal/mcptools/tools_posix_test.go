@@ -279,3 +279,27 @@ func TestProjectRulesOverMCP(t *testing.T) {
 		})
 	}
 }
+
+// TestListAgentsCwdOverMCP: list_agents takes an optional cwd and lists that
+// directory's project agents too, as agy_run would see them (issue #203).
+func TestListAgentsCwdOverMCP(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, _ := newTestManager(t, testutil.FakeAgy{
+		Agents:        []string{"global"},
+		ProjectDir:    dir,
+		ProjectAgents: []string{"proj"},
+	})
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_agents", Arguments: map[string]any{"cwd": dir}})
+	if err != nil || res.IsError {
+		t.Fatalf("list_agents: err=%v res=%+v", err, res)
+	}
+	agents, _ := structMap(t, res.StructuredContent)["agents"].([]any)
+	if want := []any{"global", "proj"}; !slices.Equal(agents, want) {
+		t.Fatalf("agents = %v, want %v", agents, want)
+	}
+}

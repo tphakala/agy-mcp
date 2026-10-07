@@ -1,6 +1,10 @@
 package manager
 
 import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -16,7 +20,7 @@ func TestListAgentsReturnsConfiguredNames(t *testing.T) {
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Agents: []string{"reviewer", "researcher"}})
 	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
 
-	got, err := m.ListAgents(t.Context())
+	got, err := m.ListAgents(t.Context(), "")
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -32,7 +36,7 @@ func TestListAgentsEmptyCatalog(t *testing.T) {
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{})
 	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
 
-	got, err := m.ListAgents(t.Context())
+	got, err := m.ListAgents(t.Context(), "")
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -48,9 +52,40 @@ func TestListAgentsIncludesStderrOnError(t *testing.T) {
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stderr: "agy: not logged in", Exit: 1})
 	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
 
-	_, err := m.ListAgents(t.Context())
+	_, err := m.ListAgents(t.Context(), "")
 	if err == nil || !strings.Contains(err.Error(), "not logged in") {
 		t.Fatalf("err = %v, want it to include agy's stderr", err)
+	}
+}
+
+// TestListAgentsMissingCwdFails: a cwd that does not exist is an error, not the
+// empty project catalog agy returns for a nonexistent --add-dir (issue #203).
+// It needs no fake agy, so it runs on every platform: the call fails when the
+// process is started in the missing directory, before agy would run, so the test
+// binary can stand in for agy, with the version probe skipped by priming the
+// gate. Were the cwd not used as the working directory, the stand-in would run,
+// reject the listing flags and exit non-zero.
+func TestListAgentsMissingCwdFails(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(config.Config{AgyPath: exe, StateDir: t.TempDir(), MaxConcurrency: 4})
+	m.markAgyVerified(exe)
+
+	_, err = m.ListAgents(t.Context(), filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("ListAgents with a missing cwd succeeded, want an error")
+	}
+	if _, ran := errors.AsType[*exec.ExitError](err); ran {
+		t.Fatalf("err = %v: the stand-in agy ran, so the missing cwd was not its working directory", err)
+	}
+	// os.StartProcess reports a failure to start in a missing directory as a
+	// *os.PathError on Linux, macOS and Windows (os/exec_posix.go, Go 1.27), so
+	// this also rules out an error from the version gate, should the priming
+	// above stop matching.
+	if _, ok := errors.AsType[*os.PathError](err); !ok {
+		t.Fatalf("err = %v, want the process start to fail on the missing cwd", err)
 	}
 }
 
@@ -101,6 +136,28 @@ func TestDecodeAgentsEnvelope(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := decodeAgentsEnvelope([]byte(tc.raw)); err == nil {
 				t.Fatalf("decodeAgentsEnvelope(%s) succeeded, want an error", tc.name)
+			}
+		})
+	}
+}
+
+// TestListingArgs pins the listing argv: every global flag, --add-dir included,
+// precedes the subcommand because agy rejects them after it (issue #203).
+func TestListingArgs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sub       string
+		workspace []string
+		want      []string
+	}{
+		{"agents without workspace", "agents", nil, []string{"--output-format", "json", "agents"}},
+		{"agents with one dir", "agents", []string{"/w"}, []string{"--output-format", "json", "--add-dir", "/w", "agents"}},
+		{"agents with two dirs", "agents", []string{"/w", "/x"}, []string{"--output-format", "json", "--add-dir", "/w", "--add-dir", "/x", "agents"}},
+		{"models without workspace", "models", nil, []string{"--output-format", "json", "models"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := listingArgs(tc.sub, tc.workspace); !slices.Equal(got, tc.want) {
+				t.Errorf("listingArgs(%q, %v) = %v, want %v", tc.sub, tc.workspace, got, tc.want)
 			}
 		})
 	}

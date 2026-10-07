@@ -51,7 +51,7 @@ const (
 // state already is the reason), and a running or done job has no failure to
 // name.
 const (
-	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota or rate-limit wall; transient
+	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient
 	ReasonTimeout        = "timeout"         // the run outlived its timeout: agy-mcp killed it, or (agy 1.1.28 and later) agy's own --print-timeout cut the turn short
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
@@ -94,8 +94,8 @@ type Status struct {
 	// transient ReasonQuotaExhausted wall from a hard error) without scraping
 	// Error. It is set only when State is StateFailed; a cancelled, running or
 	// done job leaves it empty. Error still carries the human-readable detail,
-	// including a quota wall's reset time, which this field deliberately does not
-	// parse out.
+	// including a quota wall's reset time when agy's message gives one, which this
+	// field deliberately does not parse out.
 	FailureReason  string
 	ConversationID string
 	// Model is the model id agy-mcp resolved for this run and persisted to meta:
@@ -976,8 +976,9 @@ func matchesBackgroundAbort(stderr string) bool {
 
 // classifyAgyError maps an error message agy produced (a terminal ERROR
 // payload, or a non-zero exit's stderr tail) to a failure reason. A provider
-// quota or rate-limit wall is the one transient, retryable case and is told
-// apart as ReasonQuotaExhausted; everything else agy reports is ReasonAgyError.
+// quota, rate-limit or AI credits wall is the one transient, retryable case and
+// is told apart as ReasonQuotaExhausted; everything else agy reports is
+// ReasonAgyError.
 //
 // It is only ever called on the branches that would otherwise be a flat
 // ReasonAgyError, so it never has to name the structural reasons (timeout,
@@ -990,8 +991,10 @@ func classifyAgyError(msg string) string {
 }
 
 // isQuotaError reports whether an error message describes a provider quota or
-// rate-limit wall: a transient condition that clears on its own, distinct from a
-// hard failure. agy relays the provider's own wording (observed as "Individual
+// rate-limit wall, or agy's AI credits wall (plan quota used up and too few AI
+// credits to cover the request): a condition that waiting for the quota to reset
+// can clear, distinct from a hard failure. agy relays the provider's own wording
+// (observed as "Individual
 // quota reached. Please upgrade your subscription to increase your limits.
 // Resets in 21m50s."), which agy-mcp does not control, so the match is a
 // case-insensitive scan for the phrases that wording and the common provider
@@ -1026,7 +1029,31 @@ func isQuotaError(msg string) bool {
 		strings.Contains(l, "resource exhausted") ||
 		strings.Contains(l, "resource_exhausted") ||
 		strings.Contains(l, "resourceexhausted") ||
-		strings.Contains(l, "too many requests")
+		strings.Contains(l, "too many requests") ||
+		matchesCreditsWall(msg)
+}
+
+// matchesCreditsWall reports agy's AI credits wall (issue #202). The wording,
+// "Your AI credits balance is too low to continue.", is quoted from agy's
+// changelog for 1.2.15, which says it is shown once the plan quota is used up and
+// the AI credits balance cannot cover a request; it was NOT MEASURED. How a
+// headless stream-json run delivers it is not measured either, so it is matched
+// wherever classifyAgyError already looks, and a delivery as a SUCCESS response
+// stays unclassified.
+//
+// Both phrases must fall on one line, as matchesPrintTimeout requires of its
+// phrases, so a stray "AI credits balance" and an unrelated "too low" on
+// different lines of a stderr tail cannot pair up. "ai" is required before
+// "credits balance" to keep the match to agy's own wording: a low prepaid or
+// application credits balance is not a plan quota wall, so it must not read as
+// retryable.
+func matchesCreditsWall(msg string) bool {
+	for line := range strings.Lines(msg) {
+		if lineHasAll(line, "ai credits balance", "too low") {
+			return true
+		}
+	}
+	return false
 }
 
 // errorSummary summarizes a non-zero exit for which no error message came from a

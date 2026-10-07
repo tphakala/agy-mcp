@@ -197,3 +197,20 @@ func TestFakeAgyDefaultsToOneDoneDelta(t *testing.T) {
 		t.Fatalf("delta states = %v, want a single DONE delta", states)
 	}
 }
+
+// TestFakeAgyAgentsRejectsTrailingFlag: real agy rejects --add-dir after the
+// agents subcommand (MEASURED against agy 1.3.1), so the fake must not serve the
+// listing for that shape; it falls through to the run stream, which is not an
+// agents envelope.
+func TestFakeAgyAgentsRejectsTrailingFlag(t *testing.T) {
+	path := WriteFakeAgy(t, FakeAgy{Agents: []string{"global"}})
+
+	ok := runScript(t, 10*time.Second, path, "--output-format", "json", "--add-dir", "/w", "agents")
+	if !strings.Contains(ok.Stdout, `"agents":["global"]`) {
+		t.Fatalf("leading --add-dir: stdout = %q, want the agents envelope", ok.Stdout)
+	}
+	bad := runScript(t, 10*time.Second, path, "--output-format", "json", "agents", "--add-dir", "/w")
+	if strings.Contains(bad.Stdout, `"agents":["global"]`) {
+		t.Fatalf("trailing --add-dir: stdout = %q, want no agents envelope", bad.Stdout)
+	}
+}
