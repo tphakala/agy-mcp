@@ -976,8 +976,9 @@ func matchesBackgroundAbort(stderr string) bool {
 
 // classifyAgyError maps an error message agy produced (a terminal ERROR
 // payload, or a non-zero exit's stderr tail) to a failure reason. A provider
-// quota, rate-limit or AI credits wall is the one transient, retryable case and is told
-// apart as ReasonQuotaExhausted; everything else agy reports is ReasonAgyError.
+// quota, rate-limit or AI credits wall is the one transient, retryable case and
+// is told apart as ReasonQuotaExhausted; everything else agy reports is
+// ReasonAgyError.
 //
 // It is only ever called on the branches that would otherwise be a flat
 // ReasonAgyError, so it never has to name the structural reasons (timeout,
@@ -991,8 +992,9 @@ func classifyAgyError(msg string) string {
 
 // isQuotaError reports whether an error message describes a provider quota or
 // rate-limit wall, or agy's AI credits wall (plan quota used up and too few AI
-// credits to cover the request): a
-// transient condition that clears on its own, distinct from a hard failure. agy relays the provider's own wording (observed as "Individual
+// credits to cover the request): a condition that waiting for the quota to reset
+// can clear, distinct from a hard failure. agy relays the provider's own wording
+// (observed as "Individual
 // quota reached. Please upgrade your subscription to increase your limits.
 // Resets in 21m50s."), which agy-mcp does not control, so the match is a
 // case-insensitive scan for the phrases that wording and the common provider
@@ -1042,9 +1044,9 @@ func isQuotaError(msg string) bool {
 // Both phrases must fall on one line, as matchesPrintTimeout requires of its
 // phrases, so a stray "AI credits balance" and an unrelated "too low" on
 // different lines of a stderr tail cannot pair up. "ai" is required before
-// "credits balance" because a prepaid or application credits balance does not
-// clear when the quota resets, and calling it retryable would tell a caller to
-// wait for a reset that never helps.
+// "credits balance" to keep the match to agy's own wording: a low prepaid or
+// application credits balance is not a plan quota wall, so it must not read as
+// retryable.
 func matchesCreditsWall(msg string) bool {
 	for line := range strings.Lines(msg) {
 		if lineHasAll(line, "ai credits balance", "too low") {

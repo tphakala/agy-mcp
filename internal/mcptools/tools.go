@@ -343,7 +343,7 @@ type agentsOutput struct {
 }
 
 type agentsInput struct {
-	Cwd string `json:"cwd,omitempty" jsonschema:"absolute path of the directory you will pass to agy_run as cwd. The listing then also includes that repository's project agents (its .agents/agents/), which agy lists only for a workspace: the directory is always passed to agy as a workspace (--add-dir); agy_run does so only unless project_rules is false, and its dirs add workspaces this listing does not include, and from a subdirectory of a git repository agy also finds the repository root's agents. A relative path is resolved against the server's working directory, so pass an absolute one. Symlinks are resolved. A directory that does not exist is an error. Omit to list what agy lists from the server's own directory, without project agents"`
+	Cwd string `json:"cwd,omitempty" jsonschema:"absolute path of the directory you will pass to agy_run as cwd. The listing then also includes that repository's project agents (its .agents/agents/, or the repository root's when cwd is a subdirectory of a git repository), which agy lists only for a workspace, so cwd is passed to agy as one (--add-dir). project_rules and dirs are not inputs here, so agents from extra dirs are not listed. A relative path is resolved against the server's working directory, so pass an absolute one. Symlinks are resolved. A directory that does not exist is an error. Omit to list what agy lists from the server's own directory, without project agents"`
 }
 
 type sessionsInput struct {
