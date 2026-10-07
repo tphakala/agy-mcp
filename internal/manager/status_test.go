@@ -382,10 +382,14 @@ func TestErrorSummaryReducesAgyErrorLines(t *testing.T) {
 					t.Errorf("classifyMsg = %q, want it equal to msg", classify)
 				}
 			case "-":
-				// Only the shape is pinned: the unreduced text keeps the redacted
-				// line's text and is not the placeholder.
-				if !strings.HasPrefix(classify, "exit 3: ") || strings.Contains(classify, agyErrorWithheld) {
-					t.Errorf("classifyMsg = %q, want the unreduced tail", classify)
+				// The unreduced text is exactly what the pre-reduction reader,
+				// cleanTail, returns for the same file.
+				tail, err := cleanTail(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := "exit 3: " + tail; classify != want {
+					t.Errorf("classifyMsg = %q, want %q", classify, want)
 				}
 			default:
 				if classify != tc.wantClassify {
