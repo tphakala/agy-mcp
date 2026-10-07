@@ -109,6 +109,9 @@ func (m *Manager) runJSONListing(ctx context.Context, sub, dir string, workspace
 // runJSONProbe execs agy with args and returns its stdout. On a non-zero exit it
 // returns the error together with whatever stdout agy printed, so a caller can
 // still inspect a reply that came with a failure exit; the listings ignore it.
+// The error carries agy's stderr with each AGY_ERROR line reduced to its canonical
+// status (redactAgyErrorLines), so the cloud project and region do not reach the
+// tool caller (issue #209).
 // label names the probe
 // in errors ("agy <label>: ..."). newSession runs agy in its own session
 // (proc.ConfigureSession): agy 1.2.x opens /dev/tty in -p mode and stops on
@@ -172,9 +175,12 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 		if !errors.Is(err, exec.ErrWaitDelay) {
 			// Output() captures stderr into (*exec.ExitError).Stderr; include it so a
 			// real cause (an auth prompt, a usage error) is visible instead of a bare
-			// "exit status 1".
+			// "exit status 1". Each AGY_ERROR line is reduced first: its short_error
+			// carries the cloud project and region, and this error reaches the callers
+			// of list_models, list_agents and agy_usage (issue #209; the job path does
+			// the same, issue #205).
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-				if stderr := strings.TrimSpace(string(ee.Stderr)); stderr != "" {
+				if stderr := strings.TrimSpace(redactAgyErrorLines(string(ee.Stderr))); stderr != "" {
 					return out, fmt.Errorf("agy %s: %w: %s", label, err, stderr)
 				}
 			}

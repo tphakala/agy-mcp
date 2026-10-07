@@ -14,6 +14,7 @@ import (
 
 	"github.com/tphakala/agy-mcp/v2/internal/agyver"
 	"github.com/tphakala/agy-mcp/v2/internal/config"
+	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
 // writeProbeScript writes a fake agy that answers `--version` cleanly and serves
@@ -122,4 +123,40 @@ func TestListModelsNamesCancellation(t *testing.T) {
 		_, err := m.ListModels(ctx)
 		return err
 	})
+}
+
+// TestProbeErrorsRedactAgyErrorLines: a probe that fails with an AGY_ERROR line on
+// stderr must not copy the cloud project and region its short_error carries into
+// the error that list_models, list_agents and agy_usage return (issue #209). The
+// plain line before it stays, so the cause is still visible.
+func TestProbeErrorsRedactAgyErrorLines(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stderr: measuredAgyErrorStderr, Exit: 3})
+	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"models", func() error { _, err := m.ListModels(t.Context()); return err }},
+		{"agents", func() error { _, err := m.ListAgents(t.Context(), ""); return err }},
+		{"usage", func() error { _, err := m.readUsage(t.Context()); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatal("probe succeeded, want an error")
+			}
+			msg := err.Error()
+			for _, leak := range []string{"example-project", "example-region"} {
+				if strings.Contains(msg, leak) {
+					t.Errorf("error leaks %q: %s", leak, msg)
+				}
+			}
+			for _, want := range []string{"Selected model is not supported", "AGY_ERROR: NOT_FOUND (code 404)"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error lacks %q: %s", want, msg)
+				}
+			}
+		})
+	}
 }
