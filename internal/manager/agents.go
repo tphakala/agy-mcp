@@ -26,8 +26,22 @@ const (
 // against agy 1.1.24), so there is no id-vs-label reduction to make here (the
 // distinction that list_models exists to preserve, issue #135). The return is a
 // plain []string for that reason.
-func (m *Manager) ListAgents(ctx context.Context) ([]string, error) {
-	out, err := m.runJSONListing(ctx, "agents", listAgentsTimeout, listAgentsKillGrace)
+//
+// An empty cwd is the unchanged listing: what agy lists from the server's own
+// directory with no workspace. A cwd is normalized and passed exactly as agy_run
+// passes it (see workspaceDirs), because agy lists a directory's .agents/agents/
+// only when it is a workspace given as --add-dir, not from its working directory
+// (MEASURED against agy 1.3.1: from a git subdirectory it finds the repository
+// root's agents, outside a git repository it does not). The process also runs in
+// cwd, so a missing directory is an error rather than the empty project catalog
+// agy returns for a nonexistent --add-dir (MEASURED against agy 1.3.1). Issue
+// #203.
+func (m *Manager) ListAgents(ctx context.Context, cwd string) ([]string, error) {
+	n, err := normalizeCwd(cwd)
+	if err != nil {
+		return nil, fmt.Errorf("normalize working directory %q: %w", cwd, err)
+	}
+	out, err := m.runJSONListing(ctx, agentsCommandName, n, workspaceDirs(StartRequest{Cwd: n}), listAgentsTimeout, listAgentsKillGrace)
 	if err != nil {
 		return nil, err
 	}

@@ -100,7 +100,7 @@ func New(c config.Config) *Manager {
 		now:                  time.Now,
 	}
 	m.readUsage = func(ctx context.Context) ([]byte, error) {
-		return m.runJSONProbe(ctx, "/"+usageCommandName, usageProbeArgs(), true, usageProbeTimeout, usageProbeKillGrace)
+		return m.runJSONProbe(ctx, "/"+usageCommandName, usageProbeArgs(), "", true, usageProbeTimeout, usageProbeKillGrace)
 	}
 	return m
 }
@@ -1087,6 +1087,28 @@ const (
 	streamJSONFormat = "stream-json"
 )
 
+// workspaceDirs returns the directories passed to agy as --add-dir for req, in
+// order: cwd first, then the caller's dirs. buildAgyArgs and the list_agents
+// listing both derive their workspace set here, so the listing sees the same
+// directories a run for the same cwd would (issue #203).
+//
+// cwd is made an agy workspace so the project's rule files (AGENTS.md and the
+// like) load. MEASURED on agy 1.2.9: in print mode running inside a directory
+// does not activate it as a workspace, so no rules load; --add-dir does, and
+// from a subdirectory it still finds an AGENTS.md at the repo root. MEASURED
+// on agy 1.2.16: cwd is a workspace without --add-dir (its AGENTS.md, also
+// the repo root's from a subdirectory, and its .agents/hooks.json hooks load
+// either way), so there the flag is redundant and the opt-out does not keep
+// rules or hooks out. The flag stays because the floor is 1.1.15 and 1.2.9
+// needs it. Not added when a caller dir already names cwd.
+func workspaceDirs(req StartRequest) []string {
+	var dirs []string
+	if !req.SkipProjectRules && req.Cwd != "" && !dirsInclude(req.Dirs, req.Cwd) {
+		dirs = append(dirs, req.Cwd)
+	}
+	return append(dirs, req.Dirs...)
+}
+
 func buildAgyArgs(req StartRequest) []string {
 	args := []string{
 		dangerouslySkipPermissionsFlag,
@@ -1120,19 +1142,7 @@ func buildAgyArgs(req StartRequest) []string {
 	if req.Sandbox {
 		args = append(args, sandboxFlag)
 	}
-	// Make cwd an agy workspace so the project's rule files (AGENTS.md and the
-	// like) load. MEASURED on agy 1.2.9: in print mode running inside a directory
-	// does not activate it as a workspace, so no rules load; --add-dir does, and
-	// from a subdirectory it still finds an AGENTS.md at the repo root. MEASURED
-	// on agy 1.2.16: cwd is a workspace without --add-dir (its AGENTS.md, also
-	// the repo root's from a subdirectory, and its .agents/hooks.json hooks load
-	// either way), so there the flag is redundant and the opt-out does not keep
-	// rules or hooks out. The flag stays because the floor is 1.1.15 and 1.2.9
-	// needs it. Not added when a caller dir already names cwd.
-	if !req.SkipProjectRules && req.Cwd != "" && !dirsInclude(req.Dirs, req.Cwd) {
-		args = append(args, addDirFlag, req.Cwd)
-	}
-	for _, d := range req.Dirs {
+	for _, d := range workspaceDirs(req) {
 		args = append(args, addDirFlag, d)
 	}
 	if req.ConversationID != "" {

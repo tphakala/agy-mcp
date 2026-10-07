@@ -23,7 +23,7 @@ type runInput struct {
 	Model          string   `json:"model,omitempty" jsonschema:"agy model id, e.g. gemini-3.1-pro-high; omit to use the server's default model, or agy's own default when the server sets none. Call list_models for the accepted values and pass one from its models field, not a display label from model_details, because agy rejects a display label whenever effort is also set. Not every id accepts every effort either, and some accept none, so omit effort unless you need a specific one"`
 	Effort         string   `json:"effort,omitempty" jsonschema:"reasoning effort for this run (agy --effort): low, medium or high. Omit to use agy's default"`
 	Mode           string   `json:"mode,omitempty" jsonschema:"agy agent execution mode for this run (agy --mode): accept-edits or plan. Omit to use agy's default mode"`
-	Agent          string   `json:"agent,omitempty" jsonschema:"name of a specific agy agent to run for this session (agy --agent); omit to use agy's default agent"`
+	Agent          string   `json:"agent,omitempty" jsonschema:"name of a specific agy agent to run for this session (agy --agent); omit to use agy's default agent; list_agents with the same cwd lists the accepted names, including the repository's project agents"`
 	Sandbox        bool     `json:"sandbox,omitempty" jsonschema:"run the agent with agy's sandbox (terminal restrictions) enabled (agy --sandbox); off by default"`
 	Dirs           []string `json:"dirs,omitempty" jsonschema:"extra directories to grant the agent beyond cwd (agy --add-dir), e.g. a spec or a sibling repo. The agent can read and write there exactly as under cwd, so this widens the blast radius; prefer absolute paths. Each entry is also an agy workspace, so its own rule files load regardless of project_rules"`
 	ProjectRules   *bool    `json:"project_rules,omitempty" jsonschema:"load the project's agy rule files (AGENTS.md, including one at the repository root when cwd is a subdirectory) by passing cwd to agy as a workspace (agy --add-dir). On by default. Setting false only omits that --add-dir: on agy versions that need the flag it keeps the repository's rules and hooks out, but newer agy (1.2.16) loads them from cwd regardless, so it does not isolate a run from a repository you do not trust. Listing cwd in dirs still makes it a workspace"`
@@ -214,14 +214,14 @@ type statusOutput struct {
 	Error   string `json:"error,omitempty" jsonschema:"why the job failed; present only when state is failed"`
 	// FailureReason classifies a failure so a caller can branch on the cause
 	// without scraping Error; see manager's Reason constants.
-	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota or rate-limit wall; this is transient, error carries the reset time, so wait for it before retrying, and recovery spells this out when no partial result was returned), timeout (the run outlived its timeout: agy-mcp killed it, or on agy 1.1.28 and later agy's own --print-timeout expired mid-turn and agy returned only what it had, possibly nothing), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), background_aborted (agy ended the run itself, by a clean exit or in a job recovered from its result after its supervisor died, but its stderr shows it went idle with outstanding background shell tasks and killed them at exit, so the response is only progress narration rather than completed work; re-run with any verification in the foreground rather than as a background task), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
+	FailureReason string `json:"failure_reason,omitempty" jsonschema:"a stable, machine-readable category for why the job failed, so a caller can branch on the cause without parsing error. Present only when state is failed. One of: quota_exhausted (agy hit a provider quota, rate-limit or AI credits wall; this is transient: wait for the quota to reset before retrying (error carries the reset time when agy's message gives one, and agy_usage reports quota reset times), and recovery spells this out when no partial result was returned), timeout (the run outlived its timeout: agy-mcp killed it, or on agy 1.1.28 and later agy's own --print-timeout expired mid-turn and agy returned only what it had, possibly nothing), spawn_failed (the agy binary could not be started, or agy itself exited 127; the two share one exit sentinel and are not told apart here), agy_error (agy itself reported an error, exited non-zero, or returned an indeterminate result), interrupted (the job process vanished without writing a result), background_aborted (agy ended the run itself, by a clean exit or in a job recovered from its result after its supervisor died, but its stderr shows it went idle with outstanding background shell tasks and killed them at exit, so the response is only progress narration rather than completed work; re-run with any verification in the foreground rather than as a background task), unknown (a failure fitting none of the above, for example its output could not be read). The set is closed: treat any value you do not recognize as unknown. Absent on running, done and cancelled jobs"`
 	// Recovery is tool-facing advice, not a property of the job: it is present
 	// only when a run ended terminally with no text to offer but is still
 	// actionable (for example a timeout, a cancel, a crash, or an agy error
 	// before any answer was streamed), which otherwise reads as a bare empty
 	// failure (issue #151). A quota_exhausted failure is the one case whose advice
 	// is given even without a conversation to continue: wait for the reset instead.
-	Recovery       string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result text: present only on a terminal failed or cancelled job that produced no text. Usually the job also has a conversation_id and the advice is to start a fresh agy_run with it to continue the thread without restating the task (the killed turn's own reasoning is not recoverable). Another exception, the other way, is a failure_reason of quota_exhausted, which is transient: the advice is to wait for the reset carried in error and then retry, and it is given even when no conversation_id was named. A background_aborted failure gets no recovery note, since simply carrying on with the same task would launch the same background command again; its error says to re-run with the verification in the foreground instead. Absent whenever any result, even a partial one, was recovered"`
+	Recovery       string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result text: present only on a terminal failed or cancelled job that produced no text. Usually the job also has a conversation_id and the advice is to start a fresh agy_run with it to continue the thread without restating the task (the killed turn's own reasoning is not recoverable). Another exception, the other way, is a failure_reason of quota_exhausted, which is transient: the advice is to wait for the quota reset and then retry, and it is given even when no conversation_id was named. A background_aborted failure gets no recovery note, since simply carrying on with the same task would launch the same background command again; its error says to re-run with the verification in the foreground instead. Absent whenever any result, even a partial one, was recovered"`
 	ConversationID string `json:"conversation_id,omitempty" jsonschema:"conversation this run belongs to; pass it back as conversation_id to continue the thread. Empty until agy names a fresh run's conversation, which takes about a second, so agy_status, agy_wait and agy_run_sync all report none when asked inside that window; ask again once the run is under way"`
 	// Model echoes the resolved model so a caller can see which one actually ran;
 	// see manager.Status.Model.
@@ -289,8 +289,8 @@ func toStatusOutput(st manager.Status) statusOutput {
 	// reset and retrying is advice a fresh run can act on too.
 	switch {
 	case out.FailureReason == manager.ReasonQuotaExhausted && out.Result == "":
-		advice := "agy's model quota or rate limit is exhausted; the error message carries the reset time. " +
-			"This is transient, not a hard failure: wait for the reset, then retry"
+		advice := "agy's model quota, rate limit or AI credits balance is exhausted. " +
+			"This is transient, not a hard failure: wait for the quota reset (the error message carries the reset time when agy gives one, and agy_usage reports reset times), then retry"
 		if out.ConversationID != "" {
 			advice += " with this conversation_id to continue the thread without restating the task."
 		} else {
@@ -340,6 +340,10 @@ type modelsOutput struct {
 // verbatim as --agent.
 type agentsOutput struct {
 	Agents []string `json:"agents" jsonschema:"agent names accepted by the agent parameter of agy_run and agy_run_sync, e.g. reviewer. Pass one verbatim. Empty when no agents are configured, which is a common state, not an error"`
+}
+
+type agentsInput struct {
+	Cwd string `json:"cwd,omitempty" jsonschema:"absolute path of the directory you will pass to agy_run as cwd. The listing then also includes that repository's project agents (its .agents/agents/), which agy lists only for a workspace: the directory is passed to agy exactly as agy_run passes cwd (--add-dir), and from a subdirectory of a git repository agy also finds the repository root's agents. A relative path is resolved against the server's working directory, so pass an absolute one. Symlinks are resolved. A directory that does not exist is an error. Omit to list what agy lists from the server's own directory, without project agents"`
 }
 
 type sessionsInput struct {
@@ -495,9 +499,9 @@ func NewServer(mgr *manager.Manager) *mcp.Server {
 		Name:        toolListAgents,
 		Title:       "List agy agents",
 		Annotations: annReadExternal,
-		Description: "List the agy agent names accepted by the agent parameter of agy_run and agy_run_sync. Pass a value from agents verbatim; there is no separate id and label, unlike list_models, because agy takes an agent name directly. Call it only when you intend to select a specific agent; omitting agent uses agy's default, so most runs need no call here. An empty list means no agents are configured, which is common and not an error. Shells out to the agy CLI, so it fails if agy is missing from PATH or not authenticated.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, agentsOutput, error) {
-		agents, err := mgr.ListAgents(ctx)
+		Description: "List the agy agent names accepted by the agent parameter of agy_run and agy_run_sync. Pass a value from agents verbatim; there is no separate id and label, unlike list_models, because agy takes an agent name directly. Call it only when you intend to select a specific agent; omitting agent uses agy's default, so most runs need no call here. Pass cwd, the same directory you give agy_run, to include that repository's project agents; without it they are not listed. An empty list means no agents are configured, which is common and not an error. Shells out to the agy CLI, so it fails if agy is missing from PATH or not authenticated.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in agentsInput) (*mcp.CallToolResult, agentsOutput, error) {
+		agents, err := mgr.ListAgents(ctx, in.Cwd)
 		if err != nil {
 			return nil, agentsOutput{}, err
 		}

@@ -73,10 +73,24 @@ func modelID(v string) string {
 	return v
 }
 
-// runJSONListing execs `agy --output-format json <sub>` and returns its stdout,
-// applying the version gate, a bounded timeout, and the WaitDelay tolerance that
-// list_models and list_agents share. Only the subcommand, its timeout pair, and
-// (at the caller) the decoder differ between the two, so they run through here
+// listingArgs builds the argv for a JSON listing: `--output-format json`, one
+// `--add-dir` pair per workspace directory, then the subcommand. --add-dir, like
+// --output-format, is a global flag agy rejects after the subcommand ("flags
+// provided but not defined: -add-dir"; MEASURED against agy 1.3.1), so every flag
+// sits before sub.
+func listingArgs(sub string, workspace []string) []string {
+	args := []string{outputFormatFlag, jsonOutputFormat}
+	for _, d := range workspace {
+		args = append(args, addDirFlag, d)
+	}
+	return append(args, sub)
+}
+
+// runJSONListing execs `agy --output-format json [--add-dir <dir>]... <sub>` and
+// returns its stdout, applying the version gate, a bounded timeout, and the
+// WaitDelay tolerance that list_models and list_agents share. Only the
+// subcommand, its workspace and working directory, its timeout pair, and (at the
+// caller) the decoder differ between the two, so they run through here
 // rather than each carrying its own copy of this delicate ctx-and-error handling.
 // The quota probe shares the same body through runJSONProbe, which also lets it
 // run in its own session (see newSession there).
@@ -88,8 +102,8 @@ func modelID(v string) string {
 // treats any non-zero exit as a failure). The two JSON listings share every one
 // of those decisions, so nothing delicate is being generalized across a real
 // difference here; the version probe stays separate, as that note intends.
-func (m *Manager) runJSONListing(ctx context.Context, sub string, timeout, killGrace time.Duration) ([]byte, error) {
-	return m.runJSONProbe(ctx, sub, []string{outputFormatFlag, jsonOutputFormat, sub}, false, timeout, killGrace)
+func (m *Manager) runJSONListing(ctx context.Context, sub, dir string, workspace []string, timeout, killGrace time.Duration) ([]byte, error) {
+	return m.runJSONProbe(ctx, sub, listingArgs(sub, workspace), dir, false, timeout, killGrace)
 }
 
 // runJSONProbe execs agy with args and returns its stdout. On a non-zero exit it
@@ -100,8 +114,10 @@ func (m *Manager) runJSONListing(ctx context.Context, sub string, timeout, killG
 // (proc.ConfigureSession): agy 1.2.x opens /dev/tty in -p mode and stops on
 // SIGTTOU in a background process group that shares a controlling terminal (see
 // proc.ConfigureSession), so the -p quota probe needs it. The listing subcommands
-// pass false; they have not been seen to touch the tty (NOT MEASURED).
-func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string, newSession bool, timeout, killGrace time.Duration) ([]byte, error) {
+// pass false; they have not been seen to touch the tty (NOT MEASURED). A
+// non-empty dir is the process's working directory, so a missing one fails the
+// call; an empty dir inherits the server's working directory.
+func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string, dir string, newSession bool, timeout, killGrace time.Duration) ([]byte, error) {
 	// Version-gated like the job path even though a listing itself does not need
 	// stream-json: an agy too old to drive is a configuration problem, and one
 	// clear message about it beats a listing from a binary that cannot run a job.
@@ -121,6 +137,9 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 	// flagset does not define it). The listing banner stays on stderr, so stdout is
 	// the envelope alone.
 	cmd := probeCmd(ctx, agy, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	if newSession {
 		proc.ConfigureSession(cmd)
 	}
@@ -170,7 +189,7 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 // text rows, so the ids and labels come from a typed field instead of a guessed
 // column.
 func (m *Manager) ListModels(ctx context.Context) ([]Model, error) {
-	out, err := m.runJSONListing(ctx, "models", listModelsTimeout, listModelsKillGrace)
+	out, err := m.runJSONListing(ctx, "models", "", nil, listModelsTimeout, listModelsKillGrace)
 	if err != nil {
 		return nil, err
 	}

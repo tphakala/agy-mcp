@@ -16,7 +16,7 @@ func TestListAgentsReturnsConfiguredNames(t *testing.T) {
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Agents: []string{"reviewer", "researcher"}})
 	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
 
-	got, err := m.ListAgents(t.Context())
+	got, err := m.ListAgents(t.Context(), "")
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestListAgentsEmptyCatalog(t *testing.T) {
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{})
 	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
 
-	got, err := m.ListAgents(t.Context())
+	got, err := m.ListAgents(t.Context(), "")
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestListAgentsIncludesStderrOnError(t *testing.T) {
 	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stderr: "agy: not logged in", Exit: 1})
 	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
 
-	_, err := m.ListAgents(t.Context())
+	_, err := m.ListAgents(t.Context(), "")
 	if err == nil || !strings.Contains(err.Error(), "not logged in") {
 		t.Fatalf("err = %v, want it to include agy's stderr", err)
 	}
@@ -101,6 +101,28 @@ func TestDecodeAgentsEnvelope(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := decodeAgentsEnvelope([]byte(tc.raw)); err == nil {
 				t.Fatalf("decodeAgentsEnvelope(%s) succeeded, want an error", tc.name)
+			}
+		})
+	}
+}
+
+// TestListingArgs pins the listing argv: every global flag, --add-dir included,
+// precedes the subcommand because agy rejects them after it (issue #203).
+func TestListingArgs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sub       string
+		workspace []string
+		want      []string
+	}{
+		{"agents without workspace", "agents", nil, []string{"--output-format", "json", "agents"}},
+		{"agents with one dir", "agents", []string{"/w"}, []string{"--output-format", "json", "--add-dir", "/w", "agents"}},
+		{"agents with two dirs", "agents", []string{"/w", "/x"}, []string{"--output-format", "json", "--add-dir", "/w", "--add-dir", "/x", "agents"}},
+		{"models without workspace", "models", nil, []string{"--output-format", "json", "models"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := listingArgs(tc.sub, tc.workspace); !slices.Equal(got, tc.want) {
+				t.Errorf("listingArgs(%q, %v) = %v, want %v", tc.sub, tc.workspace, got, tc.want)
 			}
 		})
 	}
