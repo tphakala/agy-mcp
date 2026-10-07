@@ -273,8 +273,8 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 // can drop a version that shares a line with an AGY_ERROR segment it cannot
 // decode. The result is a quoted string, or, when nothing is left of non-empty
 // output, a plain phrase, so the message does not claim that agy printed nothing.
-// Both steps key on the text AGY_ERROR and its colon, so a marker split by other
-// bytes is not recognised.
+// Both steps key on the text AGY_ERROR, so a marker split by other bytes is not
+// recognised.
 func versionOutputForMessage(raw string) string {
 	reduced := strings.TrimSpace(redactAgyErrorLines(cutSplicedAgyError(raw)))
 	if reduced == "" && strings.TrimSpace(raw) != "" {
@@ -287,15 +287,15 @@ var (
 	// textRunRE matches a run of characters between line and carriage-return
 	// terminators, so a replacement over it never touches a terminator.
 	textRunRE = regexp.MustCompile(`[^\r\n]+`)
-	// agyErrorMarkerRE finds the AGY_ERROR marker in any case, with its colon.
-	agyErrorMarkerRE = regexp.MustCompile(`(?i)agy_error\s*:`)
+	// agyErrorMarkerRE finds the AGY_ERROR marker in any case.
+	agyErrorMarkerRE = regexp.MustCompile(`(?i)agy_error`)
 )
 
 // cutSplicedAgyError cuts every run of text at an AGY_ERROR marker, the text
-// AGY_ERROR in any case followed by a colon, unless the run starts with the exact
-// agyErrorPrefix, which redactAgyErrorLines reduces. What precedes the marker is
-// kept; the rest of the run is dropped. Line and carriage-return terminators are
-// kept, so a later run is never joined onto a cut one.
+// AGY_ERROR in any case, unless the run starts with the exact agyErrorPrefix, which
+// redactAgyErrorLines reduces. What precedes the marker is kept; the rest of the
+// run is dropped. Line and carriage-return terminators are kept, so a later run is
+// never joined onto a cut one.
 func cutSplicedAgyError(raw string) string {
 	// The marker regexp has no literal prefix and is slow on large output, and
 	// the usual output holds no marker at all.

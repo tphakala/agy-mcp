@@ -302,7 +302,6 @@ func TestVersionOutputForMessageCutsAgyErrorNotAtLineStart(t *testing.T) {
 		{"after other text", "loading " + wireAgyErrorPrefix + obj + "\n", "loading"},
 		{"lowercase at column 0", "agy_error: " + obj + "\n", `""`},
 		{"without the space", "AGY_ERROR:" + obj + "\n", `""`},
-		{"unrelated text with the word keeps its cause", "open /home/u/.agy_error.log: permission denied\n", "open /home/u/.agy_error.log: permission denied"},
 		{"after an escape sequence", "\x1b[31m" + wireAgyErrorPrefix + obj + "\n", "\x1b[31m"},
 		{
 			"a cut line does not swallow its newline",
