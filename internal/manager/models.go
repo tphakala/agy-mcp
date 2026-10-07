@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -109,6 +110,14 @@ func (m *Manager) runJSONListing(ctx context.Context, sub, dir string, workspace
 // runJSONProbe execs agy with args and returns its stdout. On a non-zero exit it
 // returns the error together with whatever stdout agy printed, so a caller can
 // still inspect a reply that came with a failure exit; the listings ignore it.
+// The error carries agy's stderr with each AGY_ERROR line reduced to its canonical
+// status (redactAgyErrorLines), so the cloud project and region do not reach the
+// tool caller (issue #209). The wrapped *exec.ExitError is a copy whose Stderr is
+// the reduced text, so unwrapping the error does not recover the original. Stderr
+// is captured whole up to probeStderrLimit rather than through os/exec's head and
+// tail copy, whose cut can leave a fragment of an AGY_ERROR line without its
+// prefix; a line cut at that limit keeps its prefix and fails to decode, so the
+// reduction drops it.
 // label names the probe
 // in errors ("agy <label>: ..."). newSession runs agy in its own session
 // (proc.ConfigureSession): agy 1.2.x opens /dev/tty in -p mode and stops on
@@ -144,7 +153,12 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 		proc.ConfigureSession(cmd)
 	}
 	cmd.WaitDelay = killGrace
-	out, err := cmd.Output()
+	var stdout bytes.Buffer
+	stderr := &probeStderr{}
+	cmd.Stdout = &stdout
+	cmd.Stderr = stderr
+	err = cmd.Run()
+	out := stdout.Bytes()
 	if err != nil {
 		// Check the deadline BEFORE classifying the exec error, exactly as
 		// readAgyVersion does. A ctx-killed process surfaces as *exec.ExitError,
@@ -170,19 +184,50 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 		// the version probe (issue #161). Unlike --version, a non-zero exit is still
 		// a failure here, so every other error (ExitError included) is returned.
 		if !errors.Is(err, exec.ErrWaitDelay) {
-			// Output() captures stderr into (*exec.ExitError).Stderr; include it so a
-			// real cause (an auth prompt, a usage error) is visible instead of a bare
-			// "exit status 1".
+			// Include agy's stderr so a real cause (an auth prompt, a usage error) is
+			// visible instead of a bare "exit status 1". Each AGY_ERROR line is
+			// reduced first: its short_error carries the cloud project and region,
+			// and this error reaches the callers of list_models, list_agents and
+			// agy_usage (issue #209; the job path does the same, issue #205).
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-				if stderr := strings.TrimSpace(string(ee.Stderr)); stderr != "" {
-					return out, fmt.Errorf("agy %s: %w: %s", label, err, stderr)
+				reduced := strings.TrimSpace(redactAgyErrorLines(stderr.String()))
+				if len(reduced) > probeErrorLimit {
+					reduced = strings.ToValidUTF8(reduced[len(reduced)-probeErrorLimit:], "")
 				}
+				// A copy, so errors.As on the returned error cannot reach the raw text.
+				clean := &exec.ExitError{ProcessState: ee.ProcessState, Stderr: []byte(reduced)}
+				if reduced != "" {
+					return out, fmt.Errorf("agy %s: %w: %s", label, clean, reduced)
+				}
+				return out, fmt.Errorf("agy %s: %w", label, clean)
 			}
 			return out, fmt.Errorf("agy %s: %w", label, err)
 		}
 	}
 	return out, nil
 }
+
+// probeStderrLimit bounds the stderr runJSONProbe keeps. A probe's stderr is a
+// short banner or error, so the limit is only a guard against a runaway writer.
+const probeStderrLimit = 1 << 20
+
+// probeErrorLimit bounds the reduced stderr placed in the returned error to its
+// last bytes, as os/exec's own capture did before stderr was read whole.
+const probeErrorLimit = 64 << 10
+
+// probeStderr collects a probe's stderr up to probeStderrLimit and discards the
+// rest. It keeps the head, never a tail, so every line it holds is whole except
+// possibly the last.
+type probeStderr struct{ buf bytes.Buffer }
+
+func (w *probeStderr) Write(p []byte) (int, error) {
+	if room := probeStderrLimit - w.buf.Len(); room > 0 {
+		w.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (w *probeStderr) String() string { return w.buf.String() }
 
 // ListModels lists agy's available models. It decodes the JSON envelope from
 // `agy --output-format json models` (agy 1.1.12+) rather than tab-splitting the

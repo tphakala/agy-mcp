@@ -160,3 +160,21 @@ func TestModelID(t *testing.T) {
 		})
 	}
 }
+
+// TestProbeStderrKeepsTheHeadUpToTheLimit: probeStderr is the capture runJSONProbe
+// uses on every platform. It keeps the first probeStderrLimit bytes and discards
+// the rest, but reports every write as complete, since a short write would stop
+// os/exec's copy and leave the probe's process blocked on a full pipe.
+func TestProbeStderrKeepsTheHeadUpToTheLimit(t *testing.T) {
+	var w probeStderr
+	head := strings.Repeat("a", probeStderrLimit-3)
+	for _, chunk := range []string{head, "bcdefg", "hij"} {
+		n, err := w.Write([]byte(chunk))
+		if err != nil || n != len(chunk) {
+			t.Fatalf("Write(%d bytes) = %d, %v, want the full length and no error", len(chunk), n, err)
+		}
+	}
+	if got, want := w.String(), head+"bcd"; got != want {
+		t.Errorf("kept %d bytes ending %q, want %d bytes ending %q", len(got), got[len(got)-3:], len(want), "bcd")
+	}
+}
