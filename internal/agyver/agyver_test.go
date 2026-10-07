@@ -103,7 +103,7 @@ var parseCases = []parseCase{
 		raw:  "1.2.0-preview.2.3.4\n",
 		want: Version{1, 2, 0},
 	}, {
-		// CombinedOutput merges stdout and stderr onto one fd, so a concurrent
+		// readAgyVersion merges stdout and stderr onto one fd, so a concurrent
 		// stderr write can splice a warning onto the version line. A spliced
 		// triple is still the only version present and must still be read.
 		name: "spliced stderr still yields the version",
@@ -281,7 +281,7 @@ var parseCases = []parseCase{
 		raw:  strings.Repeat("9", 40) + ".0.0\nagy 1.1.8 (linux)\n",
 		want: Version{1, 1, 8},
 	}, {
-		// CombinedOutput on Windows delivers CRLF.
+		// The merged output on Windows delivers CRLF.
 		name: "CRLF line endings",
 		raw:  "config ~/.agy/2.0.0/cfg.toml\r\nagy 1.0.5 (linux/amd64)\r\n",
 		want: Version{1, 0, 5},

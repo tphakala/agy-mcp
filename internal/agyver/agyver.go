@@ -347,7 +347,7 @@ func submatches(line string, loc []int) []string {
 // There are exactly two such things, and the list is short on purpose. A triple
 // spliced onto a word ("agy1.0.5") is deliberately NOT one of them: demoting it
 // meant a real version lost to unrelated noise elsewhere in the output, and the
-// splice is something this code causes itself, since CombinedOutput merges
+// splice is something this code causes itself, since readAgyVersion merges
 // stdout and stderr onto one fd and a concurrent stderr write lands mid-line.
 func classify(line string, start, end int) tier {
 	before, after := line[:start], line[end:]

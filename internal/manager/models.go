@@ -98,9 +98,10 @@ func listingArgs(sub string, workspace []string) []string {
 //
 // This is NOT the sharing issue #160 item 7 weighed and rejected: that was about
 // folding the VERSION probe together with a listing, and the two genuinely differ
-// (readAgyVersion uses CombinedOutput and tolerates a non-zero exit because
-// --version's exit status is not a contract, while a listing uses Output and
-// treats any non-zero exit as a failure). The two JSON listings share every one
+// (readAgyVersion merges stdout and stderr into one bounded writer and tolerates a
+// non-zero exit because --version's exit status is not a contract, while a
+// listing keeps stdout apart from stderr and treats any non-zero exit as a
+// failure). The two JSON listings share every one
 // of those decisions, so nothing delicate is being generalized across a real
 // difference here; the version probe stays separate, as that note intends.
 func (m *Manager) runJSONListing(ctx context.Context, sub, dir string, workspace []string, timeout, killGrace time.Duration) ([]byte, error) {
@@ -114,7 +115,7 @@ func (m *Manager) runJSONListing(ctx context.Context, sub, dir string, workspace
 // status (redactAgyErrorLines), so the cloud project and region do not reach the
 // tool caller (issue #209). The wrapped *exec.ExitError is a copy whose Stderr is
 // the reduced text, so unwrapping the error does not recover the original. Stderr
-// is captured whole up to probeStderrLimit rather than through os/exec's head and
+// is captured whole up to probeOutputLimit rather than through os/exec's head and
 // tail copy, whose cut can leave a fragment of an AGY_ERROR line without its
 // prefix; a line cut at that limit keeps its prefix and fails to decode, so the
 // reduction drops it.
@@ -154,7 +155,7 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 	}
 	cmd.WaitDelay = killGrace
 	var stdout bytes.Buffer
-	stderr := &probeStderr{}
+	stderr := &probeOutput{}
 	cmd.Stdout = &stdout
 	cmd.Stderr = stderr
 	err = cmd.Run()
@@ -205,9 +206,10 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 	return out, nil
 }
 
-// probeStderrLimit bounds the stderr runJSONProbe keeps. A probe's stderr is a
-// short banner or error, so the limit is only a guard against a runaway writer.
-const probeStderrLimit = 1 << 20
+// probeOutputLimit bounds the output kept from a probe: stderr in runJSONProbe and
+// the merged output of `agy --version` in readAgyVersion. Either is a short banner
+// or error, so the limit is only a guard against a runaway writer.
+const probeOutputLimit = 1 << 20
 
 // probeErrorLimit bounds the reduced agy text placed in an error to its last
 // bytes: the probe stderr in runJSONProbe, as os/exec's own capture did before
@@ -225,19 +227,20 @@ func keepTail(s string, limit int) string {
 	return strings.ToValidUTF8(s[len(s)-limit:], "")
 }
 
-// probeStderr collects a probe's stderr up to probeStderrLimit and discards the
+// probeOutput collects a probe's output up to probeOutputLimit and discards the
 // rest. It keeps the head, never a tail, so every line it holds is whole except
-// possibly the last.
-type probeStderr struct{ buf bytes.Buffer }
+// possibly the last. Used as both Stdout and Stderr of one command it is a bounded
+// CombinedOutput, and os/exec then calls Write from one goroutine at a time.
+type probeOutput struct{ buf bytes.Buffer }
 
-func (w *probeStderr) Write(p []byte) (int, error) {
-	if room := probeStderrLimit - w.buf.Len(); room > 0 {
+func (w *probeOutput) Write(p []byte) (int, error) {
+	if room := probeOutputLimit - w.buf.Len(); room > 0 {
 		w.buf.Write(p[:min(len(p), room)])
 	}
 	return len(p), nil
 }
 
-func (w *probeStderr) String() string { return w.buf.String() }
+func (w *probeOutput) String() string { return w.buf.String() }
 
 // ListModels lists agy's available models. It decodes the JSON envelope from
 // `agy --output-format json models` (agy 1.1.12+) rather than tab-splitting the

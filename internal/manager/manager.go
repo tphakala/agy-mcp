@@ -211,17 +211,25 @@ func probeCmd(ctx context.Context, agy string, args ...string) *exec.Cmd {
 // listed in agy's --help, so its exit status is not a contract, and the output
 // is what matters. Only a failure to execute at all (a missing or
 // non-executable binary) is an error. stderr is folded in for the same reason,
-// in case a future agy prints the version there.
+// in case a future agy prints the version there. At most probeOutputLimit bytes
+// of the merged output are kept, so a runaway agy cannot make the caller hold an
+// unbounded buffer.
 func readAgyVersion(ctx context.Context, agy string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, versionCheckTimeout)
 	defer cancel()
 	cmd := probeCmd(ctx, agy, "--version")
 	// Without this, killing the process on deadline does not unblock the output
-	// copy: CombinedOutput reads through a pipe whose write end agy's descendants
+	// copy: the output copy reads through a pipe whose write end agy's descendants
 	// inherit, so a grandchild that outlives the kill holds the read open and the
 	// probe never returns. WaitDelay closes the pipes shortly after the kill.
 	cmd.WaitDelay = versionKillGrace
-	out, err := cmd.CombinedOutput()
+	// One bounded writer for both streams, as CombinedOutput merges them, so a
+	// broken or noisy agy cannot make the probe, and the reduction that follows,
+	// hold an unbounded buffer.
+	var out probeOutput
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
 	if err != nil {
 		// Check the deadline BEFORE classifying the exec error. A ctx-killed
 		// process surfaces as *exec.ExitError, which is indistinguishable from a
@@ -251,7 +259,7 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 			}
 		}
 	}
-	return string(out), nil
+	return out.String(), nil
 }
 
 // versionOutputForMessage returns the text a message quotes in place of the raw
