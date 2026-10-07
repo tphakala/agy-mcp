@@ -710,11 +710,14 @@ func TestStatusOutputRecoveryNotRetryable(t *testing.T) {
 			}
 		}
 	})
-	t.Run("quota note keeps the reset advice and drops the conversation clause", func(t *testing.T) {
+	t.Run("quota note keeps the reset advice, drops the conversation clause and names the verdict", func(t *testing.T) {
 		t.Parallel()
 		got := toStatusOutput(quota(no, nil)).Recovery
 		if !strings.Contains(got, "reset") || strings.Contains(got, "conversation_id") {
 			t.Errorf("Recovery = %q, want reset advice without conversation_id", got)
+		}
+		if !strings.Contains(got, "not retryable") || !strings.Contains(got, "fix the cause") || strings.Contains(got, "transient") {
+			t.Errorf("Recovery = %q, want it to say agy marked the error not retryable and to fix the cause, without calling it transient", got)
 		}
 	})
 	t.Run("quota note with no verdict keeps the conversation clause", func(t *testing.T) {
