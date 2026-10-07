@@ -58,3 +58,29 @@ func TestReadAgyVersionToleratesWaitDelay(t *testing.T) {
 		t.Fatalf("version = %v, want the printed %s", v, agyver.Required)
 	}
 }
+
+// TestReadAgyVersionBoundsTheMergedOutput: an agy that writes megabytes to both
+// stdout and stderr must not make readAgyVersion, and the reduction after it, hold
+// an unbounded buffer. The output is kept up to probeOutputLimit from the head,
+// the version at the start survives, and the call still succeeds (issue #212).
+func TestReadAgyVersionBoundsTheMergedOutput(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "fake-agy")
+	body := "#!/bin/sh\n" +
+		"echo 1.3.1\n" +
+		"head -c 2097152 /dev/zero | tr '\\0' x\n" +
+		"head -c 2097152 /dev/zero | tr '\\0' y >&2\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readAgyVersion(t.Context(), script)
+	if err != nil {
+		t.Fatalf("readAgyVersion: %v", err)
+	}
+	if len(got) != probeOutputLimit {
+		t.Errorf("kept %d bytes, want exactly %d", len(got), probeOutputLimit)
+	}
+	if !strings.HasPrefix(got, "1.3.1\n") {
+		t.Errorf("output does not start with the version: %.20q", got)
+	}
+}

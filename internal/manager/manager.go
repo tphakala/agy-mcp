@@ -12,6 +12,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -170,7 +172,7 @@ func (m *Manager) agyBinaryChecked(ctx context.Context) (string, error) {
 	}
 	v, perr := agyver.Parse(raw)
 	if perr != nil {
-		return "", fmt.Errorf("parse agy version from %q (%s): %w", strings.TrimSpace(raw), agy, perr)
+		return "", fmt.Errorf("parse agy version from %s (%s): %w", versionOutputForMessage(raw), agy, perr)
 	}
 	if !v.AtLeast(agyver.Required) {
 		return "", fmt.Errorf(
@@ -209,17 +211,25 @@ func probeCmd(ctx context.Context, agy string, args ...string) *exec.Cmd {
 // listed in agy's --help, so its exit status is not a contract, and the output
 // is what matters. Only a failure to execute at all (a missing or
 // non-executable binary) is an error. stderr is folded in for the same reason,
-// in case a future agy prints the version there.
+// in case a future agy prints the version there. At most probeOutputLimit bytes
+// of the merged output are kept, so a runaway agy cannot make the caller hold an
+// unbounded buffer.
 func readAgyVersion(ctx context.Context, agy string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, versionCheckTimeout)
 	defer cancel()
 	cmd := probeCmd(ctx, agy, "--version")
 	// Without this, killing the process on deadline does not unblock the output
-	// copy: CombinedOutput reads through a pipe whose write end agy's descendants
+	// copy: the output copy reads through a pipe whose write end agy's descendants
 	// inherit, so a grandchild that outlives the kill holds the read open and the
 	// probe never returns. WaitDelay closes the pipes shortly after the kill.
 	cmd.WaitDelay = versionKillGrace
-	out, err := cmd.CombinedOutput()
+	// One bounded writer for both streams, as CombinedOutput merges them, so a
+	// broken or noisy agy cannot make the probe, and the reduction that follows,
+	// hold an unbounded buffer.
+	var out probeOutput
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
 	if err != nil {
 		// Check the deadline BEFORE classifying the exec error. A ctx-killed
 		// process surfaces as *exec.ExitError, which is indistinguishable from a
@@ -249,7 +259,67 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 			}
 		}
 	}
-	return string(out), nil
+	return out.String(), nil
+}
+
+// versionOutputForMessage returns the text a message quotes in place of the raw
+// output of `agy --version`, for use after agyver.Parse has failed on it. Every
+// message that quotes that output goes through here. readAgyVersion folds stderr
+// into the output, and an AGY_ERROR line's short_error carries the cloud project
+// and region, so each such line is reduced to its canonical status
+// (redactAgyErrorLines), as the job path and the probes do (issues #205, #209 and
+// #211). Because stdout and stderr share one pipe, a stderr write can land after
+// other bytes, where redactAgyErrorLines does not see it; cutSplicedAgyError
+// first cuts such a segment at the marker. It also cuts a marker in another case
+// or without the space after its colon, as a precaution: agy has not been seen to
+// write either. MEASURED against agy 1.3.1 on 2026-10-07 (`agy --version` with
+// stdout and stderr captured apart): stdout is "1.3.1", stderr is empty, the exit
+// status is 0. That covers a normal run only; whether agy ever prints an
+// AGY_ERROR line on --version, for example in a failure state, is NOT MEASURED.
+// The reduction runs before the bound, so the cut never leaves a fragment of a
+// line that was not reduced.
+// Callers pass the unreduced output to agyver.Parse first, because the reduction
+// can drop a version that shares a line with an AGY_ERROR segment it cannot
+// decode. The result is a quoted string, or, when nothing is left of non-empty
+// output, a plain phrase, so the message does not claim that agy printed nothing.
+// Both steps key on the text AGY_ERROR, so a marker split by other bytes is not
+// recognised.
+func versionOutputForMessage(raw string) string {
+	reduced := strings.TrimSpace(redactAgyErrorLines(cutSplicedAgyError(raw)))
+	if reduced == "" && strings.TrimSpace(raw) != "" {
+		return "agy's output, which reduced to nothing once AGY_ERROR lines were left out of this message"
+	}
+	return strconv.Quote(keepTail(reduced, probeErrorLimit))
+}
+
+var (
+	// textRunRE matches a run of characters between line and carriage-return
+	// terminators, so a replacement over it never touches a terminator.
+	textRunRE = regexp.MustCompile(`[^\r\n]+`)
+	// agyErrorMarkerRE finds the AGY_ERROR marker in any case.
+	agyErrorMarkerRE = regexp.MustCompile(`(?i)agy_error`)
+)
+
+// cutSplicedAgyError cuts every run of text at an AGY_ERROR marker, the text
+// AGY_ERROR in any case, unless the run starts with the exact agyErrorPrefix, which
+// redactAgyErrorLines reduces. What precedes the marker is kept; the rest of the
+// run is dropped. Line and carriage-return terminators are kept, so a later run is
+// never joined onto a cut one.
+func cutSplicedAgyError(raw string) string {
+	// The marker regexp has no literal prefix and is slow on large output, and
+	// the usual output holds no marker at all.
+	if !strings.Contains(strings.ToLower(raw), "agy_error") {
+		return raw
+	}
+	return textRunRE.ReplaceAllStringFunc(raw, func(run string) string {
+		if strings.HasPrefix(run, agyErrorPrefix) {
+			return run
+		}
+		if loc := agyErrorMarkerRE.FindStringIndex(run); loc != nil {
+			return run[:loc[0]]
+		}
+		return run
+	})
 }
 
 // conversationIDPoll is how often the conversation-id wait re-reads the

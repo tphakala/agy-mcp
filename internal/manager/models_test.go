@@ -161,13 +161,13 @@ func TestModelID(t *testing.T) {
 	}
 }
 
-// TestProbeStderrKeepsTheHeadUpToTheLimit: probeStderr is the capture runJSONProbe
-// uses on every platform. It keeps the first probeStderrLimit bytes and discards
+// TestProbeOutputKeepsTheHeadUpToTheLimit: probeOutput is the capture runJSONProbe
+// uses on every platform. It keeps the first probeOutputLimit bytes and discards
 // the rest, but reports every write as complete, since a short write would stop
 // os/exec's copy and leave the probe's process blocked on a full pipe.
-func TestProbeStderrKeepsTheHeadUpToTheLimit(t *testing.T) {
-	var w probeStderr
-	head := strings.Repeat("a", probeStderrLimit-3)
+func TestProbeOutputKeepsTheHeadUpToTheLimit(t *testing.T) {
+	var w probeOutput
+	head := strings.Repeat("a", probeOutputLimit-3)
 	for _, chunk := range []string{head, "bcdefg", "hij"} {
 		n, err := w.Write([]byte(chunk))
 		if err != nil || n != len(chunk) {
@@ -176,5 +176,31 @@ func TestProbeStderrKeepsTheHeadUpToTheLimit(t *testing.T) {
 	}
 	if got, want := w.String(), head+"bcd"; got != want {
 		t.Errorf("kept %d bytes ending %q, want %d bytes ending %q", len(got), got[len(got)-3:], len(want), "bcd")
+	}
+}
+
+// TestKeepTail pins which end keepTail keeps and where it stops: the last limit
+// bytes, nothing cut at or under the limit, and no rune the cut split.
+func TestKeepTail(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		s     string
+		limit int
+		want  string
+	}{
+		{"under the limit", "abc", 4, "abc"},
+		{"at the limit", "abcd", 4, "abcd"},
+		{"one over keeps the tail", "abcde", 4, "bcde"},
+		{"the tail and not the head", "abcdef", 3, "def"},
+		{"a split rune is dropped", "\u00e9abc", 4, "abc"},
+		{"empty", "", 4, ""},
+		{"zero keeps nothing", "abc", 0, ""},
+		{"a negative limit keeps nothing", "abc", -1, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := keepTail(tc.s, tc.limit); got != tc.want {
+				t.Errorf("keepTail(%q, %d) = %q, want %q", tc.s, tc.limit, got, tc.want)
+			}
+		})
 	}
 }

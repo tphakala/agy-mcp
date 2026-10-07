@@ -133,7 +133,7 @@ func (m *Manager) checkAgyVersion(ctx context.Context) CheckResult {
 	}
 	v, err := agyver.Parse(raw)
 	if err != nil {
-		return CheckResult{checkAgyVersionName, CheckFail, fmt.Sprintf("cannot parse version %q: %v", strings.TrimSpace(raw), err)}
+		return CheckResult{checkAgyVersionName, CheckFail, fmt.Sprintf("cannot parse version from %s: %v", versionOutputForMessage(raw), err)}
 	}
 	if !v.AtLeast(agyver.Required) {
 		return CheckResult{checkAgyVersionName, CheckFail, fmt.Sprintf("%s is below the required %s; upgrade agy", v, agyver.Required)}

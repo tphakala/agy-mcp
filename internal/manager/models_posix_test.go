@@ -197,7 +197,7 @@ func TestProbeErrorsOmitSeparatorWhenRedactedStderrIsEmpty(t *testing.T) {
 // enough that os/exec's own head-and-tail copy would cut an AGY_ERROR line (issue
 // #209) must still reach the caller reduced. The first case puts a line across the
 // start of the last 32 KiB, where os/exec would keep a prefix-less fragment; the
-// second puts it across probeStderrLimit, where the kept part has its prefix but
+// second puts it across probeOutputLimit, where the kept part has its prefix but
 // not its end and the reduction drops it.
 func TestProbeErrorsRedactAcrossCaptureBoundaries(t *testing.T) {
 	line := wireAgyErrorPrefix + measuredAgyErrorJSON + "\n"
@@ -214,8 +214,8 @@ func TestProbeErrorsRedactAcrossCaptureBoundaries(t *testing.T) {
 			want: "AGY_ERROR: NOT_FOUND (code 404)",
 		},
 		{
-			name:   "line across probeStderrLimit",
-			stderr: strings.Repeat("x", probeStderrLimit-101) + "\n" + line,
+			name:   "line across probeOutputLimit",
+			stderr: strings.Repeat("x", probeOutputLimit-101) + "\n" + line,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
