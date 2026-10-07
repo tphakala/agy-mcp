@@ -295,6 +295,11 @@ var (
 // carriage-return terminators are kept, so a later run is never joined onto a cut
 // one.
 func cutSplicedAgyError(raw string) string {
+	// The marker regexp has no literal prefix and is slow on large output, and
+	// the usual output holds no marker at all.
+	if !strings.Contains(strings.ToLower(raw), "agy_error") {
+		return raw
+	}
 	return textRunRE.ReplaceAllStringFunc(raw, func(run string) string {
 		if strings.HasPrefix(run, agyErrorPrefix) {
 			return run
