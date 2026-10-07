@@ -99,8 +99,8 @@ func TestClassifyAgyError(t *testing.T) {
 		// for a reset that never comes.
 		"write /var/data/out.tmp: disk quota exceeded",
 		// Near-misses of the credits wall (issue #202): each lacks one phrase, splits
-		// the phrases across lines, or names a prepaid credits balance, which does not
-		// clear at a quota reset.
+		// the phrases across lines, or names a prepaid credits balance, which is not
+		// agy's AI credits wall.
 		"AI credits balance refreshed",
 		"sample rate too low for playback",
 		"AI credits balance: 40\nlatency too low to measure",

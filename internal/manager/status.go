@@ -51,7 +51,7 @@ const (
 // state already is the reason), and a running or done job has no failure to
 // name.
 const (
-	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient (clears when the quota resets)
+	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient
 	ReasonTimeout        = "timeout"         // the run outlived its timeout: agy-mcp killed it, or (agy 1.1.28 and later) agy's own --print-timeout cut the turn short
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
@@ -991,7 +991,7 @@ func classifyAgyError(msg string) string {
 
 // isQuotaError reports whether an error message describes a provider quota or
 // rate-limit wall, or agy's AI credits wall (plan quota used up and too few AI
-// credits to cover the request, which also clears when the quota resets): a
+// credits to cover the request): a
 // transient condition that clears on its own, distinct from a hard failure. agy relays the provider's own wording (observed as "Individual
 // quota reached. Please upgrade your subscription to increase your limits.
 // Resets in 21m50s."), which agy-mcp does not control, so the match is a
