@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 )
@@ -21,7 +22,8 @@ var agyErrorStatusRE = regexp.MustCompile(`^([A-Z][A-Z_]*) \(code \d+\):`)
 
 // agyErrorInfo is what agy-mcp keeps from an AGY_ERROR line. It deliberately has
 // no field for short_error itself: that text carries the cloud project and
-// region and is never copied into a status field.
+// region and is never copied into a status field (redactAgyErrorLines keeps it
+// out of the stderr tail copied into Status.Error).
 type agyErrorInfo struct {
 	retryable *bool  // nil: key absent
 	errorID   string // "" when absent or failing validation
@@ -61,14 +63,8 @@ func parseAgyErrorTail(tail string, truncated bool) (agyErrorInfo, bool) {
 	if last == "" {
 		return agyErrorInfo{}, false
 	}
-	raw := strings.TrimSpace(strings.TrimPrefix(last, agyErrorPrefix))
-	// A leading brace rejects null, arrays and strings, which json.Unmarshal into
-	// a struct would accept or half-accept.
-	if !strings.HasPrefix(raw, "{") {
-		return agyErrorInfo{}, false
-	}
-	var p agyErrorPayload
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+	p, ok := decodeAgyErrorLine(last)
+	if !ok {
 		return agyErrorInfo{}, false
 	}
 	info := agyErrorInfo{retryable: p.Retryable}
@@ -82,6 +78,66 @@ func parseAgyErrorTail(tail string, truncated bool) (agyErrorInfo, bool) {
 		return agyErrorInfo{}, false
 	}
 	return info, true
+}
+
+// decodeAgyErrorLine decodes one line that starts with agyErrorPrefix into its
+// payload. It reports ok == false when the object after the prefix is not a
+// complete JSON object.
+func decodeAgyErrorLine(line string) (agyErrorPayload, bool) {
+	raw := strings.TrimSpace(strings.TrimPrefix(line, agyErrorPrefix))
+	// A leading brace rejects null, arrays and strings, which json.Unmarshal into
+	// a struct would accept or half-accept.
+	if !strings.HasPrefix(raw, "{") {
+		return agyErrorPayload{}, false
+	}
+	var p agyErrorPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return agyErrorPayload{}, false
+	}
+	return p, true
+}
+
+// redactAgyErrorLines returns tail with every AGY_ERROR line (the prefix at
+// column 0) reduced to the prefix plus the canonical status of its short_error,
+// for example "AGY_ERROR: NOT_FOUND (code 404)", so the cloud project and region
+// that short_error carries never reach Status.Error (issue #205). A line whose
+// object does not decode, or whose short_error has no canonical status, is
+// dropped. "Parses" here means both. Every other line is copied unchanged with
+// its terminator. A prefix that is not at column 0 is not recognised, the same
+// scope as parseAgyErrorTail, so such a line stays verbatim.
+//
+// dropHead drops the tail's first line through its first newline (all of it when
+// there is none): the caller sets it when that line is the cut end of an
+// AGY_ERROR line. Trailing whitespace is trimmed, so a dropped last line leaves
+// no dangling newline, the rule cleanTail applies to every tail.
+func redactAgyErrorLines(tail string, dropHead bool) string {
+	if !dropHead && !strings.Contains(tail, agyErrorPrefix) {
+		return tail
+	}
+	if dropHead {
+		_, rest, found := strings.Cut(tail, "\n")
+		if !found {
+			return ""
+		}
+		tail = rest
+	}
+	var out strings.Builder
+	for line := range strings.Lines(tail) {
+		if !strings.HasPrefix(line, agyErrorPrefix) {
+			out.WriteString(line)
+			continue
+		}
+		body := strings.TrimRight(line, "\r\n")
+		term := line[len(body):]
+		p, ok := decodeAgyErrorLine(body)
+		if !ok {
+			continue
+		}
+		if m := agyErrorStatusRE.FindString(p.ShortError); m != "" {
+			out.WriteString(agyErrorPrefix + strings.TrimSuffix(m, ":") + term)
+		}
+	}
+	return strings.TrimRightFunc(out.String(), unicode.IsSpace)
 }
 
 // validAgyErrorID reports whether id is a short plain identifier.

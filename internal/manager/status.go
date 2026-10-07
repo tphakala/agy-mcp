@@ -29,6 +29,17 @@ const maxReadBytes = 32 << 20 // 32 MiB
 // (not the head) is what matters: the final lines carry the actual error.
 const errTailBytes = 2000
 
+// agyErrorLookback is how many bytes before the errTailBytes window readStderrCopy
+// reads, to find where the window's first line starts. When that line is cut by
+// the window and begins with the AGY_ERROR prefix, its remainder is dropped
+// instead of copied (issue #205).
+const agyErrorLookback = 64 << 10
+
+// agyErrorWithheld stands in for a stderr tail that held text but reduced to
+// nothing once its AGY_ERROR lines were redacted, so Error never claims "no
+// stderr output" for a stderr that had content.
+const agyErrorWithheld = "<AGY_ERROR line withheld>"
+
 // Job states reported by Status. These are shared with StartJob and the gate
 // watchdog so the producer and consumer of a job's state cannot drift apart.
 const (
@@ -88,7 +99,7 @@ type Status struct {
 	// mid-stream text is not an answer. Collect a result once the state is
 	// terminal.
 	Result string
-	Error  string // present when failed: agy's own message, or a stderr tail + exit code
+	Error  string // present when failed: agy's own message, or the exit code and a stderr tail whose AGY_ERROR lines are reduced to their canonical status (issue #205)
 	// FailureReason classifies a StateFailed job into one of the stable Reason
 	// constants, so a caller can branch on the cause (most usefully, tell a
 	// transient ReasonQuotaExhausted wall from a hard error) without scraping
@@ -284,15 +295,19 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		st.FailureReason = ReasonSpawnFailed
 	default:
 		st.State = StateFailed
+		var classifyText string
 		if hasResult && res.Error != "" {
 			st.Error = res.Error
+			classifyText = res.Error
 		} else {
-			st.Error = errorSummary(dir, code)
+			st.Error, classifyText = errorSummary(dir, code)
 		}
 		// A non-zero exit's message can still be a quota wall (agy usually reports
 		// one in its payload, but may exit non-zero with it only on stderr), so
 		// classify the message rather than flatly calling every crash agy_error.
-		st.FailureReason = classifyAgyError(st.Error)
+		// The stderr text is classified before its AGY_ERROR reduction: the
+		// reduction removes the short_error wording the matcher reads (issue #205).
+		st.FailureReason = classifyAgyError(classifyText)
 		// agy's structured stderr line supplies the retryable verdict and can
 		// promote the reason to quota_exhausted (issue #183). A SUCCESS payload
 		// means agy vouched for the turn in band, so a stray line is not attached
@@ -870,18 +885,70 @@ func cleanTail(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tail = strings.TrimRightFunc(tail, unicode.IsSpace)
+	return trimStderrTail(tail), nil
+}
+
+// trimStderrTail trims trailing whitespace from a stderr window and advances it
+// to a UTF-8 rune start.
+func trimStderrTail(s string) string {
+	s = strings.TrimRightFunc(s, unicode.IsSpace)
 	// tailFile may have started mid-rune; advance to a valid UTF-8 boundary so a
 	// multi-byte rune is not split.
-	for tail != "" && !utf8.RuneStart(tail[0]) {
-		tail = tail[1:]
+	for s != "" && !utf8.RuneStart(s[0]) {
+		s = s[1:]
 	}
-	return tail, nil
+	return s
+}
+
+// copyWindow splits the last errTailBytes of raw (the window) off the bytes
+// readStderrCopy read, and reports whether the window's first line is the cut end
+// of an AGY_ERROR line that must be dropped. fromStart says raw begins at offset 0
+// of the stderr file. A window that starts on a line boundary has no cut line (a
+// whole first line is left to redactAgyErrorLines). For a cut one, the start of
+// that line is looked for in the bytes before the window; when none is found and
+// raw does not start the file, the line is dropped to fail safe.
+func copyWindow(raw string, fromStart bool) (window string, headInAgyError bool) {
+	winStart := max(0, len(raw)-errTailBytes)
+	window = raw[winStart:]
+	if winStart == 0 || raw[winStart-1] == '\n' {
+		return window, false
+	}
+	ls := strings.LastIndexByte(raw[:winStart], '\n') + 1
+	if ls == 0 && !fromStart {
+		return window, true
+	}
+	// A window that opens inside the prefix itself is covered too: the line's
+	// start, not the window's, is compared.
+	return window, strings.HasPrefix(raw[ls:], agyErrorPrefix)
+}
+
+// readStderrCopy reads the stderr tail that an error message copies. raw is the
+// tail exactly as cleanTail returns it. shown is raw with its AGY_ERROR lines
+// reduced by redactAgyErrorLines (issue #205), and is never empty when raw is not:
+// a reduction that empties a non-empty tail yields agyErrorWithheld, so a caller
+// cannot report "no stderr output" for stderr that had content.
+//
+// It reads agyErrorLookback bytes more than the window to find where the window's
+// first line starts. A file of exactly that many bytes plus the window is treated
+// as not reaching its start, which errs toward dropping the first line.
+func readStderrCopy(dir string) (shown, raw string, err error) {
+	const n = errTailBytes + agyErrorLookback
+	b, err := tailFile(jobstore.ErrPath(dir), n)
+	if err != nil {
+		return "", "", err
+	}
+	window, head := copyWindow(b, int64(len(b)) < n)
+	raw = trimStderrTail(window)
+	shown = redactAgyErrorLines(raw, head)
+	if shown == "" && raw != "" {
+		shown = agyErrorWithheld
+	}
+	return shown, raw, nil
 }
 
 // stderrNotices is what a terminal job's captured stderr says about how agy
 // ended the run. Both come from ONE read of the bounded stderr tail
-// (the tail errorSummary reports). An unreadable stderr yields the zero value,
+// (the window errorSummary reports, before its AGY_ERROR reduction). An unreadable stderr yields the zero value,
 // which leaves the derived state untouched rather than guessing a failure.
 type stderrNotices struct {
 	backgroundAborted bool // agy killed outstanding background shell tasks at exit (issue #173)
@@ -995,7 +1062,7 @@ func matchesBackgroundAbort(stderr string) bool {
 }
 
 // classifyAgyError maps an error message agy produced (a terminal ERROR
-// payload, or a non-zero exit's stderr tail) to a failure reason. A provider
+// payload, or a non-zero exit's unreduced stderr tail) to a failure reason. A provider
 // quota, rate-limit or AI credits wall is the one case treated as transient
 // (unless agy's structured line marks it not retryable) and is told apart as
 // ReasonQuotaExhausted; everything else agy reports is
@@ -1083,35 +1150,44 @@ func matchesCreditsWall(msg string) bool {
 // It distinguishes three stderr outcomes, kept distinct because a caller reading
 // only this string cannot otherwise tell them apart: stderr had content, stderr
 // was empty or absent, or stderr could not be read at all.
-func errorSummary(dir string, code int) string {
-	tail, err := cleanTail(dir)
+//
+// msg is what Status.Error carries: the stderr tail with each AGY_ERROR line
+// reduced to its canonical status or dropped (issue #205). classifyMsg is the same
+// summary built from the unreduced tail, for classifyAgyError, so the reduction
+// cannot change a failure_reason.
+func errorSummary(dir string, code int) (msg, classifyMsg string) {
+	shown, raw, err := readStderrCopy(dir)
 	if err != nil {
 		// The stderr file exists but cannot be read; say so rather than implying
 		// the run produced no error output.
-		return fmt.Sprintf("exit %d: <stderr unavailable: %v>", code, err)
+		msg = fmt.Sprintf("exit %d: <stderr unavailable: %v>", code, err)
+		return msg, msg
 	}
-	if tail == "" {
+	if raw == "" {
 		// A readable but empty stderr. Naming it beats the dangling "exit N:" that
 		// trimming a colon with nothing after it used to leave behind, which read
 		// as a truncated message rather than as an absence of one.
-		return fmt.Sprintf("exit %d (no stderr output)", code)
+		msg = fmt.Sprintf("exit %d (no stderr output)", code)
+		return msg, msg
 	}
-	return "exit " + strconv.Itoa(code) + ": " + tail
+	prefix := "exit " + strconv.Itoa(code) + ": "
+	return prefix + shown, prefix + raw
 }
 
 // spawnFailMessage explains a 127 exit. The supervisor writes 127 both when it
 // could not exec agy (the intended meaning) and when agy itself exits 127, so it
-// names both causes and appends any stderr instead of masking it.
+// names both causes and appends the stderr tail, AGY_ERROR lines reduced as
+// errorSummary does, instead of masking it.
 func spawnFailMessage(dir string) string {
 	msg := "agy exited 127: the supervisor could not exec the agy binary (check the configured agy path), or agy itself exited 127"
-	tail, err := cleanTail(dir)
+	shown, _, err := readStderrCopy(dir)
 	switch {
 	case err != nil:
 		// The stderr file exists but cannot be read; name it, as errorSummary does,
 		// rather than silently dropping it.
 		msg += fmt.Sprintf("; stderr unavailable: %v", err)
-	case tail != "":
-		msg += "; stderr: " + tail
+	case shown != "":
+		msg += "; stderr: " + shown
 	}
 	return msg
 }
