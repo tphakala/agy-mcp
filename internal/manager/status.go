@@ -905,8 +905,10 @@ func trimStderrTail(s string) string {
 // of an AGY_ERROR line that must be dropped. fromStart says raw begins at offset 0
 // of the stderr file. A window that starts on a line boundary has no cut line (a
 // whole first line is left to redactAgyErrorLines). For a cut one, the start of
-// that line is looked for in the bytes before the window; when none is found and
-// raw does not start the file, the line is dropped to fail safe.
+// that line is looked for in the bytes before the window. When none is found and
+// raw does not start the file, nothing shows the line is an AGY_ERROR line, so it
+// is kept: an AGY_ERROR line longer than agyErrorLookback is the known gap, which
+// the measured line (well under 1 KiB) does not approach.
 func copyWindow(raw string, fromStart bool) (window string, headInAgyError bool) {
 	winStart := max(0, len(raw)-errTailBytes)
 	window = raw[winStart:]
@@ -915,7 +917,7 @@ func copyWindow(raw string, fromStart bool) (window string, headInAgyError bool)
 	}
 	ls := strings.LastIndexByte(raw[:winStart], '\n') + 1
 	if ls == 0 && !fromStart {
-		return window, true
+		return window, false
 	}
 	// A window that opens inside the prefix itself is covered too: the line's
 	// start, not the window's, is compared.
@@ -931,7 +933,7 @@ func copyWindow(raw string, fromStart bool) (window string, headInAgyError bool)
 //
 // It reads agyErrorLookback bytes more than the window to find where the window's
 // first line starts. A file of exactly that many bytes plus the window is treated
-// as not reaching its start, which errs toward dropping the first line.
+// as not reaching its start, so its first line, if cut, is kept (see copyWindow).
 func readStderrCopy(dir string) (shown, raw string, err error) {
 	const n = errTailBytes + agyErrorLookback
 	b, err := tailFile(jobstore.ErrPath(dir), n)

@@ -312,7 +312,7 @@ func TestCopyWindow(t *testing.T) {
 		{name: "the window opens inside an ordinary line", raw: "old\n" + a(3000), fromStart: true},
 		{name: "a lone AGY_ERROR line from the file start", raw: wireAgyErrorPrefix + a(3000), fromStart: true, wantHead: true},
 		{name: "a lone ordinary line from the file start", raw: a(3000), fromStart: true},
-		{name: "no line start found and the read did not reach the file start", raw: a(3000), fromStart: false, wantHead: true},
+		{name: "no line start found and the read did not reach the file start", raw: a(3000), fromStart: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			window, head := copyWindow(tc.raw, tc.fromStart)
@@ -353,9 +353,12 @@ func TestErrorSummaryReducesAgyErrorLines(t *testing.T) {
 		{name: "only a malformed AGY_ERROR line", stderr: wireAgyErrorPrefix + `{"retryable":fal` + "\n",
 			want:         "exit 3: " + agyErrorWithheld,
 			wantClassify: "exit 3: " + wireAgyErrorPrefix + `{"retryable":fal`},
-		{name: "a first line longer than the lookback is dropped as a fragment",
+		{name: "an ordinary first line longer than the lookback is kept",
 			stderr: strings.Repeat("x", errTailBytes+agyErrorLookback+10) + "\nend",
-			want:   "exit 3: end", wantClassify: "-"},
+			want:   "exit 3: " + strings.Repeat("x", errTailBytes-len("\nend")) + "\nend"},
+		{name: "a newline-free stderr longer than the lookback is kept",
+			stderr: strings.Repeat("y", errTailBytes+agyErrorLookback+10),
+			want:   "exit 3: " + strings.Repeat("y", errTailBytes)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
