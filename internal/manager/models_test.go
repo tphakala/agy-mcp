@@ -178,3 +178,27 @@ func TestProbeStderrKeepsTheHeadUpToTheLimit(t *testing.T) {
 		t.Errorf("kept %d bytes ending %q, want %d bytes ending %q", len(got), got[len(got)-3:], len(want), "bcd")
 	}
 }
+
+// TestKeepTail pins which end keepTail keeps and where it stops: the last limit
+// bytes, nothing cut at or under the limit, and no rune the cut split.
+func TestKeepTail(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		s     string
+		limit int
+		want  string
+	}{
+		{"under the limit", "abc", 4, "abc"},
+		{"at the limit", "abcd", 4, "abcd"},
+		{"one over keeps the tail", "abcde", 4, "bcde"},
+		{"the tail and not the head", "abcdef", 3, "def"},
+		{"a split rune is dropped", "\u00e9abc", 4, "abc"},
+		{"empty", "", 4, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := keepTail(tc.s, tc.limit); got != tc.want {
+				t.Errorf("keepTail(%q, %d) = %q, want %q", tc.s, tc.limit, got, tc.want)
+			}
+		})
+	}
+}

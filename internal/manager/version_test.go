@@ -152,23 +152,40 @@ func TestAgyBinaryCheckedWithoutBinary(t *testing.T) {
 func TestVersionGateRedactsAgyErrorInUnparseableOutput(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		call func(m *Manager) error
+		call func(t *testing.T, m *Manager) error
 	}{
-		{"agyBinaryChecked", func(m *Manager) error { _, err := m.agyBinaryChecked(t.Context()); return err }},
-		{"StartJob", func(m *Manager) error {
+		{"agyBinaryChecked", func(t *testing.T, m *Manager) error {
+			t.Helper()
+			_, err := m.agyBinaryChecked(t.Context())
+			return err
+		}},
+		{"StartJob", func(t *testing.T, m *Manager) error {
+			t.Helper()
 			if !proc.Supported {
 				t.Skip("StartJob refuses on platforms without job supervision before it reaches the version gate")
 			}
 			_, err := m.StartJob(StartRequest{Prompt: "hi", Cwd: t.TempDir()})
 			return err
 		}},
-		{"ListModels", func(m *Manager) error { _, err := m.ListModels(t.Context()); return err }},
-		{"ListAgents", func(m *Manager) error { _, err := m.ListAgents(t.Context(), ""); return err }},
-		{"readUsage", func(m *Manager) error { _, err := m.readUsage(t.Context()); return err }},
+		{"ListModels", func(t *testing.T, m *Manager) error {
+			t.Helper()
+			_, err := m.ListModels(t.Context())
+			return err
+		}},
+		{"ListAgents", func(t *testing.T, m *Manager) error {
+			t.Helper()
+			_, err := m.ListAgents(t.Context(), "")
+			return err
+		}},
+		{"readUsage", func(t *testing.T, m *Manager) error {
+			t.Helper()
+			_, err := m.readUsage(t.Context())
+			return err
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := versionManager(t, measuredAgyErrorStderr, nil)
-			err := tc.call(m)
+			err := tc.call(t, m)
 			if err == nil {
 				t.Fatal("unparseable version output must be an error")
 			}
@@ -240,8 +257,8 @@ func TestVersionOutputForMessage(t *testing.T) {
 	}
 	t.Run("bounds the reduced text to its tail", func(t *testing.T) {
 		got := unquote(t, versionOutputForMessage("HEAD"+strings.Repeat("x", probeErrorLimit)+"TAIL"))
-		if len(got) > probeErrorLimit || !strings.HasSuffix(got, "TAIL") || strings.Contains(got, "HEAD") {
-			t.Errorf("got %d bytes, want at most %d from the tail", len(got), probeErrorLimit)
+		if want := strings.Repeat("x", probeErrorLimit-len("TAIL")) + "TAIL"; got != want {
+			t.Errorf("got %d bytes ending %q, want exactly the last %d bytes", len(got), got[max(0, len(got)-8):], probeErrorLimit)
 		}
 	})
 	t.Run("reduces before it cuts", func(t *testing.T) {

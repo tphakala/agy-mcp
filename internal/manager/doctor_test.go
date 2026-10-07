@@ -254,6 +254,14 @@ func TestDoctorVersionCheckRedactsAgyErrorInUnparseableOutput(t *testing.T) {
 	if !strings.Contains(ver.Detail, "AGY_ERROR: NOT_FOUND (code 404)") {
 		t.Errorf("version detail lacks the reduced line: %s", ver.Detail)
 	}
+	// The reachable check re-runs the gate, whose parse error carries the same
+	// reduced line, so a check that bypassed the gate or failed earlier fails here.
+	reach := findCheck(t, report, checkAgyReachableName)
+	for _, want := range []string{"parse agy version from", "AGY_ERROR: NOT_FOUND (code 404)"} {
+		if !strings.Contains(reach.Detail, want) {
+			t.Errorf("reachable detail lacks %q: %s", want, reach.Detail)
+		}
+	}
 	for _, c := range []CheckResult{ver, findCheck(t, report, checkAgyReachableName)} {
 		for _, leak := range []string{"example-project", "example-region"} {
 			if strings.Contains(c.Detail, leak) {
