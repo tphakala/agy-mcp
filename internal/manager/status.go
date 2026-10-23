@@ -1084,10 +1084,32 @@ func matchesBackgroundAbort(stderr string) bool {
 // ReasonAgyError, so it never has to name the structural reasons (timeout,
 // spawn-fail, interrupted) that their own branches already know.
 func classifyAgyError(msg string) string {
-	if isQuotaError(msg) {
+	if isQuotaError(withoutUnknownAgentLines(msg)) {
 		return ReasonQuotaExhausted
 	}
 	return ReasonAgyError
+}
+
+// withoutUnknownAgentLines drops each line of msg that is agy's unknown-agent
+// error, so the quota check does not read it. agy lists the available agents in
+// that line, so an agent whose name carries a quota word (say quota-watcher)
+// would otherwise turn any agent typo into ReasonQuotaExhausted, telling the
+// caller to wait for a reset that never comes.
+//
+// MEASURED against agy 1.4.6 with one agent configured: the payload error and
+// the stderr line both read `unknown agent "<name>" (available: <agents>)`, and
+// errorSummary prefixes the stderr one with `exit 1: error: `. agy has failed an
+// unknown --agent this way since 1.3.4 (changelog); an older agy runs its
+// default agent and writes no such line. Reworded text stops being excluded,
+// which is today's behaviour, never a new match.
+func withoutUnknownAgentLines(msg string) string {
+	var b strings.Builder
+	for line := range strings.Lines(msg) {
+		if !lineHasAll(line, `unknown agent "`, "(available:") {
+			b.WriteString(line)
+		}
+	}
+	return b.String()
 }
 
 // isQuotaError reports whether an error message describes a provider quota or

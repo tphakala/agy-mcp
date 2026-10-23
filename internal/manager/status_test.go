@@ -82,6 +82,9 @@ func TestClassifyAgyError(t *testing.T) {
 		// agy's AI credits wall (issue #202); wording from agy's changelog for
 		// 1.2.15, NOT MEASURED. Matches no other token above.
 		"Your AI credits balance is too low to continue.", // credits wall (both phrases on one line)
+		// The unknown-agent exclusion is line-scoped: a quota line beside it still
+		// classifies, so the exclusion cannot widen into hiding a real wall.
+		"unknown agent \"revew\" (available: fact-checker)\nprovider returned a rate limit response", // rate limit
 	}
 	for _, msg := range quota {
 		if got := classifyAgyError(msg); got != ReasonQuotaExhausted {
@@ -105,6 +108,12 @@ func TestClassifyAgyError(t *testing.T) {
 		"sample rate too low for playback",
 		"AI credits balance: 40\nlatency too low to measure",
 		"Prepaid credits balance is too low to process request. Please add funds.",
+		// agy 1.3.4 and later echo every configured agent in an unknown-agent
+		// error, so an agent whose name carries a quota word must not turn a
+		// typo into a quota wall. Both delivery forms: the payload error and the
+		// stderr summary line.
+		`unknown agent "revew" (available: fact-checker, quota-watcher)`,
+		`exit 1: error: unknown agent "revew" (available: fact-checker, quota-watcher)`,
 	}
 	for _, msg := range other {
 		if got := classifyAgyError(msg); got != ReasonAgyError {
