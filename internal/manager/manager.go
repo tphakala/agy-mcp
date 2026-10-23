@@ -112,7 +112,7 @@ type StartRequest struct {
 	Prompt           string
 	Model            string   // optional; falls back to cfg.DefaultModel, then reduced by modelID
 	Effort           string   // optional; --effort <low|medium|high>, reasoning effort for the session
-	Mode             string   // optional; --mode <accept-edits|plan>, agy's agent execution mode
+	Mode             string   // optional; --mode <accept-edits>, agy's agent execution mode (mcptools refuses plan, issue #219)
 	Agent            string   // optional; --agent <name>, selects a specific agy agent
 	Sandbox          bool     // optional; --sandbox, runs agy with terminal restrictions
 	Dirs             []string // repeated --add-dir
@@ -1195,7 +1195,9 @@ func buildAgyArgs(req StartRequest) []string {
 		// no-op in -p until 1.1.10. Passing it on every run makes prompt semantics mean
 		// what the caller wrote, independent of the installed agy version. Always
 		// available because the agy floor (agyver.Required) is at or above the 1.1.9
-		// that introduced the flag.
+		// that introduced the flag. It also disables --mode plan (MEASURED against agy
+		// 1.4.6, issue #219), so plan is refused at the tool boundary rather than this
+		// flag being dropped for it; see the mode constants in internal/mcptools.
 		disableSlashCommandsFlag,
 	}
 	if req.Model != "" {

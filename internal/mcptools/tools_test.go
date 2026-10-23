@@ -254,15 +254,15 @@ func TestToStartRequestPassesIdempotencyKey(t *testing.T) {
 // dropped field here would silently ignore a caller's run-shaping request.
 func TestToStartRequestPassesRunOptions(t *testing.T) {
 	t.Parallel()
-	req, err := runInput{Prompt: "x", Effort: "high", Mode: "plan", Agent: "reviewer", Sandbox: true}.toStartRequest()
+	req, err := runInput{Prompt: "x", Effort: "high", Mode: "accept-edits", Agent: "reviewer", Sandbox: true}.toStartRequest()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if req.Effort != "high" {
 		t.Errorf("Effort = %q, want high", req.Effort)
 	}
-	if req.Mode != "plan" {
-		t.Errorf("Mode = %q, want plan", req.Mode)
+	if req.Mode != "accept-edits" {
+		t.Errorf("Mode = %q, want accept-edits", req.Mode)
 	}
 	if req.Agent != "reviewer" {
 		t.Errorf("Agent = %q, want reviewer", req.Agent)
@@ -292,33 +292,33 @@ func TestToStartRequestPassesModel(t *testing.T) {
 	}
 }
 
-// TestToStartRequestValidatesMode: mode is an agy enum (accept-edits, plan), so a
-// bad value must fail fast at the tool boundary with a message that quotes the bad
-// value and names the accepted values, rather than reaching agy. An empty mode is
-// valid and means "omit the flag". Validation is exact, so a wrong case is rejected.
+// TestToStartRequestValidatesMode: accept-edits (or empty, meaning omit the flag)
+// is the only mode accepted. plan gets a dedicated refusal that names the cause
+// (issue #219); any other value is rejected with a message quoting it. Validation
+// is exact, so a wrong case is rejected, not folded into plan.
 func TestToStartRequestValidatesMode(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, mode string
-		wantErr    bool
+		wantIn     []string // non-empty means the mode must be rejected with these substrings
 	}{
-		{name: "empty is ok", mode: "", wantErr: false},
-		{name: "accept-edits ok", mode: "accept-edits", wantErr: false},
-		{name: "plan ok", mode: "plan", wantErr: false},
-		{name: "unknown rejected", mode: "planning", wantErr: true},
-		{name: "wrong case rejected", mode: "Plan", wantErr: true},
+		{name: "empty is ok", mode: ""},
+		{name: "accept-edits ok", mode: "accept-edits"},
+		{name: "plan refused", mode: "plan", wantIn: []string{`"plan"`, "not supported", "slash command expansion"}},
+		{name: "unknown rejected", mode: "planning", wantIn: []string{"planning", "accept-edits"}},
+		{name: "wrong case rejected", mode: "Plan", wantIn: []string{"Plan", "accept-edits"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			req, err := runInput{Prompt: "x", Mode: tc.mode}.toStartRequest()
-			if tc.wantErr {
+			if len(tc.wantIn) > 0 {
 				if err == nil {
 					t.Fatalf("mode %q was accepted, want a rejection", tc.mode)
 				}
-				if !strings.Contains(err.Error(), tc.mode) ||
-					!strings.Contains(err.Error(), "accept-edits") ||
-					!strings.Contains(err.Error(), "plan") {
-					t.Fatalf("err = %v, want it to quote %q and name the accepted values", err, tc.mode)
+				for _, want := range tc.wantIn {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("err = %v, want it to contain %q", err, want)
+					}
 				}
 				return
 			}

@@ -37,7 +37,7 @@ Every job runs `agy --output-format stream-json`, and the supervisor decodes tha
 - `agy_usage`: report the remaining `agy` quota per quota group (for example the Gemini pool) with a level of `ok`, `low`, `critical` or `exhausted`. It spends no model quota. See [Quota](#quota).
 - `list_sessions`: list known conversations so review threads can be continued. An unfiltered call omits the ephemeral per-call workspaces the agy-openai-shim helper creates; pass a `dir` to fetch a specific one.
 
-`agy_run` and `agy_run_sync` also take optional per-run controls: pick the `model`, reasoning `effort` (`low`/`medium`/`high`), execution `mode` (including a `plan`-only pass), a named `agent`, `sandbox` terminal restrictions, and a `json_schema` to constrain the result to structured output. Those run-shaping values are forwarded to `agy`; `idempotency_key` is handled only by agy-mcp and is never forwarded.
+`agy_run` and `agy_run_sync` also take optional per-run controls: pick the `model`, reasoning `effort` (`low`/`medium`/`high`), execution `mode` (`accept-edits`; `plan` is refused, see the constraints below), a named `agent`, `sandbox` terminal restrictions, and a `json_schema` to constrain the result to structured output. Those run-shaping values are forwarded to `agy`; `idempotency_key` is handled only by agy-mcp and is never forwarded.
 
 For retry-safe job creation, supply `idempotency_key` when a transport failure could leave it ambiguous whether the run started. Reusing the same key with the same normalized request returns the existing job instead of starting another; using the key for a different request is rejected. The binding lasts while that job remains in the job store (24 hours by default), so this is transport-retry protection rather than a permanent business-level deduplication key.
 
@@ -158,8 +158,12 @@ outright, and on expiry the job normally ends in state `failed` with `failure_re
 because agy-mcp kills the `agy` process tree (on agy 1.1.28 and later, if `agy`'s own
 `--print-timeout` fires first, `agy` stops the turn itself and any text it had comes back as a
 `partial` result; on older agy that expiry is reported as `agy_error`); `effort`, when set, must be
-`low`, `medium` or `high`, and `mode`, when set, must be `accept-edits` or `plan`, with any other
-value rejected before the run starts; `wait` defaults
+`low`, `medium` or `high`, and `mode`, when set, must be `accept-edits`, with any other
+value rejected before the run starts. `plan` is refused because agy ignores `--mode plan` while
+slash command expansion is disabled, which agy-mcp does on every run so prompts stay literal, so the
+run would apply edits instead of only planning (MEASURED against agy 1.4.6,
+[#219](https://github.com/tphakala/agy-mcp/issues/219)); to keep a run from editing, say so in the
+prompt. `wait` defaults
 to 90s and is silently clamped to that same ceiling. That 90s default is kept below the roughly
 120s per-call timeout common MCP clients (Claude Code included) impose, so agy-mcp's still-running result reaches
 the caller inline instead of being lost to a client-synthesized timeout (set `AGY_MCP_SYNC_WAIT_CAP`

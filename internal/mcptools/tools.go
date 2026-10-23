@@ -22,7 +22,7 @@ type runInput struct {
 	Prompt         string   `json:"prompt" jsonschema:"the complete task for the delegated agent: what to do, the context needed to do it, and the output wanted back; the agent cannot see this conversation, so the prompt must stand alone. It is sent to agy literally, so a leading slash-command or skill name (a prompt starting with /) is treated as text, not expanded"`
 	Model          string   `json:"model,omitempty" jsonschema:"agy model id, e.g. gemini-3.1-pro-high; omit to use the server's default model, or agy's own default when the server sets none. Call list_models for the accepted values and pass one from its models field, not a display label from model_details, because agy rejects a display label whenever effort is also set. Not every id accepts every effort either, and some accept none, so omit effort unless you need a specific one"`
 	Effort         string   `json:"effort,omitempty" jsonschema:"reasoning effort for this run (agy --effort): low, medium or high. Omit to use agy's default"`
-	Mode           string   `json:"mode,omitempty" jsonschema:"agy agent execution mode for this run (agy --mode): accept-edits or plan. Omit to use agy's default mode"`
+	Mode           string   `json:"mode,omitempty" jsonschema:"agy agent execution mode for this run (agy --mode). The only accepted value is accept-edits; plan is refused with an error, because agy ignores --mode plan when slash command expansion is disabled and agy-mcp disables it on every run so prompts stay literal. Omit to use agy's default mode"`
 	Agent          string   `json:"agent,omitempty" jsonschema:"name of a specific agy agent to run for this session (agy --agent); omit to use agy's default agent; list_agents with the same cwd lists the accepted names, including the repository's project agents. On agy 1.3.4 and later an unknown name fails the run with failure_reason agy_error and an error listing the available agents; older agy runs its default agent instead (agy changelog 1.3.4)"`
 	Sandbox        bool     `json:"sandbox,omitempty" jsonschema:"run the agent with agy's sandbox (terminal restrictions) enabled (agy --sandbox); off by default"`
 	Dirs           []string `json:"dirs,omitempty" jsonschema:"extra directories to grant the agent beyond cwd (agy --add-dir), e.g. a spec or a sibling repo. The agent can read and write there exactly as under cwd, so this widens the blast radius; prefer absolute paths. Each entry is also an agy workspace, so its own rule files load regardless of project_rules"`
@@ -41,9 +41,19 @@ type runInput struct {
 // cannot leave a hung job uncollectable for weeks.
 const maxJobTimeout = 24 * time.Hour
 
-// agy --mode accepts exactly these agent execution modes. toStartRequest
-// validates against them so a bad value fails at the tool boundary with a clear
-// message rather than reaching agy, which agy-mcp cannot surface as cleanly.
+// agy --mode takes accept-edits, auto and plan (agy --help, 1.4.6). agy-mcp
+// forwards only accept-edits; toStartRequest refuses the others at the tool
+// boundary with a clear message rather than letting them reach agy, which
+// agy-mcp cannot surface as cleanly.
+//
+// plan is refused (issue #219). MEASURED against agy 1.4.6: with
+// --disable-slash-commands, which buildAgyArgs passes on every run so prompts
+// stay literal, agy prints "warning: --mode plan has no effect while slash
+// command expansion is disabled.", exits 0, and the agent applies edits. Dropping
+// the flag for plan runs would not give a plan-only pass either: the measured plan
+// run still executed a shell command and wrote outside cwd, and agy's changelog
+// has headless runs proceed through plan review automatically (1.1.28) or per the
+// user's Artifact Review setting (1.3.2).
 //
 // agy 1.3.5 added a third mode, auto, which is deliberately not accepted. Every
 // run passes --dangerously-skip-permissions (buildAgyArgs), and auto is an
@@ -167,8 +177,11 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 	if in.Priority != "" && in.Priority != manager.PriorityNormal && in.Priority != manager.PriorityOptional {
 		return manager.StartRequest{}, fmt.Errorf("invalid priority %q: want %s or %s", in.Priority, manager.PriorityNormal, manager.PriorityOptional)
 	}
-	if in.Mode != "" && in.Mode != agyModeAcceptEdits && in.Mode != agyModePlan {
-		return manager.StartRequest{}, fmt.Errorf("invalid mode %q: want %s or %s", in.Mode, agyModeAcceptEdits, agyModePlan)
+	if in.Mode == agyModePlan {
+		return manager.StartRequest{}, fmt.Errorf("mode %q is not supported: agy ignores --mode plan while slash command expansion is disabled, which agy-mcp does on every run, so the run would apply edits instead of only planning; omit mode and tell the agent in the prompt not to edit files", in.Mode)
+	}
+	if in.Mode != "" && in.Mode != agyModeAcceptEdits {
+		return manager.StartRequest{}, fmt.Errorf("invalid mode %q: want %s", in.Mode, agyModeAcceptEdits)
 	}
 	if in.Timeout != "" {
 		d, err := parsePositiveDuration("timeout", in.Timeout, "20m")

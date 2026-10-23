@@ -117,8 +117,9 @@ import (
 //   - 1.3.4 also let --model take a base name without --effort. agy-mcp forwards
 //     both flags as given and does not couple them.
 //   - 1.3.2 stopped --dangerously-skip-permissions auto-approving the plan in
-//     /plan mode (changelog). How a headless --mode plan run behaves since then
-//     is NOT MEASURED.
+//     /plan mode (changelog). MEASURED against agy 1.4.6 (issue #219): --mode
+//     plan has no effect while --disable-slash-commands is set, so agy-mcp
+//     refuses plan (see internal/mcptools).
 //   - 1.3.5 added --mode auto (Windows support from 1.4.4); agy-mcp does not
 //     accept it, see the comment on the mode constants in internal/mcptools.
 //
