@@ -85,6 +85,12 @@ func TestClassifyAgyError(t *testing.T) {
 		// The unknown-agent exclusion is line-scoped: a quota line beside it still
 		// classifies, so the exclusion cannot widen into hiding a real wall.
 		"unknown agent \"revew\" (available: fact-checker)\nprovider returned a rate limit response", // rate limit
+		// The exclusion needs both unknown-agent phrases on one line, so a genuine
+		// wall that carries only one of them still classifies; and it keeps a quota
+		// line that comes before the unknown-agent line.
+		"Individual quota reached (available: 0 requests)",                                           // quota, only "(available:"
+		"rate limit hit, unknown agent \"x\" in pool",                                                // rate limit, only the unknown-agent phrase
+		"provider returned a rate limit response\nunknown agent \"revew\" (available: fact-checker)", // rate limit, before the unknown-agent line
 	}
 	for _, msg := range quota {
 		if got := classifyAgyError(msg); got != ReasonQuotaExhausted {
