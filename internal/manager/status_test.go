@@ -62,7 +62,7 @@ func TestStatusInterruptedNoOutput(t *testing.T) {
 // would tell a caller to wait out a wall that never clears.
 func TestClassifyAgyError(t *testing.T) {
 	// Each positive is written to match exactly ONE isQuotaError substring, so
-	// deleting any single matcher turns exactly one row red. A string matching two
+	// deleting any single matcher turns at least one row red. A string matching two
 	// matchers at once (say "429 ... rate limit") would leave a deleted matcher
 	// silently covered by its neighbour.
 	quota := []string{
@@ -114,10 +114,11 @@ func TestClassifyAgyError(t *testing.T) {
 		"sample rate too low for playback",
 		"AI credits balance: 40\nlatency too low to measure",
 		"Prepaid credits balance is too low to process request. Please add funds.",
-		// agy 1.3.4 and later echo every configured agent in an unknown-agent
-		// error, so an agent whose name carries a quota word must not turn a
-		// typo into a quota wall. Both delivery forms: the payload error and the
-		// stderr summary line.
+		// agy lists the available agents on one line of its unknown-agent error
+		// (MEASURED against agy 1.4.6, four agents configured), so an agent
+		// whose name carries a quota word must not turn a typo into a quota
+		// wall. Both delivery forms: the payload error and the stderr summary
+		// line.
 		`unknown agent "revew" (available: fact-checker, quota-watcher)`,
 		`exit 1: error: unknown agent "revew" (available: fact-checker, quota-watcher)`,
 	}

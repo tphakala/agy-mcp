@@ -1096,12 +1096,13 @@ func classifyAgyError(msg string) string {
 // would otherwise turn any agent typo into ReasonQuotaExhausted, telling the
 // caller to wait for a reset that never comes.
 //
-// MEASURED against agy 1.4.6 with one agent configured: the payload error and
-// the stderr line both read `unknown agent "<name>" (available: <agents>)`, and
-// errorSummary prefixes the stderr one with `exit 1: error: `. agy has failed an
-// unknown --agent this way since 1.3.4 (changelog); an older agy runs its
-// default agent and writes no such line. Reworded text stops being excluded,
-// which is today's behaviour, never a new match.
+// MEASURED against agy 1.4.6 with four agents configured, one named
+// quota-watcher: the payload error is one line, `unknown agent "<name>"
+// (available: <agents>)`, and the stderr line is `error: ` followed by that
+// text; errorSummary prefixes `exit 1: `. agy has failed an unknown --agent
+// this way since 1.3.4 (changelog); an older agy runs its default agent
+// (changelog). Reworded text stops being excluded, which is today's
+// behaviour, never a new match.
 func withoutUnknownAgentLines(msg string) string {
 	var b strings.Builder
 	for line := range strings.Lines(msg) {
