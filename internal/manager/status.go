@@ -1047,9 +1047,9 @@ func matchesPrintTimeout(stderr string) bool {
 // delivery as response text on a SUCCESS run stays unflagged.
 //
 // "authentication failed or timed out" alone is not matched because it also
-// reads as a timeout. Each pair must fall on one line, so an unrelated "from an
-// MCP server: authentication required" line cannot pair with a stray "log in"
-// elsewhere. A false match only adds advice to an already failed agy_error run
+// reads as a timeout. Each pair must fall on one line, so an unrelated line such
+// as "MCP server github: authentication required" cannot pair with a "Run 'agy'
+// to log in" elsewhere in the tail. A false match only adds advice to an already failed agy_error run
 // that has no text; a miss leaves the earlier reporting in place.
 func matchesSignInRequired(msg string) bool {
 	for line := range strings.Lines(msg) {
