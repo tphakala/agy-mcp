@@ -531,6 +531,8 @@ type terminalCase struct {
 	out         string // streamed text on disk, "" writes no out file
 	errFile     string // captured stderr, "" writes no err file
 	args        []string
+	timeout     time.Duration // the job's recorded timeout; zero records none
+	ranFor      time.Duration // how long before the sentinel the job started
 	wantState   string
 	wantResult  string
 	wantPartial bool
@@ -871,6 +873,38 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantResult: "partial text", wantPartial: true,
 			wantErrSub: "model unavailable", wantReason: ReasonAgyError,
 		},
+		// --- agy before 1.1.28 reports an expired --print-timeout as an in-band
+		// ERROR (MEASURED against agy 1.1.15 and 1.1.27, issue #192): exit 1, the
+		// exact text below, empty stderr. It is a timeout only when the job ran
+		// its own timeout; the same text arriving early is some other failure.
+		{
+			name: "pre-1.1.28 print-timeout expiry at its deadline is a timeout",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: legacyPrintTimeoutError, ConversationID: "c1"},
+			timeout: 8 * time.Second, ranFor: 9 * time.Second,
+			wantState: StateFailed, wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout, wantConvID: "c1",
+		}, {
+			// CompletedAt is a file mtime, so a coarse filesystem can read a real
+			// expiry up to a second short.
+			name: "pre-1.1.28 expiry read within the mtime slack is still a timeout",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: legacyPrintTimeoutError, ConversationID: "c1"},
+			timeout: 8 * time.Second, ranFor: 7500 * time.Millisecond,
+			wantState: StateFailed, wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout, wantConvID: "c1",
+		}, {
+			name: "the same error long before the deadline stays agy_error",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: legacyPrintTimeoutError, ConversationID: "c1"},
+			timeout:   30 * time.Minute,
+			wantState: StateFailed, wantErrSub: legacyPrintTimeoutError, wantReason: ReasonAgyError, wantConvID: "c1",
+		}, {
+			name: "a near-miss timeout error at the deadline stays agy_error",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: legacyPrintTimeoutError + " from MCP server"},
+			timeout: 8 * time.Second, ranFor: 9 * time.Second,
+			wantState: StateFailed, wantErrSub: legacyPrintTimeoutError + " from MCP server", wantReason: ReasonAgyError,
+		}, {
+			name: "the same error on a job with no recorded timeout stays agy_error",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: legacyPrintTimeoutError},
+			ranFor:    9 * time.Second,
+			wantState: StateFailed, wantErrSub: legacyPrintTimeoutError, wantReason: ReasonAgyError,
+		},
 		// --- agy's structured AGY_ERROR stderr line (issue #183) ------------------
 		{
 			name: "exit 3 with an error payload reads agy's AGY_ERROR line",
@@ -1042,7 +1076,8 @@ func stageTerminalJob(t *testing.T, tc terminalCase) Status {
 	t.Helper()
 	m := newManager(t, managerOpts{})
 	dir, err := m.store.Create(jobstore.Meta{
-		ID: "j", StartedAt: time.Now(), BootID: readBootID(), Args: tc.args,
+		ID: "j", StartedAt: time.Now().Add(-tc.ranFor), BootID: readBootID(), Args: tc.args,
+		Timeout: tc.timeout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1894,6 +1929,30 @@ func TestStatusRecoveredFromPayload(t *testing.T) {
 				t.Fatal("a failed recovery must carry an explanation")
 			}
 		})
+	}
+}
+
+// TestStatusRecoveredLegacyPrintTimeoutIsTimeout pins that a job recovered from
+// its payload (supervisor died before writing the sentinel) gets the same
+// pre-1.1.28 print-timeout relabelling as the sentinel path (issue #192). With
+// no out, err or exit_code file there is no completion time, so elapsed is
+// time.Since(StartedAt).
+func TestStatusRecoveredLegacyPrintTimeoutIsTimeout(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir, err := m.store.Create(jobstore.Meta{
+		ID: "j", StartedAt: time.Now().Add(-9 * time.Second), PID: 999999, BootID: "old-boot",
+		Timeout: 8 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeResultPayload(t, dir, streamjson.Result{Status: streamjson.StatusError, Error: legacyPrintTimeoutError})
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateFailed || st.FailureReason != ReasonTimeout {
+		t.Fatalf("status = %+v, want failed with reason %q", st, ReasonTimeout)
 	}
 }
 

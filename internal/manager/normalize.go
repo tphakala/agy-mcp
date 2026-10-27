@@ -57,7 +57,7 @@ func normalizeCwd(cwd string) (string, error) {
 // volume-relative entry (see rootRelative) never counts. Whenever the checks
 // disagree, or cwd cannot be stat'ed, the entry does not count: agy then gets
 // cwd as well as the entry, and a duplicate --add-dir was MEASURED harmless on
-// agy 1.2.9 (macOS), while dropping cwd would lose the project's rule files on
+// agy 1.2.9 and 1.4.8 (macOS; Windows not measured, issue #192), while dropping cwd would lose the project's rule files on
 // agy that needs --add-dir to load them.
 func dirsInclude(dirs []string, cwd string) bool {
 	if cwd == "" {

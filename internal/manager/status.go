@@ -63,7 +63,7 @@ const (
 // name.
 const (
 	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient unless Status.Retryable is false
-	ReasonTimeout        = "timeout"         // the run outlived its timeout: agy-mcp killed it, or (agy 1.1.28 and later) agy's own --print-timeout cut the turn short
+	ReasonTimeout        = "timeout"         // the run outlived its timeout: agy-mcp killed it, or agy's own --print-timeout cut the turn short
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
 	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
 	ReasonInterrupted    = "interrupted"     // the job process vanished without writing a result
@@ -261,7 +261,8 @@ func recoverInterrupted(dir string, meta jobstore.Meta, st Status) Status {
 // agy's own result payload, when present, outranks the exit code for describing
 // the outcome: agy reports failures it survives (an unresolvable model, and
 // before agy 1.1.28 its own print-timeout) in band with a specific message, where
-// the exit code says less. From 1.1.28 an expired print-timeout exits 0 instead,
+// the exit code says less; markLegacyPrintTimeout relabels that print-timeout
+// report as a timeout. From 1.1.28 an expired print-timeout exits 0 instead,
 // which case 0 below detects from stderr. The code still owns every case where
 // no payload could be written, which is exactly the terminations agy-mcp itself
 // performs.
@@ -313,6 +314,8 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// The stderr text is classified before its AGY_ERROR reduction: the
 		// reduction removes the short_error wording the matcher reads (issue #205).
 		st.FailureReason = classifyAgyError(classifyText)
+		// A pre-1.1.28 print-timeout expiry arrives here as an ERROR payload (issue #192).
+		st = markLegacyPrintTimeout(meta, st, res)
 		// agy's structured stderr line supplies the retryable verdict and can
 		// promote the reason to quota_exhausted (issue #183). A SUCCESS payload
 		// means agy vouched for the turn in band, so a stray line is not attached
@@ -389,7 +392,7 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 	// The second notice: from agy 1.1.28, an expired --print-timeout makes
 	// agy return whatever it has and exit 0 (with a SUCCESS payload in the
 	// run MEASURED against agy 1.2.9; before 1.1.28 agy reported the expiry
-	// as an in-band ERROR, which keeps its agy_error reason above). agy-mcp
+	// as an in-band ERROR, which markLegacyPrintTimeout relabels above). agy-mcp
 	// passes the job timeout as --print-timeout and the supervisor arms the
 	// same deadline right after starting agy, so the two timers race. The
 	// hard kill won when this was MEASURED against agy 1.2.9 (a 15s job
@@ -437,12 +440,51 @@ func markBackgroundAborted(st Status) Status {
 // text it did produce is kept and flagged partial. When there is none and the
 // run named a conversation, the generic "continue this conversation_id" recovery
 // hint in toStatusOutput applies, as it does to a run agy-mcp killed itself.
+// The pre-1.1.28 report of the same expiry is an ERROR payload instead and is
+// handled by markLegacyPrintTimeout.
 func markPrintTimeout(st Status) Status {
 	st.State = StateFailed
 	st.FailureReason = ReasonTimeout
 	st.Partial = st.Result != ""
-	st.Error = "agy's --print-timeout expired with the turn still in progress, " +
-		"so agy returned only the partial output it had"
+	st.Error = printTimeoutExpired + ", so agy returned only the partial output it had"
+	return st
+}
+
+// printTimeoutExpired is the opening of the Error text every print-timeout
+// reclassification reports, so the wording stays in one place.
+const printTimeoutExpired = "agy's --print-timeout expired with the turn still in progress"
+
+// legacyPrintTimeoutError is the payload error agy reported for an expired
+// --print-timeout before 1.1.28: exit 1, status ERROR, empty response, empty
+// stderr (MEASURED against agy 1.1.15 and 1.1.27, issue #192). The agy 1.1.28
+// changelog says the CLI stopped failing with a timeout error and returns
+// partial output instead, which markPrintTimeout covers.
+const legacyPrintTimeoutError = "timeout waiting for response"
+
+// legacyPrintTimeoutSlack is how far short of the job's timeout the measured
+// elapsed time may read and still count as a full run. Elapsed ends at a file
+// mtime (jobstore.CompletedAt), and a filesystem that stores mtimes at one-second
+// resolution (NOT MEASURED on any here) would truncate a real expiry to up to 1s
+// short. A miss on a coarser filesystem leaves agy_error, the fail-safe
+// direction.
+const legacyPrintTimeoutSlack = time.Second
+
+// markLegacyPrintTimeout relabels the pre-1.1.28 print-timeout expiry (see
+// legacyPrintTimeoutError) as a timeout. Text alone is not enough: nothing
+// measured rules out an inner RPC timeout with the same wording, so the job must
+// also have run its own timeout (less legacyPrintTimeoutSlack), which a failure
+// that ends early has not. A job with no recorded timeout is left alone. Only the
+// reason and the message change; State, Result and Partial are untouched so
+// carryText still decides the text, and an agy_error that applyAgyError later
+// promotes to quota_exhausted is unaffected because that runs after this.
+func markLegacyPrintTimeout(meta jobstore.Meta, st Status, res streamjson.Result) Status {
+	if st.FailureReason != ReasonAgyError || res.Status != streamjson.StatusError ||
+		res.Error != legacyPrintTimeoutError || meta.Timeout <= 0 ||
+		st.Elapsed < meta.Timeout-legacyPrintTimeoutSlack {
+		return st
+	}
+	st.FailureReason = ReasonTimeout
+	st.Error = printTimeoutExpired + " (agy before 1.1.28 reports this as \"" + legacyPrintTimeoutError + "\")"
 	return st
 }
 
@@ -499,6 +541,7 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 			// reporting a failure with a blank cause.
 			st.Error = "agy reported an error without a message"
 		}
+		st = markLegacyPrintTimeout(meta, st, res)
 		// agy's structured stderr line can promote this to quota_exhausted and
 		// supplies the retryable verdict (issue #183). Every caller reaches here
 		// with a payload, which the supervisor writes only after agy was reaped, so

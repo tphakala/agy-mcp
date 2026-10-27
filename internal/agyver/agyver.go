@@ -83,9 +83,12 @@ import (
 // Three later releases change how a headless run ends. None raises the floor,
 // because agy-mcp classifies the run on both sides of each change:
 //   - 1.1.28 made an expired --print-timeout return the partial output and exit
-//     0 instead of failing. Below 1.1.28 the expiry is an in-band ERROR and is
-//     reported as agy_error. From 1.1.28 status derivation reads agy's stderr
-//     notice and reports a timeout (markPrintTimeout in internal/manager).
+//     0 instead of failing. Below 1.1.28 the expiry is an in-band ERROR (exit 1,
+//     error "timeout waiting for response", MEASURED against agy 1.1.15 and
+//     1.1.27), reported as a timeout when the job ran its full timeout
+//     (markLegacyPrintTimeout in internal/manager). From 1.1.28 status
+//     derivation reads agy's stderr notice and reports a timeout
+//     (markPrintTimeout in internal/manager).
 //     agy-mcp passes the job timeout as --print-timeout and its supervisor arms
 //     the same deadline, so the two race; the hard kill won the one run MEASURED
 //     against agy 1.2.9.
