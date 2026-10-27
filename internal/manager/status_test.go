@@ -953,6 +953,43 @@ func terminalCases() []terminalCase {
 			},
 			errFile:   signInStderr,
 			wantState: StateFailed, wantErrSub: "Resets in 21m50s", wantReason: ReasonQuotaExhausted,
+		}, {
+			name: "a non-zero exit with the changelog expiry wording in the payload is flagged without stderr",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: "Authentication expired. Please log back in."},
+			wantState: StateFailed, wantErrSub: "Authentication expired", wantReason: ReasonAgyError,
+			wantSignIn: true,
+		}, {
+			// The payload text alone also reads as a timeout, so without the stderr
+			// line there is nothing to flag.
+			name: "a non-zero exit with only the ambiguous payload text is not flagged",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: "authentication failed or timed out"},
+			wantState: StateFailed, wantErrSub: "authentication failed or timed out", wantReason: ReasonAgyError,
+		}, {
+			name: "a non-zero exit after a SUCCESS payload is not flagged beside the sign-in notice",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "final"},
+			errFile:   signInStderr,
+			wantState: StateFailed, wantResult: "final", wantErrSub: "exit 1", wantReason: ReasonAgyError,
+		}, {
+			// The quota promotion comes from the AGY_ERROR line, so the sign-in check
+			// has to run after applyAgyError for the flag to stay off.
+			name: "a quota promotion from an AGY_ERROR line beats the sign-in notice at a non-zero exit",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: "request failed"},
+			errFile:   wireAgyErrorPrefix + `{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true,"error_id":"e-1"}` + "\n" + signInStderr,
+			wantState: StateFailed, wantErrSub: "request failed", wantReason: ReasonQuotaExhausted,
+			wantRetryable: new(true), wantErrorID: "e-1",
+		}, {
+			// An agy_error that did not come from an ERROR payload gets no flag: only
+			// the ERROR branch of applyResult checks for the sign-in notice.
+			name: "an unrecognized status on a clean exit is not flagged beside the sign-in notice",
+			code: 0, res: &streamjson.Result{Status: "MAX_TURNS"},
+			errFile:   signInStderr,
+			wantState: StateFailed, wantErrSub: "unrecognized result status", wantReason: ReasonAgyError,
+		}, {
+			name: "a quota promotion from an AGY_ERROR line beats the sign-in notice on a clean exit",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusError, Error: "request failed"},
+			errFile:   wireAgyErrorPrefix + `{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true,"error_id":"e-1"}` + "\n" + signInStderr,
+			wantState: StateFailed, wantErrSub: "request failed", wantReason: ReasonQuotaExhausted,
+			wantRetryable: new(true), wantErrorID: "e-1",
 		},
 	}
 }
