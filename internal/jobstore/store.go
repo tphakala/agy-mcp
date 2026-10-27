@@ -533,11 +533,11 @@ func (s *Store) WriteExitCode(id string, code int) error {
 // clean exit and never rewritten, so its mtime is a stable end timestamp). For a
 // job recovered without a sentinel (e.g. a supervisor killed by a reboot) it
 // falls back to result.json, which the supervisor writes once after agy has been
-// reaped (issue #233), and then to the out file and the err file for a job that died
-// before any result payload. Those two bound when the job stopped producing, but
-// out is created at spawn, so they can read as the spawn time when the run
-// streamed no text. ok is false only when none of these exist, in which case
-// callers treat the job as still in progress for timing purposes.
+// reaped (issue #233), and then to the out file and the err file for a job that
+// died before any result payload. Those two bound when the job stopped
+// producing, but out is created at spawn, so they can read as the spawn time
+// when the run streamed no text. ok is false only when none of these exist, in
+// which case callers treat the job as still in progress for timing purposes.
 func (s *Store) CompletedAt(id string) (time.Time, bool) {
 	if !validJobID(id) {
 		return time.Time{}, false
