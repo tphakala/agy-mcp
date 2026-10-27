@@ -163,8 +163,8 @@ value rejected before the run starts. `plan` is refused because agy ignores `--m
 slash command expansion is disabled, which agy-mcp does on every run so prompts stay literal, so the
 run would apply edits instead of only planning (MEASURED against agy 1.1.15, 1.1.27, 1.4.6 and 1.4.8,
 [#219](https://github.com/tphakala/agy-mcp/issues/219)); to keep a run from editing, say so in the
-prompt. `accept-edits` is forwarded as given; because every run passes
-`--dangerously-skip-permissions`, it made no observable difference compared with a run without
+prompt. `accept-edits` is forwarded as given; under `--dangerously-skip-permissions`, which every run
+passes, it made no observable difference compared with a run without
 `--mode` (MEASURED against agy 1.4.8: a file write and a shell command were applied either way). `wait` defaults
 to 90s and is silently clamped to that same ceiling. That 90s default is kept below the roughly
 120s per-call timeout common MCP clients (Claude Code included) impose, so agy-mcp's still-running result reaches
