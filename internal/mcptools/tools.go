@@ -51,10 +51,13 @@ const maxJobTimeout = 24 * time.Hour
 // --disable-slash-commands, which buildAgyArgs passes on every run so prompts
 // stay literal, agy prints "warning: --mode plan has no effect while slash
 // command expansion is disabled.", exits 0, and the agent applies edits. Dropping
-// the flag for plan runs would not give a plan-only pass either: the measured plan
-// run still executed a shell command and wrote outside cwd, and agy's changelog
-// has headless runs proceed through plan review automatically (1.1.28) or per the
-// user's Artifact Review setting (1.3.2).
+// the flag for plan runs would not reliably give a plan-only pass either. Without
+// it, a plan run wrote a plan, did not create the file the prompt asked for, and
+// asked for approval (MEASURED against agy 1.4.6, issue #219). But per agy's
+// changelog, headless runs proceed through plan review automatically from
+// 1.1.28, and from 1.3.2 plans wait for review again unless the user's Artifact
+// Review setting lets them proceed, so whether a plan run stops before editing
+// depends on the agy version and a user-level setting that agy-mcp does not read.
 //
 // agy 1.3.5 added a third mode, auto, which is deliberately not accepted. Every
 // run passes --dangerously-skip-permissions (buildAgyArgs), and auto is an
