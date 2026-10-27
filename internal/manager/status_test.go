@@ -978,8 +978,9 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantErrSub: "request failed", wantReason: ReasonQuotaExhausted,
 			wantRetryable: new(true), wantErrorID: "e-1",
 		}, {
-			// An agy_error that did not come from an ERROR payload gets no flag: only
-			// the ERROR branch of applyResult checks for the sign-in notice.
+			// On a clean exit, an agy_error that did not come from an ERROR payload
+			// gets no flag: there the ERROR branch of applyResult is the only sign-in
+			// check.
 			name: "an unrecognized status on a clean exit is not flagged beside the sign-in notice",
 			code: 0, res: &streamjson.Result{Status: "MAX_TURNS"},
 			errFile:   signInStderr,
