@@ -314,15 +314,17 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// The stderr text is classified before its AGY_ERROR reduction: the
 		// reduction removes the short_error wording the matcher reads (issue #205).
 		st.FailureReason = classifyAgyError(classifyText)
-		// A pre-1.1.28 print-timeout expiry arrives here as an ERROR payload (issue #192).
-		st = markLegacyPrintTimeout(meta, st, res)
 		// agy's structured stderr line supplies the retryable verdict and can
 		// promote the reason to quota_exhausted (issue #183). A SUCCESS payload
 		// means agy vouched for the turn in band, so a stray line is not attached
 		// to it. The same condition covers the sign-in check, which only flags an
-		// agy_error that is still one after that promotion (issue #214).
+		// agy_error that is still one after that promotion (issue #214). A
+		// pre-1.1.28 print-timeout expiry arrives as an ERROR payload (issue
+		// #192), so its relabelling sits between the two: it only touches an
+		// agy_error that survived the promotion, and the sign-in check then skips it.
 		if !hasResult || res.Status != streamjson.StatusSuccess {
 			st = applyAgyError(dir, st)
+			st = markLegacyPrintTimeout(dir, meta, st, res)
 			st = markSignInRequired(dir, st, res.Error)
 		}
 	}
@@ -462,27 +464,48 @@ const printTimeoutExpired = "agy's --print-timeout expired with the turn still i
 const legacyPrintTimeoutError = "timeout waiting for response"
 
 // legacyPrintTimeoutSlack is how far short of the job's timeout the measured
-// elapsed time may read and still count as a full run. Elapsed ends at a file
-// mtime (jobstore.CompletedAt), and a filesystem that stores mtimes at one-second
-// resolution (NOT MEASURED on any here) would truncate a real expiry to up to 1s
-// short. A miss on a coarser filesystem leaves agy_error, the fail-safe
-// direction.
+// run length may read and still count as a full run. The run length ends at a
+// file mtime, and a filesystem that stores mtimes at one-second resolution (NOT
+// MEASURED on any here) would truncate a real expiry to up to 1s short. A miss
+// on a coarser filesystem leaves agy_error, the fail-safe direction.
 const legacyPrintTimeoutSlack = time.Second
+
+// legacyRunLength is how long the run lasted, for markLegacyPrintTimeout. It is
+// the larger of st.Elapsed and the age of result.json at the end of the run:
+// st.Elapsed ends at the exit_code mtime, but a job recovered without that
+// sentinel falls back to the out or err mtime. The supervisor creates both at
+// spawn (internal/supervisor/supervisor.go:252 and :257) and the legacy expiry,
+// which has an empty response and empty stderr, gives it nothing to write
+// later. result.json is written once agy has been reaped.
+func legacyRunLength(dir string, meta jobstore.Meta, st Status) time.Duration {
+	ran := st.Elapsed
+	if info, err := os.Stat(jobstore.ResultPath(dir)); err == nil {
+		if d := info.ModTime().Sub(meta.StartedAt); d > ran {
+			ran = d
+		}
+	}
+	return ran
+}
 
 // markLegacyPrintTimeout relabels the pre-1.1.28 print-timeout expiry (see
 // legacyPrintTimeoutError) as a timeout. Text alone is not enough: nothing
 // measured rules out an inner RPC timeout with the same wording, so the job must
 // also have run its own timeout (less legacyPrintTimeoutSlack), which a failure
-// that ends early has not. A job with no recorded timeout is left alone. Only the
-// reason and the message change; State, Result and Partial are untouched so
-// carryText still decides the text, and an agy_error that applyAgyError later
-// promotes to quota_exhausted is unaffected because that runs after this.
-func markLegacyPrintTimeout(meta jobstore.Meta, st Status, res streamjson.Result) Status {
+// that ends early has not. A job with no recorded timeout is left alone. It
+// reads only an agy_error, so callers run it after applyAgyError has had its
+// chance to promote the reason to quota_exhausted. The reason, the message and
+// the reported run length change; State, Result and Partial are untouched so
+// carryText still decides the text.
+func markLegacyPrintTimeout(dir string, meta jobstore.Meta, st Status, res streamjson.Result) Status {
 	if st.FailureReason != ReasonAgyError || res.Status != streamjson.StatusError ||
-		res.Error != legacyPrintTimeoutError || meta.Timeout <= 0 ||
-		st.Elapsed < meta.Timeout-legacyPrintTimeoutSlack {
+		res.Error != legacyPrintTimeoutError || meta.Timeout <= 0 {
 		return st
 	}
+	ran := legacyRunLength(dir, meta, st)
+	if ran < meta.Timeout-legacyPrintTimeoutSlack {
+		return st
+	}
+	st.Elapsed = ran
 	st.FailureReason = ReasonTimeout
 	st.Error = printTimeoutExpired + " (agy before 1.1.28 reports this as \"" + legacyPrintTimeoutError + "\")"
 	return st
@@ -541,12 +564,13 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 			// reporting a failure with a blank cause.
 			st.Error = "agy reported an error without a message"
 		}
-		st = markLegacyPrintTimeout(meta, st, res)
 		// agy's structured stderr line can promote this to quota_exhausted and
 		// supplies the retryable verdict (issue #183). Every caller reaches here
 		// with a payload, which the supervisor writes only after agy was reaped, so
-		// stderr is final.
+		// stderr is final. The pre-1.1.28 print-timeout relabelling follows it for
+		// the reason given in statusFromExitCode.
 		st = applyAgyError(dir, st)
+		st = markLegacyPrintTimeout(dir, meta, st, res)
 		st = markSignInRequired(dir, st, res.Error)
 	case res.Status == streamjson.StatusSuccess:
 		if schemaSuccessWithoutOutput(meta, res) {
