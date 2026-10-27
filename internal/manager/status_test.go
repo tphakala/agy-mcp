@@ -1983,6 +1983,73 @@ func TestStatusRecoveredLegacyPrintTimeoutIsTimeout(t *testing.T) {
 	}
 }
 
+// TestStatusRecoveredLegacyPrintTimeoutGuards pins what keeps the legacy
+// print-timeout relabelling from firing on the recovered path (issue #192),
+// where the job has no exit_code sentinel and the run length comes from
+// result.json. The out, err and result.json mtimes are set at a fixed offset
+// from StartedAt, as the supervisor leaves a job whose agy wrote nothing after
+// the files were created.
+func TestStatusRecoveredLegacyPrintTimeoutGuards(t *testing.T) {
+	const quotaLine = wireAgyErrorPrefix + `{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true}` + "\n"
+	for _, tc := range []struct {
+		name       string
+		resultAge  time.Duration // result.json mtime, after StartedAt
+		stderr     string
+		wantReason string
+		wantErrSub string
+		noErrSub   string
+	}{
+		{
+			// A failure that ended a second into an 8s job is not an expiry, however
+			// long ago the job started.
+			name:      "a job that failed early stays agy_error",
+			resultAge: time.Second, wantReason: ReasonAgyError, wantErrSub: legacyPrintTimeoutError,
+			noErrSub: "--print-timeout expired",
+		}, {
+			// The quota promotion by applyAgyError comes first, so the relabelling
+			// neither fires nor rewrites agy's own error text.
+			name:      "a quota line keeps quota_exhausted and agy's error text",
+			resultAge: 9 * time.Second, stderr: quotaLine, wantReason: ReasonQuotaExhausted, wantErrSub: legacyPrintTimeoutError,
+			noErrSub: "--print-timeout expired",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newManager(t, managerOpts{})
+			started := time.Now().Add(-9 * time.Second)
+			dir, err := m.store.Create(jobstore.Meta{
+				ID: "j", StartedAt: started, PID: 999999, BootID: "old-boot",
+				Timeout: 8 * time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeResultPayload(t, dir, streamjson.Result{Status: streamjson.StatusError, Error: legacyPrintTimeoutError})
+			if werr := os.WriteFile(jobstore.OutPath(dir), nil, 0o600); werr != nil {
+				t.Fatal(werr)
+			}
+			if werr := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o600); werr != nil {
+				t.Fatal(werr)
+			}
+			at := started.Add(tc.resultAge)
+			for _, p := range []string{jobstore.OutPath(dir), jobstore.ErrPath(dir), jobstore.ResultPath(dir)} {
+				if werr := os.Chtimes(p, at, at); werr != nil {
+					t.Fatal(werr)
+				}
+			}
+			st, err := m.Status("j")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.State != StateFailed || st.FailureReason != tc.wantReason {
+				t.Fatalf("status = %+v, want failed with reason %q", st, tc.wantReason)
+			}
+			if !strings.Contains(st.Error, tc.wantErrSub) || strings.Contains(st.Error, tc.noErrSub) {
+				t.Fatalf("error = %q, want it to mention %q and not %q", st.Error, tc.wantErrSub, tc.noErrSub)
+			}
+		})
+	}
+}
+
 // TestStatusEchoesResolvedModel: Status echoes the resolved model persisted to
 // meta (issue #138 item 2), so a caller can see which model actually ran. It is
 // set at construction, before the terminal-vs-running branch, so it rides every
