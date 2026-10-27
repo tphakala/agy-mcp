@@ -40,6 +40,29 @@ func TestDoctorHealthy(t *testing.T) {
 	}
 }
 
+// TestDoctorADCWarnKeepsReportOK: on an otherwise healthy install, the ADC
+// environment warning is information only, so the report stays OK and doctor
+// exits zero. Posix-gated like TestDoctorHealthy, whose fake agy it reuses.
+func TestDoctorADCWarnKeepsReportOK(t *testing.T) {
+	t.Setenv(envUseADC, "1")
+	t.Setenv(envADCAuth, "")
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{
+		Models: []testutil.FakeModel{{ID: "gemini-3.1-pro-high", Label: "Gemini 3.1 Pro (High)"}},
+	})
+	m := newManager(t, managerOpts{agyPath: agy})
+
+	report := m.Doctor(t.Context())
+	if adc := findCheck(t, report, checkADCEnvName); adc.Status != CheckWarn {
+		t.Fatalf("ADC check = %v (%s), want WARN", adc.Status, adc.Detail)
+	}
+	if !report.OK() {
+		for _, c := range report.Checks {
+			t.Logf("[%s] %s: %s", c.Status, c.Name, c.Detail)
+		}
+		t.Fatal("a report whose only non-PASS check is the ADC warning must stay OK")
+	}
+}
+
 // TestDoctorProbesAgyVersionOnce: a healthy Doctor run probes `agy --version`
 // exactly once. checkAgyVersion primes the version cache on success, so the
 // checkAgyReachable that follows reuses the verdict instead of spawning a second
