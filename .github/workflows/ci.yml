@@ -28,6 +28,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          check-latest: true
       # build + vet on every OS proves the package compiles cross-platform. Job
       # supervision runs on Linux, macOS, and Windows, so all three run the test
       # suite; Linux and macOS add -race (both provide the cgo C toolchain), while
@@ -59,6 +60,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          check-latest: true
       # The ruleguard matchers in rules/*.go carry the //go:build ruleguard tag, so a
       # syntax error in one compiles clean under the normal toolchain and silently
       # disables the entire ruleguard layer while golangci-lint still reports 0 issues.

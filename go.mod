@@ -1,6 +1,6 @@
 module github.com/tphakala/agy-mcp/v2
 
-go 1.27.0
+go 1.27
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
