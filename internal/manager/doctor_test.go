@@ -306,11 +306,12 @@ func TestDoctorADCEnvSkipsVersionCaveatWhenVersionCheckFails(t *testing.T) {
 		noAgy   bool
 		raw     string
 		probeEr error
+		branch  string // text only that version-check branch's detail carries, so a row cannot drift onto another branch
 	}{
-		{"binary not resolved", true, "", nil},
-		{"probe errors", false, "", errors.New("probe failed")},
-		{"output has no version", false, "not a version", nil},
-		{"below the floor", false, "1.1.7", nil},
+		{"binary not resolved", true, "", nil, "agy binary not resolved"},
+		{"probe errors", false, "", errors.New("stub probe error"), "stub probe error"},
+		{"output has no version", false, "not a version", nil, "cannot parse version"},
+		{"below the floor", false, "1.1.7", nil, "is below the required"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -328,8 +329,8 @@ func TestDoctorADCEnvSkipsVersionCaveatWhenVersionCheckFails(t *testing.T) {
 
 			report := m.Doctor(t.Context())
 
-			if ver := findCheck(t, report, checkAgyVersionName); ver.Status != CheckFail {
-				t.Fatalf("version check = %v (%s), want FAIL", ver.Status, ver.Detail)
+			if ver := findCheck(t, report, checkAgyVersionName); ver.Status != CheckFail || !strings.Contains(ver.Detail, tc.branch) {
+				t.Fatalf("version check = %v (%s), want FAIL containing %q", ver.Status, ver.Detail, tc.branch)
 			}
 			adc := findCheck(t, report, checkADCEnvName)
 			if adc.Status != CheckPass || !strings.Contains(adc.Detail, "unknown") {
