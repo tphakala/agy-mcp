@@ -40,7 +40,7 @@ const (
 var adcLoadFixVersion = agyver.Version{Major: 1, Minor: 4, Patch: 7}
 
 // CheckStatus is a preflight check's verdict. Only CheckFail makes the doctor
-// command exit non-zero; CheckWarn reports something worth seeing (stale jobs
+// command exit non-zero; CheckWarn reports something worth seeing (an ADC environment caveat, or stale jobs
 // from a prior crash) without calling the install broken, so a fresh install
 // with leftover state is not treated as a failure.
 type CheckStatus int
@@ -81,8 +81,8 @@ type DoctorReport struct {
 }
 
 // OK reports whether the install is healthy: no check failed. A warning does not
-// count as a failure, so the exit code a caller derives from this treats stale
-// leftover jobs as information, not breakage.
+// count as a failure, so the exit code a caller derives from this does not change
+// when a check only warns.
 func (r DoctorReport) OK() bool {
 	for _, c := range r.Checks {
 		if c.Status == CheckFail {
@@ -172,9 +172,9 @@ func adcAuthOn(v string) bool {
 	return v == "1" || v == "true"
 }
 
-// checkADCEnv flags two environment mistakes around ADC sign-in. It only ever
-// WARNs (the environment doctor sees may not be the server's), so it cannot
-// change the exit code, and its detail names variables and versions, never a
+// checkADCEnv flags two environment mistakes around ADC sign-in. It never
+// FAILs, because the environment doctor sees may not be the server's, so it
+// cannot change the exit code, and its detail names variables and versions, never a
 // value. The version is used only when versionKnown, i.e. checkAgyVersion
 // passed; with an unknown version the 1.4.7 caveat is not checked.
 func checkADCEnv(getenv func(string) string, v agyver.Version, versionKnown bool) CheckResult {
@@ -183,7 +183,7 @@ func checkADCEnv(getenv func(string) string, v agyver.Version, versionKnown bool
 	case !on && getenv(envUseADC) != "":
 		// agy does not read USE_ADC (MEASURED against agy 1.4.8); a value here is a
 		// leftover from README advice before issue #223.
-		return CheckResult{checkADCEnvName, CheckWarn, envUseADC + " is set in this environment, but agy does not read it; " +
+		return CheckResult{checkADCEnvName, CheckWarn, envUseADC + " is set in this environment, but agy does not read it (MEASURED against agy 1.4.8); " +
 			"ADC sign-in is selected with " + envADCAuth + "=1, which is not set to 1 or true here (see the auth note in the README)"}
 	case !on:
 		return CheckResult{checkADCEnvName, CheckPass, envADCAuth + " is not set to 1 or true in this environment (agy's normal sign-in)"}
