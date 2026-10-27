@@ -86,7 +86,7 @@ Two transports run the same core:
 >
 > Note (continuation): a follow-up turn runs `agy --conversation <id> -p <prompt>`, and the job result is the `response` field of agy's terminal `result` event. Verified against 1.1.10: a resumed run returns only the new turn and echoes the same conversation id, with `num_turns` incremented.
 >
-> Note (auth): agy-mcp passes its own process environment through to every spawned `agy`, so agy's normal OAuth credentials are used by default. For headless or daemon deployments (HTTP mode, cron) where no browser is available, set `USE_ADC=1` in the server's environment to have agy authenticate via Google Application Default Credentials instead of the interactive sign-in flow (agy 1.0.11+). No agy-mcp flag or code change is needed; unset it to fall back to the other sign-in methods.
+> Note (auth): agy-mcp passes its own process environment through to every spawned `agy`, so agy's normal sign-in is used by default. For headless or daemon deployments (HTTP mode, cron) where no browser is available, set `AGY_ADC_AUTH=1` in the server's environment to have agy sign in with Google Application Default Credentials (ADC sign-in arrived in agy 1.1.10, per its changelog). agy does not read `USE_ADC`: setting it changes nothing (MEASURED against agy 1.4.8). If agy then fails with `Please sign in ... Launch the CLI without arguments to sign in.`, run `agy` once interactively on that host with the variable set; agy's first-run setup for ADC shows the Google Cloud Platform Terms of Service (changelog, 1.4.1). Below agy 1.4.7, ADC sign-in does not load skills, rules, custom agents or hooks (changelog, 1.4.7). No agy-mcp flag or code change is needed; unset the variable to fall back to the other sign-in methods.
 
 ## Install
 

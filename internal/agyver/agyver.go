@@ -107,7 +107,7 @@ import (
 // parallel jobs benefit from it. Whether those jobs actually share a database
 // file is not measured, and the floor stays put on the same reasoning.
 //
-// Later releases up to 1.4.6 were read against the flags and output agy-mcp
+// Later releases up to 1.4.8 were read against the flags and output agy-mcp
 // consumes, and none raises the floor. These touch behaviour a caller can see:
 //   - 1.3.4 made an unknown --agent fail the run before any model call (exit 1,
 //     an ERROR result naming the available agents; MEASURED against agy 1.4.6).
@@ -122,6 +122,13 @@ import (
 //     refuses plan (see internal/mcptools).
 //   - 1.3.5 added --mode auto (Windows support from 1.4.4); agy-mcp does not
 //     accept it, see the comment on the mode constants in internal/mcptools.
+//   - 1.4.7 fixed rules and custom agents not loading under Application
+//     Default Credentials sign-in (AGY_ADC_AUTH); the README's auth note
+//     carries the caveat (issue #222).
+//   - 1.4.8 passes a failed tool call back to the agent as an error instead of
+//     an ordinary result. State stays exit-code-driven (see 1.1.14 above), and
+//     MEASURED against agy 1.4.8 a shell command that exits non-zero still ends
+//     the run with exit 0 and status SUCCESS.
 //
 // The facts about agy releases are from agy's own changelog (run
 // `agy changelog`), except where a line is marked MEASURED; the 1.1.15 line
