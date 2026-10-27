@@ -115,7 +115,12 @@ type Status struct {
 	Retryable *bool
 	// ErrorID is agy's identifier for the failure from the same line; empty when
 	// absent or not a plain id.
-	ErrorID        string
+	ErrorID string
+	// SignInRequired reports that agy's own output shows it is not signed in, or
+	// that its sign-in expired (issue #214). It never changes State,
+	// FailureReason or Error; the tool layer turns it into recovery advice. Set
+	// only alongside StateFailed and ReasonAgyError.
+	SignInRequired bool
 	ConversationID string
 	// Model is the model id agy-mcp resolved for this run and persisted to meta:
 	// the request's model, or AGY_MCP_DEFAULT_MODEL when none was given, reduced to
@@ -311,9 +316,11 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// agy's structured stderr line supplies the retryable verdict and can
 		// promote the reason to quota_exhausted (issue #183). A SUCCESS payload
 		// means agy vouched for the turn in band, so a stray line is not attached
-		// to it.
+		// to it. The same condition covers the sign-in check, which only flags an
+		// agy_error that is still one after that promotion (issue #214).
 		if !hasResult || res.Status != streamjson.StatusSuccess {
 			st = applyAgyError(dir, st)
+			st = markSignInRequired(dir, st, res.Error)
 		}
 	}
 	// Every non-zero exit is a run cut short: a cancel, a timeout, a crash, an
@@ -497,6 +504,7 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 		// with a payload, which the supervisor writes only after agy was reaped, so
 		// stderr is final.
 		st = applyAgyError(dir, st)
+		st = markSignInRequired(dir, st, res.Error)
 	case res.Status == streamjson.StatusSuccess:
 		if schemaSuccessWithoutOutput(meta, res) {
 			st.State = StateFailed
@@ -958,12 +966,13 @@ func readStderrCopy(dir string) (shown, raw string, err error) {
 }
 
 // stderrNotices is what a terminal job's captured stderr says about how agy
-// ended the run. Both come from ONE read of the bounded stderr tail
+// ended the run. Every field comes from ONE read of the bounded stderr tail
 // (the window errorSummary reports, before its AGY_ERROR reduction). An unreadable stderr yields the zero value,
 // which leaves the derived state untouched rather than guessing a failure.
 type stderrNotices struct {
 	backgroundAborted bool // agy killed outstanding background shell tasks at exit (issue #173)
 	printTimeout      bool // agy's own --print-timeout expired with the turn in progress
+	signInRequired    bool // agy reported it needs a sign-in (issue #214)
 }
 
 func readStderrNotices(dir string) stderrNotices {
@@ -974,7 +983,25 @@ func readStderrNotices(dir string) stderrNotices {
 	return stderrNotices{
 		backgroundAborted: matchesBackgroundAbort(tail),
 		printTimeout:      matchesPrintTimeout(tail),
+		signInRequired:    matchesSignInRequired(tail),
 	}
+}
+
+// markSignInRequired flags an agy_error run whose own output says agy needs a
+// sign-in (issue #214), from the payload's error text or the captured stderr.
+// It sets only SignInRequired: State, FailureReason, Error and Result stay as
+// classified, so a caller branching on failure_reason sees no change. It runs
+// after applyAgyError so that a quota promotion wins, and the agy_error gate
+// keeps the flag off every other failure reason. The payload is checked first so
+// a hit there skips the stderr read.
+func markSignInRequired(dir string, st Status, payloadErr string) Status {
+	if st.FailureReason != ReasonAgyError {
+		return st
+	}
+	if matchesSignInRequired(payloadErr) || readStderrNotices(dir).signInRequired {
+		st.SignInRequired = true
+	}
+	return st
 }
 
 // lineHasAll reports whether line contains every one of phrases, ignoring case.
@@ -1004,6 +1031,30 @@ func lineHasAll(line string, phrases ...string) bool {
 func matchesPrintTimeout(stderr string) bool {
 	for line := range strings.Lines(stderr) {
 		if lineHasAll(line, "print timeout", "turn in progress", "partial output") {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesSignInRequired reports agy's sign-in notice (issue #214). The first
+// phrase pair is MEASURED against agy 1.4.8: a run with no usable sign-in exits
+// 1, its stderr carries "Error: authentication required. Run 'agy' to log in."
+// and its ERROR payload carries only "authentication failed or timed out". The
+// second pair is quoted from agy's changelog for 1.3.3 ("the agent now says
+// `Authentication expired. Please log back in.`") and was NOT MEASURED, nor how a
+// headless run delivers it, so it is matched in payload and stderr alike and a
+// delivery as response text on a SUCCESS run stays unflagged.
+//
+// "authentication failed or timed out" alone is not matched because it also
+// reads as a timeout. Each pair must fall on one line, so an unrelated "from an
+// MCP server: authentication required" line cannot pair with a stray "log in"
+// elsewhere. A false match only adds advice to an already failed agy_error run
+// that has no text; a miss leaves the earlier reporting in place.
+func matchesSignInRequired(msg string) bool {
+	for line := range strings.Lines(msg) {
+		if lineHasAll(line, "authentication required", "run 'agy' to log in") ||
+			lineHasAll(line, "authentication expired", "log back in") {
 			return true
 		}
 	}

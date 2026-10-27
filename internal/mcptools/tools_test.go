@@ -505,6 +505,49 @@ func TestStatusOutputRecoveryHint(t *testing.T) {
 	}
 }
 
+// TestStatusOutputRecoverySignIn: a sign-in failure (issue #214) gets its own
+// recovery note, given even without a conversation, naming the sign-in on the
+// server host first and the conversation_id only as a follow-up. A run that
+// produced text gets none, whatever the flag says.
+func TestStatusOutputRecoverySignIn(t *testing.T) {
+	t.Parallel()
+	signIn := func(mut func(*manager.Status)) manager.Status {
+		st := manager.Status{State: manager.StateFailed, FailureReason: manager.ReasonAgyError, SignInRequired: true}
+		if mut != nil {
+			mut(&st)
+		}
+		return st
+	}
+	t.Run("no conversation says to sign in and retry the run", func(t *testing.T) {
+		t.Parallel()
+		got := toStatusOutput(signIn(nil)).Recovery
+		if !strings.Contains(got, "not signed in") || !strings.Contains(got, "AGY_ADC_AUTH") || !strings.Contains(got, "retry the run") || strings.Contains(got, "conversation_id") {
+			t.Errorf("Recovery = %q, want sign-in advice ending in retry the run, without conversation_id", got)
+		}
+	})
+	t.Run("with a conversation the sign-in advice still comes first", func(t *testing.T) {
+		t.Parallel()
+		got := toStatusOutput(signIn(func(s *manager.Status) { s.ConversationID = "c1" })).Recovery
+		if !strings.Contains(got, "not signed in") || !strings.Contains(got, "fresh agy_run with this conversation_id") {
+			t.Errorf("Recovery = %q, want sign-in advice then the conversation_id continuation", got)
+		}
+	})
+	t.Run("recovered text means no recovery note", func(t *testing.T) {
+		t.Parallel()
+		got := toStatusOutput(signIn(func(s *manager.Status) { s.Result, s.Partial = "as far as I got", true })).Recovery
+		if got != "" {
+			t.Errorf("Recovery = %q, want none when a result was recovered", got)
+		}
+	})
+	t.Run("a retryable=false verdict does not hide the sign-in advice", func(t *testing.T) {
+		t.Parallel()
+		got := toStatusOutput(signIn(func(s *manager.Status) { s.Retryable = new(false) })).Recovery
+		if !strings.Contains(got, "not signed in") {
+			t.Errorf("Recovery = %q, want sign-in advice despite retryable=false", got)
+		}
+	})
+}
+
 // TestStatusOutputFailureReason: toStatusOutput echoes FailureReason to the wire
 // (omitempty, so absent unless set), and a quota wall gets its own recovery
 // advice, which takes priority over the generic issue #151 hint and points the

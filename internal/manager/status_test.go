@@ -19,6 +19,12 @@ import (
 // mid-turn, as MEASURED against agy 1.2.9.
 const printTimeoutNotice = "[agy] print timeout after 8s with turn in progress; returning partial output"
 
+// signInStderr is the stderr of a run with no usable sign-in (issue #214), as
+// MEASURED against agy 1.4.8 with AGY_ADC_AUTH=1 on a host that signs in another
+// way: exit 1, and an ERROR payload carrying only "authentication failed or
+// timed out".
+const signInStderr = "Error: authentication required. Run 'agy' to log in.\nerror: authentication failed or timed out\n"
+
 // The two stderr lines agy leaves when a run ends with a background task still
 // running. Shape MEASURED against agy 1.2.7 and 1.2.9 (see matchesBackgroundAbort
 // in status.go). The matchers ignore the grace and the count, so one fixed
@@ -198,6 +204,28 @@ func TestLineHasAllIgnoresPhraseCase(t *testing.T) {
 	}
 	if lineHasAll("[agy] print timeout after 8s", "Print Timeout", "missing") {
 		t.Error("lineHasAll matched although one phrase is absent")
+	}
+}
+
+func TestMatchesSignInRequired(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"measured stderr", signInStderr, true},
+		{"changelog expiry wording", "Authentication expired. Please log back in.", true},
+		// The payload text alone also reads as a timeout, so it is not a key.
+		{"payload text alone", "error: authentication failed or timed out", false},
+		{"phrases split across lines", "authentication required.\nRun 'agy' to log in.\n", false},
+		{"unrelated server needing authentication", "MCP server github: authentication required", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesSignInRequired(tt.msg); got != tt.want {
+				t.Errorf("matchesSignInRequired(%q) = %v, want %v", tt.msg, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -514,6 +542,9 @@ type terminalCase struct {
 	// none), so no row without an AGY_ERROR line can gain either.
 	wantRetryable *bool
 	wantErrorID   string
+	// wantSignIn is asserted on every row, so no path can gain the sign-in flag
+	// unnoticed.
+	wantSignIn bool
 }
 
 // terminalCases is the whole Result/Partial contract in one table, consumed by
@@ -900,6 +931,28 @@ func terminalCases() []terminalCase {
 			code: 1, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "final"},
 			errFile:   measuredAgyErrorStderr,
 			wantState: StateFailed, wantResult: "final", wantErrSub: "exit 1", wantReason: ReasonAgyError,
+		}, {
+			// The payload error alone is ambiguous; the flag comes from stderr. State,
+			// reason and error stay what they were before the flag existed (issue #214).
+			name: "a sign-in failure keeps agy_error and is flagged for recovery advice",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: "authentication failed or timed out"},
+			errFile:   signInStderr,
+			wantState: StateFailed, wantErrSub: "authentication failed or timed out", wantReason: ReasonAgyError,
+			wantSignIn: true,
+		}, {
+			// Changelog wording, NOT MEASURED; carried by the payload on a clean exit.
+			name: "agy's changelog expiry wording in an error payload is flagged",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusError, Error: "Authentication expired. Please log back in."},
+			wantState: StateFailed, wantErrSub: "Authentication expired", wantReason: ReasonAgyError,
+			wantSignIn: true,
+		}, {
+			name: "a quota wall is not flagged as a sign-in failure even beside the sign-in notice",
+			code: 1, res: &streamjson.Result{
+				Status: streamjson.StatusError,
+				Error:  "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 21m50s.",
+			},
+			errFile:   signInStderr,
+			wantState: StateFailed, wantErrSub: "Resets in 21m50s", wantReason: ReasonQuotaExhausted,
 		},
 	}
 }
@@ -937,6 +990,10 @@ func TestStatusTerminalContractTableIsWellFormed(t *testing.T) {
 		// Retryable and ErrorID are set only alongside StateFailed.
 		if tc.wantState != StateFailed && (tc.wantRetryable != nil || tc.wantErrorID != "") {
 			t.Errorf("row %q is not a failure yet declares retryable or error_id", tc.name)
+		}
+		// SignInRequired is set only on an agy_error failure.
+		if tc.wantSignIn && (tc.wantState != StateFailed || tc.wantReason != ReasonAgyError) {
+			t.Errorf("row %q declares a sign-in flag on something other than a failed agy_error", tc.name)
 		}
 	}
 }
@@ -1016,6 +1073,9 @@ func assertTerminalStatus(t *testing.T, st Status, tc terminalCase) {
 	}
 	if st.ErrorID != tc.wantErrorID {
 		t.Errorf("error_id = %q, want %q", st.ErrorID, tc.wantErrorID)
+	}
+	if st.SignInRequired != tc.wantSignIn {
+		t.Errorf("sign_in_required = %v, want %v", st.SignInRequired, tc.wantSignIn)
 	}
 }
 
