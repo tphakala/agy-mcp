@@ -116,7 +116,7 @@ type StartRequest struct {
 	Agent            string   // optional; --agent <name>, selects a specific agy agent
 	Sandbox          bool     // optional; --sandbox, runs agy with terminal restrictions
 	Dirs             []string // repeated --add-dir
-	SkipProjectRules bool     // optional; omits the implicit --add-dir <Cwd>, which loads the project's rule files on agy that needs it (MEASURED: agy 1.2.16 loads them without it)
+	SkipProjectRules bool     // optional; omits the implicit --add-dir <Cwd>, which loads the project's rule files on agy that needs it (MEASURED: agy 1.2.16 and 1.4.8 load them without it)
 	ConversationID   string   // optional; --conversation <id>
 	JSONSchema       string   // optional; --json-schema <inline schema or path>, constrains the final stream-json result
 	IdempotencyKey   string   // optional; retry token used only by agy-mcp, never forwarded to agy
@@ -1170,8 +1170,11 @@ const (
 // on agy 1.2.16: cwd is a workspace without --add-dir (its AGENTS.md, also
 // the repo root's from a subdirectory, and its .agents/hooks.json hooks load
 // either way), so there the flag is redundant and the opt-out does not keep
-// rules or hooks out. The flag stays because the floor is 1.1.15 and 1.2.9
-// needs it. Not added when a caller dir already names cwd.
+// rules or hooks out. MEASURED on agy 1.4.8, unchanged from 1.2.16: a
+// directory passed only as --add-dir (cwd outside it) also loads its rules and
+// runs its hooks, and only a cwd outside the repository with no --add-dir for
+// it keeps them out (issue #200). The flag stays because the floor is 1.1.15
+// and 1.2.9 needs it. Not added when a caller dir already names cwd.
 func workspaceDirs(req StartRequest) []string {
 	var dirs []string
 	if !req.SkipProjectRules && req.Cwd != "" && !dirsInclude(req.Dirs, req.Cwd) {
