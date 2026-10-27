@@ -124,7 +124,9 @@ import (
 //     accept it, see the comment on the mode constants in internal/mcptools.
 //   - 1.4.7 fixed skills, rules, custom agents, plugins, plugin MCP servers
 //     and hooks not loading under Application Default Credentials sign-in
-//     (AGY_ADC_AUTH); the README's auth note carries the caveat (issue #222).
+//     (AGY_ADC_AUTH); the README's auth note carries the caveat (issue #222),
+//     and `agy-mcp doctor` warns when AGY_ADC_AUTH is set on an older agy
+//     (issue #224).
 //   - 1.4.8 passes a failed tool call back to the agent as an error instead of
 //     an ordinary result. State stays exit-code-driven (see 1.1.14 above), and
 //     MEASURED against agy 1.4.8 a shell command that exits non-zero still ends

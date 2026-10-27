@@ -2,8 +2,10 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,6 +223,98 @@ func TestDoctorReachableFailsWhenListingUnavailable(t *testing.T) {
 	}
 	if report.OK() {
 		t.Fatal("report is OK despite an unreachable agy")
+	}
+}
+
+// TestCheckADCEnv drives the ADC environment check through an injected getenv so
+// the verdicts do not depend on the ambient shell. Each WARN row also pins the
+// variables the detail must name and that it points the reader at the README.
+func TestCheckADCEnv(t *testing.T) {
+	v := func(minor, patch int) agyver.Version { return agyver.Version{Major: 1, Minor: minor, Patch: patch} }
+	tests := []struct {
+		name    string
+		env     map[string]string
+		ver     agyver.Version
+		known   bool
+		want    CheckStatus
+		mention []string
+	}{
+		{"nothing set", nil, v(4, 8), true, CheckPass, nil},
+		{"USE_ADC without AGY_ADC_AUTH", map[string]string{envUseADC: "1"}, v(4, 8), true, CheckWarn, []string{envUseADC, envADCAuth}},
+		{"USE_ADC with AGY_ADC_AUTH=0", map[string]string{envUseADC: "1", envADCAuth: "0"}, v(4, 8), true, CheckWarn, []string{envUseADC}},
+		{"USE_ADC with AGY_ADC_AUTH on", map[string]string{envUseADC: "1", envADCAuth: "1"}, v(4, 8), true, CheckPass, nil},
+		{"on, below 1.4.7", map[string]string{envADCAuth: "true"}, v(4, 6), true, CheckWarn, []string{envADCAuth, "1.4.6", "1.4.7"}},
+		{"on, at 1.4.7", map[string]string{envADCAuth: "1"}, v(4, 7), true, CheckPass, nil},
+		// The version is deliberately below 1.4.7: a check that ignores the flag warns.
+		{"on, version unknown", map[string]string{envADCAuth: "1"}, v(4, 6), false, CheckPass, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkADCEnv(func(k string) string { return tc.env[k] }, tc.ver, tc.known)
+			if got.Name != checkADCEnvName {
+				t.Errorf("name = %q, want %q", got.Name, checkADCEnvName)
+			}
+			if got.Status != tc.want {
+				t.Fatalf("status = %v (%s), want %v", got.Status, got.Detail, tc.want)
+			}
+			if tc.want != CheckWarn {
+				return
+			}
+			for _, s := range append(tc.mention, "README") {
+				if !strings.Contains(got.Detail, s) {
+					t.Errorf("warning detail should mention %q, got: %s", s, got.Detail)
+				}
+			}
+		})
+	}
+}
+
+// TestDoctorADCEnvUsesVersionCheckVersion: Doctor hands checkADCEnv the process
+// environment and the version checkAgyVersion parsed, without a second probe.
+// agy 1.4.6 passes the version floor, so the version check primes the cache and
+// the model listing does not probe again; the ADC check then warns about 1.4.6
+// from the value the version check already parsed.
+func TestDoctorADCEnvUsesVersionCheckVersion(t *testing.T) {
+	t.Setenv(envADCAuth, "1")
+	t.Setenv(envUseADC, "")
+	m := New(config.Config{AgyPath: "/nonexistent/agy", StateDir: t.TempDir(), MaxConcurrency: 4})
+	var probes atomic.Int32
+	m.readAgyVersion = func(context.Context, string) (string, error) {
+		probes.Add(1)
+		return "1.4.6", nil
+	}
+
+	report := m.Doctor(t.Context())
+
+	adc := findCheck(t, report, checkADCEnvName)
+	if adc.Status != CheckWarn || !strings.Contains(adc.Detail, "1.4.6") {
+		t.Fatalf("ADC check = %v (%s), want a WARN naming 1.4.6", adc.Status, adc.Detail)
+	}
+	if n := probes.Load(); n != 1 {
+		t.Fatalf("agy --version probed %d times in one Doctor run, want 1", n)
+	}
+}
+
+// TestDoctorADCEnvSkipsVersionCaveatWhenVersionProbeFails: when the version probe
+// itself errors, the version check FAILs and the ADC check must not warn about
+// 1.4.7 from a zero-value version. The ADC check still runs and says the version
+// is unknown.
+func TestDoctorADCEnvSkipsVersionCaveatWhenVersionProbeFails(t *testing.T) {
+	t.Setenv(envADCAuth, "1")
+	t.Setenv(envUseADC, "")
+	m := New(config.Config{AgyPath: "/nonexistent/agy", StateDir: t.TempDir(), MaxConcurrency: 4})
+	m.readAgyVersion = func(context.Context, string) (string, error) {
+		return "", errors.New("probe failed")
+	}
+
+	report := m.Doctor(t.Context())
+
+	if ver := findCheck(t, report, checkAgyVersionName); ver.Status != CheckFail {
+		t.Fatalf("version check = %v (%s), want FAIL when the probe errors", ver.Status, ver.Detail)
+	}
+	adc := findCheck(t, report, checkADCEnvName)
+	if adc.Status != CheckPass || !strings.Contains(adc.Detail, "unknown") {
+		t.Fatalf("ADC check = %v (%s), want PASS saying the version is unknown", adc.Status, adc.Detail)
 	}
 }
 

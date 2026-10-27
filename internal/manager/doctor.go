@@ -23,7 +23,21 @@ const (
 	checkStateDirName     = "state dir"
 	checkConfigName       = "config"
 	checkJobsName         = "jobs"
+	checkADCEnvName       = "ADC sign-in env"
 )
+
+// agy's own environment variables, read here only to spot setups that will not
+// behave as intended; they are not agy-mcp configuration, so they do not belong
+// in internal/config.
+const (
+	envADCAuth = "AGY_ADC_AUTH"
+	envUseADC  = "USE_ADC"
+)
+
+// adcLoadFixVersion is the first agy release that loads skills, rules, custom
+// agents, plugins, plugin MCP servers and hooks under ADC sign-in (agy's
+// changelog, 1.4.7; see the release note in internal/agyver).
+var adcLoadFixVersion = agyver.Version{Major: 1, Minor: 4, Patch: 7}
 
 // CheckStatus is a preflight check's verdict. Only CheckFail makes the doctor
 // command exit non-zero; CheckWarn reports something worth seeing (stale jobs
@@ -88,10 +102,15 @@ func (r DoctorReport) OK() bool {
 // once rather than stopping at the first: an operator fixing an install wants the
 // whole list, not one error per re-run.
 func (m *Manager) Doctor(ctx context.Context) DoctorReport {
+	// Hoisted so the version check's parsed version can feed checkADCEnv. Both run
+	// before checkAgyReachable, binary first.
+	bin := m.checkAgyBinary()
+	ver, agyV, agyVOK := m.checkAgyVersion(ctx)
 	return DoctorReport{Checks: []CheckResult{
-		m.checkAgyBinary(),
-		m.checkAgyVersion(ctx),
+		bin,
+		ver,
 		m.checkAgyReachable(ctx),
+		checkADCEnv(os.Getenv, agyV, agyVOK),
 		m.checkStateDir(),
 		m.checkConfigSources(),
 		m.checkStaleJobs(),
@@ -120,26 +139,63 @@ func (m *Manager) checkAgyBinary() CheckResult {
 // follows in the same Doctor run reuses the verdict instead of spawning a second
 // `agy --version`. It primes only on the PASS branch, so a binary below the floor
 // is never marked verified and checkAgyReachable re-probes and fails the same way.
-func (m *Manager) checkAgyVersion(ctx context.Context) CheckResult {
+//
+// It also returns the parsed version, and true, only on PASS, so a
+// version-dependent check never acts on a below-floor or unparsed version.
+func (m *Manager) checkAgyVersion(ctx context.Context) (CheckResult, agyver.Version, bool) {
 	agy, err := m.cfg.AgyBinary()
 	if err != nil {
-		return CheckResult{checkAgyVersionName, CheckFail, "cannot check: agy binary not resolved"}
+		return CheckResult{checkAgyVersionName, CheckFail, "cannot check: agy binary not resolved"}, agyver.Version{}, false
 	}
 	ctx, cancel := context.WithTimeout(ctx, versionCheckTimeout)
 	defer cancel()
 	raw, err := m.readAgyVersion(ctx, agy)
 	if err != nil {
-		return CheckResult{checkAgyVersionName, CheckFail, err.Error()}
+		return CheckResult{checkAgyVersionName, CheckFail, err.Error()}, agyver.Version{}, false
 	}
 	v, err := agyver.Parse(raw)
 	if err != nil {
-		return CheckResult{checkAgyVersionName, CheckFail, fmt.Sprintf("cannot parse version from %s: %v", versionOutputForMessage(raw), err)}
+		return CheckResult{checkAgyVersionName, CheckFail, fmt.Sprintf("cannot parse version from %s: %v", versionOutputForMessage(raw), err)}, agyver.Version{}, false
 	}
 	if !v.AtLeast(agyver.Required) {
-		return CheckResult{checkAgyVersionName, CheckFail, fmt.Sprintf("%s is below the required %s; upgrade agy", v, agyver.Required)}
+		return CheckResult{checkAgyVersionName, CheckFail, fmt.Sprintf("%s is below the required %s; upgrade agy", v, agyver.Required)}, agyver.Version{}, false
 	}
 	m.markAgyVerified(agy)
-	return CheckResult{checkAgyVersionName, CheckPass, fmt.Sprintf("%s (>= required %s)", v, agyver.Required)}
+	return CheckResult{checkAgyVersionName, CheckPass, fmt.Sprintf("%s (>= required %s)", v, agyver.Required)}, v, true
+}
+
+// adcAuthOn reports whether AGY_ADC_AUTH selects ADC sign-in. MEASURED against
+// agy 1.4.8: AGY_ADC_AUTH=1 and =true switch ADC sign-in on; =0, an empty value
+// and =no leave it off. Other spellings are NOT MEASURED, so doctor treats them
+// as off and never warns about 1.4.7 for them (issue #224).
+func adcAuthOn(v string) bool {
+	return v == "1" || v == "true"
+}
+
+// checkADCEnv flags two environment mistakes around ADC sign-in. It only ever
+// WARNs (the environment doctor sees may not be the server's), so it cannot
+// change the exit code, and its detail names variables and versions, never a
+// value. The version is used only when versionKnown, i.e. checkAgyVersion
+// passed; with an unknown version the 1.4.7 caveat is not checked.
+func checkADCEnv(getenv func(string) string, v agyver.Version, versionKnown bool) CheckResult {
+	on := adcAuthOn(getenv(envADCAuth))
+	switch {
+	case !on && getenv(envUseADC) != "":
+		// agy does not read USE_ADC (MEASURED against agy 1.4.8); a value here is a
+		// leftover from README advice before issue #223.
+		return CheckResult{checkADCEnvName, CheckWarn, envUseADC + " is set in this environment, but agy does not read it; " +
+			"ADC sign-in is selected with " + envADCAuth + "=1, which is not set to 1 or true here (see the auth note in the README)"}
+	case !on:
+		return CheckResult{checkADCEnvName, CheckPass, envADCAuth + " is not set to 1 or true in this environment (agy's normal sign-in)"}
+	case !versionKnown:
+		return CheckResult{checkADCEnvName, CheckPass, envADCAuth + " is set in this environment; the agy version is unknown (see the agy version check), so the " +
+			adcLoadFixVersion.String() + " ADC fix was not checked"}
+	case !v.AtLeast(adcLoadFixVersion):
+		return CheckResult{checkADCEnvName, CheckWarn, fmt.Sprintf("%s is set in this environment and agy is %s; agy %s fixed skills, rules, custom agents, plugins and hooks not loading under ADC sign-in, "+
+			"so project rules and the agent parameter may not take effect; upgrade agy (see the auth note in the README)", envADCAuth, v, adcLoadFixVersion)}
+	default:
+		return CheckResult{checkADCEnvName, CheckPass, fmt.Sprintf("%s is set in this environment; agy %s includes the %s ADC fix", envADCAuth, v, adcLoadFixVersion)}
+	}
 }
 
 // checkAgyReachable lists models, which is the cheapest call that requires a
