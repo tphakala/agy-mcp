@@ -40,9 +40,10 @@ const (
 var adcLoadFixVersion = agyver.Version{Major: 1, Minor: 4, Patch: 7}
 
 // CheckStatus is a preflight check's verdict. Only CheckFail makes the doctor
-// command exit non-zero; CheckWarn reports something worth seeing (an ADC environment caveat, or stale jobs
-// from a prior crash) without calling the install broken, so a fresh install
-// with leftover state is not treated as a failure.
+// command exit non-zero; CheckWarn reports something worth seeing (an ADC
+// environment caveat, or stale jobs from a prior crash) without calling the
+// install broken, so a fresh install with leftover state is not treated as a
+// failure.
 type CheckStatus int
 
 const (
@@ -174,9 +175,10 @@ func adcAuthOn(v string) bool {
 
 // checkADCEnv flags two environment mistakes around ADC sign-in. It never
 // FAILs, because the environment doctor sees may not be the server's, so it
-// cannot change the exit code, and its detail names variables and versions, never a
-// value. The version is used only when versionKnown, i.e. checkAgyVersion
-// passed; with an unknown version the 1.4.7 caveat is not checked.
+// cannot change the exit code, and its detail names variables and versions,
+// never a value. The version is used only when versionKnown, i.e.
+// checkAgyVersion passed; with an unknown version the 1.4.7 caveat is not
+// checked.
 func checkADCEnv(getenv func(string) string, v agyver.Version, versionKnown bool) CheckResult {
 	on := adcAuthOn(getenv(envADCAuth))
 	switch {
