@@ -1196,7 +1196,8 @@ func buildAgyArgs(req StartRequest) []string {
 		// what the caller wrote, independent of the installed agy version. Always
 		// available because the agy floor (agyver.Required) is at or above the 1.1.9
 		// that introduced the flag. It also disables --mode plan (MEASURED against agy
-		// 1.4.6, issue #219), so plan is refused at the tool boundary rather than this
+		// 1.1.15, 1.1.27, 1.4.6 and 1.4.8, issues #219 and #221), so plan is refused
+		// at the tool boundary rather than this
 		// flag being dropped for it; see the mode constants in internal/mcptools.
 		disableSlashCommandsFlag,
 	}
