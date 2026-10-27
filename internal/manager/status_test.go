@@ -1676,28 +1676,77 @@ func TestStatusElapsedFrozenAtCompletion(t *testing.T) {
 }
 
 // TestStatusRecoveredElapsedFrozen: a job recovered without a completion
-// sentinel (process gone, output present) is terminal, so its elapsed must
-// freeze at the best available end time (the out file's mtime) rather than
-// growing forever as time.Since(StartedAt).
+// sentinel (process gone) is terminal, so its elapsed must freeze at the best
+// available end time rather than growing forever as time.Since(StartedAt). That
+// is the out file's mtime for a recovery with no payload, and result.json's
+// mtime when there is one, because out is created at spawn and stays at the
+// spawn time when the run streamed no text (issue #233).
 func TestStatusRecoveredElapsedFrozen(t *testing.T) {
-	m := newManager(t, managerOpts{})
-	start := time.Now().Add(-time.Hour)
-	dir, _ := m.store.Create(jobstore.Meta{ID: "j", StartedAt: start, PID: 999999, BootID: "old-boot"})
-	outPath := filepath.Join(dir, "out")
-	_ = os.WriteFile(outPath, []byte("recovered"), 0o644)
-	// Pin the out mtime to 10 minutes after start; a correct elapsed is ~10m, not
-	// the ~1h time.Since(start) would give for a job that "finished" an hour ago.
-	end := start.Add(10 * time.Minute)
-	if err := os.Chtimes(outPath, end, end); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name        string
+		stage       func(t *testing.T, dir string, start, end time.Time)
+		wantState   string
+		wantPartial bool
+	}{
+		{
+			name: "out mtime bounds a recovery with no payload",
+			stage: func(t *testing.T, dir string, _, end time.Time) {
+				t.Helper()
+				outPath := jobstore.OutPath(dir)
+				if err := os.WriteFile(outPath, []byte("recovered"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(outPath, end, end); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantState:   StateDone,
+			wantPartial: true,
+		},
+		{
+			name: "result.json bounds a recovery that streamed no text",
+			stage: func(t *testing.T, dir string, start, end time.Time) {
+				t.Helper()
+				for _, p := range []string{jobstore.OutPath(dir), jobstore.ErrPath(dir)} {
+					if err := os.WriteFile(p, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chtimes(p, start, start); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeResultPayload(t, dir, streamjson.Result{Status: streamjson.StatusError, Error: "model unavailable"})
+				if err := os.Chtimes(jobstore.ResultPath(dir), end, end); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantState: StateFailed,
+		},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newManager(t, managerOpts{})
+			start := time.Now().Add(-time.Hour)
+			dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: start, PID: 999999, BootID: "old-boot"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Pin the end to 10 minutes after start; a correct elapsed is ~10m, not
+			// the ~1h time.Since(start) would give for a job that "finished" an hour
+			// ago, nor the ~0 a file left at the spawn time would give.
+			tc.stage(t, dir, start, start.Add(10*time.Minute))
 
-	st, _ := m.Status("j")
-	if st.State != StateDone || !st.Partial {
-		t.Fatalf("status = %+v, want done+partial", st)
-	}
-	if d := st.Elapsed; d < 9*time.Minute || d > 11*time.Minute {
-		t.Fatalf("elapsed = %v, want ~10m frozen at the recovered end", d)
+			st, err := m.Status("j")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.State != tc.wantState || st.Partial != tc.wantPartial {
+				t.Fatalf("status = %+v, want state %q partial=%v", st, tc.wantState, tc.wantPartial)
+			}
+			if d := st.Elapsed; d < 9*time.Minute || d > 11*time.Minute {
+				t.Fatalf("elapsed = %v, want ~10m frozen at the recovered end", d)
+			}
+		})
 	}
 }
 
@@ -1948,10 +1997,10 @@ func TestStatusRecoveredFromPayload(t *testing.T) {
 // TestStatusRecoveredLegacyPrintTimeoutIsTimeout pins that a job recovered from
 // its payload (supervisor died before writing the sentinel) gets the same
 // pre-1.1.28 print-timeout relabelling as the sentinel path (issue #192). With no
-// exit_code file the completion time falls back to the out or err mtime, and the
-// supervisor creates both when the job starts and the legacy expiry writes
-// nothing to either, so the test stages them at StartedAt: the run length then
-// has to come from result.json, which is written once agy is reaped.
+// exit_code file the completion time is result.json's mtime (issue #233). The
+// supervisor creates out and err when the job starts and the legacy expiry
+// writes nothing to either, so the test stages them at StartedAt: the elapsed
+// check fails if the run length were measured from them.
 func TestStatusRecoveredLegacyPrintTimeoutIsTimeout(t *testing.T) {
 	m := newManager(t, managerOpts{})
 	started := time.Now().Add(-9 * time.Second)
