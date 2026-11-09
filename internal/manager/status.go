@@ -329,12 +329,12 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// #192), so its relabelling sits between the two: it only touches an
 		// agy_error that survived the promotion, and the sign-in check then skips it.
 		// From agy 1.5.0 the expiry is an ERROR payload at exit 3 that names itself
-		// in finished_reason; markFinishedPrintTimeout relabels it at the same
-		// position, under the same gate, for the same reasons.
+		// in finished_reason; markFinishedPrintTimeout relabels it ahead of the
+		// legacy relabel, and the sign-in check then skips it too.
 		if !hasResult || res.Status != streamjson.StatusSuccess {
 			st = applyAgyError(dir, st)
-			st = markLegacyPrintTimeout(meta, st, res)
 			st = markFinishedPrintTimeout(dir, st, res)
+			st = markLegacyPrintTimeout(meta, st, res)
 			st = markSignInRequired(dir, st, res.Error)
 		}
 	}
@@ -524,9 +524,12 @@ func markLegacyPrintTimeout(meta jobstore.Meta, st Status, res streamjson.Result
 // timeout ...` line and an AGY_ERROR line with retryable false on stderr (MEASURED
 // against agy 1.5.3, for a turn in progress and for a background-task wait). The
 // structured finished_reason is the only signal read, so a payload without it
-// keeps its agy_error. Like markLegacyPrintTimeout it reads only an agy_error, so
-// callers run it after applyAgyError has had its chance to promote the reason to
-// quota_exhausted.
+// keeps its agy_error. The reason the text classifier gave is not consulted: the
+// payload names the terminated command, so text such as "quota" in it would
+// otherwise read as a quota wall, and a wall ends the turn with another
+// finished_reason (changelog, 1.4.11). Callers run it after applyAgyError (for
+// Retryable) and before markLegacyPrintTimeout, so it takes precedence over that
+// relabel.
 //
 // An expiry that cut a background-task wait short is background_aborted, not a
 // timeout, with the same precedence as applyCleanExitNotices: continuing the
@@ -539,18 +542,23 @@ func markLegacyPrintTimeout(meta jobstore.Meta, st Status, res streamjson.Result
 //
 // agy's own message is appended to the reported error: it carries the timeout
 // value, and for a background wait it names the command that was terminated.
-// State, Result and Partial are untouched for a timeout, so carryText still
+// State, Result and Partial are left to carryText, which runs after this and
 // decides the text; Retryable stays as applyAgyError set it, and the tool layer
 // keeps the continue-the-conversation advice for a timeout despite it.
 func markFinishedPrintTimeout(dir string, st Status, res streamjson.Result) Status {
-	if st.FailureReason != ReasonAgyError || res.FinishedReason != streamjson.FinishedReasonPrintTimeout {
+	if res.FinishedReason != streamjson.FinishedReasonPrintTimeout {
 		return st
 	}
 	// The payload's conversation id must be visible to markBackgroundAborted's
 	// conversation clause on the sentinel path, where the epilogue carries it later.
 	st = carryResultMetadata(st, res)
 	if matchesBackgroundTimeout(res.Error) || readStderrNotices(dir).backgroundAborted {
+		// markBackgroundAborted raises Partial whether or not any text exists, and
+		// carryText only raises it, so the prior value is restored and carryText alone
+		// decides it: an expiry before any narration has no text to flag.
+		partial := st.Partial
 		st = markBackgroundAborted(st)
+		st.Partial = partial
 		if res.Error != "" {
 			st.Error += " agy reported: " + res.Error
 		}
@@ -635,12 +643,12 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 		// agy's structured stderr line can promote this to quota_exhausted and
 		// supplies the retryable verdict (issue #183). Every caller reaches here
 		// with a payload, which the supervisor writes only after agy was reaped, so
-		// stderr is final. The pre-1.1.28 print-timeout relabelling follows it for
-		// the reason given in statusFromExitCode, and so does the agy 1.5
-		// finished_reason relabelling (markFinishedPrintTimeout).
+		// stderr is final. The agy 1.5 finished_reason relabelling
+		// (markFinishedPrintTimeout) and the pre-1.1.28 print-timeout relabelling
+		// follow it, in that order, for the reasons given in statusFromExitCode.
 		st = applyAgyError(dir, st)
-		st = markLegacyPrintTimeout(meta, st, res)
 		st = markFinishedPrintTimeout(dir, st, res)
+		st = markLegacyPrintTimeout(meta, st, res)
 		st = markSignInRequired(dir, st, res.Error)
 	case res.Status == streamjson.StatusSuccess:
 		if schemaSuccessWithoutOutput(meta, res) {

@@ -846,6 +846,45 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantResult: "started", wantPartial: true,
 			wantReason: ReasonBackgroundAborted, wantErrSub: "agy reported: print timeout after 25s",
 			wantRetryable: new(false),
+		}, {
+			// The payload names the terminated command, and the text classifier reads
+			// "quota" anywhere in it. finished_reason is the structured signal, so a
+			// command that mentions quota must not make the run quota_exhausted.
+			name: "a 1.5 background-task expiry whose command mentions quota is still background_aborted",
+			code: 3, res: &streamjson.Result{
+				Status: streamjson.StatusError, Response: "started\n",
+				Error:          strings.ReplaceAll(finishedBackgroundTimeoutError, "sleep 120", "go test -run TestQuota ./..."),
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile:   strings.ReplaceAll(finishedBackgroundTimeoutStderr, "sleep 120", "go test -run TestQuota ./..."),
+			wantState: StateFailed, wantResult: "started", wantPartial: true,
+			wantReason: ReasonBackgroundAborted, wantErrSub: "in the foreground",
+			wantRetryable: new(false),
+		}, {
+			// An expiry before any narration: nothing to flag partial, so the
+			// relabel must not raise the flag for a result that is empty.
+			name: "a 1.5 background-task expiry with no text is not partial",
+			code: 3, res: &streamjson.Result{
+				Status: streamjson.StatusError, Error: finishedBackgroundTimeoutError,
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile:   finishedBackgroundTimeoutStderr,
+			wantState: StateFailed, wantReason: ReasonBackgroundAborted,
+			wantErrSub: "in the foreground", wantRetryable: new(false),
+		}, {
+			// The marker leg alone: the payload wording here is synthetic (it names no
+			// background task, as a reworded future message might), so only the
+			// stderr markers can classify it.
+			name: "a 1.5 print-timeout expiry with the background-abort markers is background_aborted",
+			code: 3, res: &streamjson.Result{
+				Status: streamjson.StatusError, Response: "started\n",
+				Error:          "print timeout after 25s; the response may be incomplete",
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile:   finishedBackgroundTimeoutStderr,
+			wantState: StateFailed, wantResult: "started", wantPartial: true,
+			wantReason: ReasonBackgroundAborted, wantErrSub: "in the foreground",
+			wantRetryable: new(false),
 		},
 		// --- clean exit, no terminal payload ------------------------------------
 		{
