@@ -88,8 +88,9 @@ import (
 //     1.1.27), reported as a timeout when the job ran its full timeout
 //     (markLegacyPrintTimeout in internal/manager). From 1.1.28 to 1.4.x status
 //     derivation reads agy's stderr notice (and a SUCCESS payload's
-//     finished_reason, a field agy added in 1.4.11 per its changelog; an exit-0
-//     run carrying it is NOT MEASURED) and reports a timeout
+//     finished_reason, a field agy added in 1.4.11 per its changelog; MEASURED
+//     against agy 1.4.11 and 1.4.12, an expiry exits 0 with an empty SUCCESS
+//     payload carrying it, the stderr notice and no AGY_ERROR line) and reports a timeout
 //     (markPrintTimeout in internal/manager).
 //     agy-mcp passes the job timeout as --print-timeout and its supervisor arms
 //     the same deadline, so the two race; the hard kill won the one run MEASURED
@@ -151,7 +152,9 @@ import (
 //   - 1.4.11 added finished_reason to json and stream-json results (changelog:
 //     print_timeout, interrupted, or error; omitted when the turn finishes
 //     normally). agy-mcp reads print_timeout (see 1.5.0 above) and treats any
-//     value as marking the result partial. MEASURED against agy 1.5.3: interrupted
+//     value as marking the result partial. MEASURED against agy 1.4.11 and 1.4.12:
+//     print_timeout on an expiry that exits 0 with status SUCCESS. MEASURED
+//     against agy 1.5.3: interrupted
 //     on a SIGTERM during a run, and error on an unrecognized --model.
 //   - 1.5.2 changed `-p --dangerously-skip-permissions` to deny terminal
 //     commands or file access outside the workspace that a Gemini Enterprise
@@ -159,12 +162,14 @@ import (
 //     command denylist (changelog; NOT MEASURED, no such account here). The
 //     README's statement that a run writes under cwd and dirs stays true.
 //   - 1.5.3 rewords the Vertex model-not-found message (changelog). agy-mcp
-//     matches the AGY_ERROR status prefix, not that text; whether the 1.5.3
-//     short_error keeps its `NOT_FOUND (code 404):` prefix is NOT MEASURED. An
+//     matches the AGY_ERROR status prefix, not that text; MEASURED against
+//     agy 1.5.3, a model the region does not serve exits 3 with finished_reason
+//     error and an AGY_ERROR line whose short_error keeps its
+//     `NOT_FOUND (code 404):` prefix (keys short_error, retryable false and
+//     error_id, no status key), while the payload's error is a different wording. An
 //     unrecognized model name is a different, local failure (MEASURED against agy
 //     1.5.3: exit 1, an ERROR payload with finished_reason error and no AGY_ERROR
-//     line),
-//     so it does not settle that question.
+//     line).
 //
 // The facts about agy releases are from agy's own changelog (run
 // `agy changelog`), except where a line is marked MEASURED; the 1.1.15 line
