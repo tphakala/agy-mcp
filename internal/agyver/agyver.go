@@ -151,7 +151,8 @@ import (
 //   - 1.4.11 added finished_reason to json and stream-json results (changelog:
 //     print_timeout, interrupted, or error; omitted when the turn finishes
 //     normally). agy-mcp reads print_timeout (see 1.5.0 above) and treats any
-//     value as marking the result partial.
+//     value as marking the result partial. MEASURED against agy 1.5.3: interrupted
+//     on a SIGTERM during a run, and error on an unrecognized --model.
 //   - 1.5.2 changed `-p --dangerously-skip-permissions` to deny terminal
 //     commands or file access outside the workspace that a Gemini Enterprise
 //     administrator requires to be reviewed, and to block commands on the system
@@ -159,7 +160,10 @@ import (
 //     README's statement that a run writes under cwd and dirs stays true.
 //   - 1.5.3 rewords the Vertex model-not-found message (changelog). agy-mcp
 //     matches the AGY_ERROR status prefix, not that text; whether the 1.5.3
-//     short_error keeps its `NOT_FOUND (code 404):` prefix is NOT MEASURED.
+//     short_error keeps its `NOT_FOUND (code 404):` prefix is NOT MEASURED. An
+//     unrecognized model name is a different, local failure (MEASURED against agy
+//     1.5.3: an ERROR payload with finished_reason error and no AGY_ERROR line),
+//     so it does not settle that question.
 //
 // The facts about agy releases are from agy's own changelog (run
 // `agy changelog`), except where a line is marked MEASURED; the 1.1.15 line

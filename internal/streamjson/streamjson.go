@@ -99,7 +99,9 @@ type Result struct {
 	// FinishedReason is why agy ended the turn early. agy's changelog (1.4.11)
 	// names print_timeout, interrupted and error, and says the field is omitted
 	// when the turn finishes normally. MEASURED against agy 1.5.3: print_timeout on
-	// an expired --print-timeout. The supervisor persists this struct re-marshalled
+	// an expired --print-timeout; interrupted on a SIGTERM during a run (ERROR
+	// payload, empty response, error "interrupted", exit 1); error on an
+	// unrecognized --model (ERROR payload). The supervisor persists this struct re-marshalled
 	// (internal/supervisor/stream.go), so a field missing here never reaches
 	// result.json.
 	FinishedReason string `json:"finished_reason,omitempty"`
