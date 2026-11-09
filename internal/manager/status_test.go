@@ -691,6 +691,17 @@ func terminalCases() []terminalCase {
 			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
 			wantErrSub: "model unavailable", wantReason: ReasonAgyError,
 		}, {
+			// A CRLF line ending is a line ending too: a response of only "\r\n" is no
+			// text, in the payload checks and in the streamed fallback alike.
+			name: "an error payload whose response is only a CRLF falls back to the stream",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Response: "\r\n", Error: "model unavailable"},
+			out: "streamed\r\n", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
+			wantErrSub: "model unavailable", wantReason: ReasonAgyError,
+		}, {
+			name: "a status-less payload whose response is only a CRLF is indeterminate",
+			code: 0, res: &streamjson.Result{Response: "\r\n"},
+			wantState: StateFailed, wantErrSub: "no status and no response", wantReason: ReasonAgyError,
+		}, {
 			name: "an indeterminate payload still falls back to the stream",
 			code: 0, res: &streamjson.Result{},
 			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
@@ -978,6 +989,21 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantReason: ReasonQuotaExhausted,
 			wantErrSub: "request failed", noErrSub: "--print-timeout expired",
 			wantRetryable: new(true), wantErrorID: "e-1",
+		}, {
+			// The same expiry when the quota status arrives only in the line's own
+			// status key. The agy 1.5.3 print-timeout lines MEASURED here carry one (it
+			// reads DEADLINE_EXCEEDED) while their short_error has no canonical prefix.
+			// Synthetic, NOT MEASURED: no quota line has been captured.
+			name: "a 1.5 print-timeout expiry with a quota status key stays quota_exhausted",
+			code: 3, res: &streamjson.Result{
+				Status: streamjson.StatusError, Error: "request failed",
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile: "[agy] print timeout after 12s with turn in progress; returning partial output\n" +
+				wireAgyErrorPrefix + `{"short_error":"request failed","status":"RESOURCE_EXHAUSTED","retryable":true}` + "\n",
+			wantState: StateFailed, wantReason: ReasonQuotaExhausted,
+			wantErrSub: "request failed", noErrSub: "--print-timeout expired",
+			wantRetryable: new(true),
 		},
 		// --- clean exit, no terminal payload ------------------------------------
 		{

@@ -701,7 +701,7 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 	// renames or restructures the status field while keeping a response would
 	// otherwise have a run cut short by MAX_TURNS reported as a clean, complete
 	// answer, which is the exact failure this branch exists to prevent.
-	case res.Status == "" && strings.TrimRight(res.Response, "\n") != "" && !strictSchema:
+	case res.Status == "" && trimResponse(res.Response) != "" && !strictSchema:
 		st.State = StateDone
 	case res.Status == "":
 		st.State = StateFailed
@@ -866,9 +866,9 @@ func carryText(dir string, st Status, hasResult bool, res streamjson.Result, str
 	}
 	// Match readFile's trimming so a result reads identically whether it came
 	// from the payload or from the streamed fallback. The emptiness test uses the
-	// trimmed text for the same reason: a response of only newlines is no text, and
+	// trimmed text for the same reason: a response of only line endings is no text, and
 	// must neither set an empty Result with Partial raised nor skip the fallback.
-	resp := strings.TrimRight(res.Response, "\n")
+	resp := trimResponse(res.Response)
 	if hasResult && resp != "" {
 		st.Result = resp
 		// Raised, never lowered. Partial is a pessimistic flag: the only safe
@@ -988,7 +988,7 @@ func (m *Manager) frozenElapsed(meta jobstore.Meta, running time.Duration) time.
 	return 0
 }
 
-// readFile returns the file's contents (trailing newline trimmed), capped at
+// readFile returns the file's contents (trailing line endings trimmed), capped at
 // maxReadBytes. A missing file yields "" with no error: a job may legitimately
 // have produced no output. Any other error is returned so callers can tell an
 // unreadable file (report a failure) from an empty one (a clean empty result).
@@ -1029,8 +1029,14 @@ func readFile(p string) (string, error) {
 	if _, err := buf.ReadFrom(io.LimitReader(f, maxReadBytes)); err != nil {
 		return "", err
 	}
-	return strings.TrimRight(buf.String(), "\n"), nil
+	return trimResponse(buf.String()), nil
 }
+
+// trimResponse strips trailing line endings, LF and CRLF alike, from a response
+// or a streamed out file. A response is tested for emptiness and copied into a
+// result through it, so a payload and the streamed fallback read identically and
+// a response of only line endings is no text.
+func trimResponse(s string) string { return strings.TrimRight(s, "\r\n") }
 
 // tailFile returns the last n bytes of the file at path. Unlike a LimitReader
 // from offset 0 (which keeps the FIRST n bytes), it seeks to the end, so the
