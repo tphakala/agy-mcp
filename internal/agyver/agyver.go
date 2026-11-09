@@ -162,7 +162,8 @@ import (
 //     matches the AGY_ERROR status prefix, not that text; whether the 1.5.3
 //     short_error keeps its `NOT_FOUND (code 404):` prefix is NOT MEASURED. An
 //     unrecognized model name is a different, local failure (MEASURED against agy
-//     1.5.3: an ERROR payload with finished_reason error and no AGY_ERROR line),
+//     1.5.3: exit 1, an ERROR payload with finished_reason error and no AGY_ERROR
+//     line),
 //     so it does not settle that question.
 //
 // The facts about agy releases are from agy's own changelog (run
