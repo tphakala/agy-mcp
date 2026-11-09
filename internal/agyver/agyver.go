@@ -87,7 +87,9 @@ import (
 //     error "timeout waiting for response", MEASURED against agy 1.1.15 and
 //     1.1.27), reported as a timeout when the job ran its full timeout
 //     (markLegacyPrintTimeout in internal/manager). From 1.1.28 to 1.4.x status
-//     derivation reads agy's stderr notice and reports a timeout
+//     derivation reads agy's stderr notice (and a SUCCESS payload's
+//     finished_reason, a field agy added in 1.4.11 per its changelog; an exit-0
+//     run carrying it is NOT MEASURED) and reports a timeout
 //     (markPrintTimeout in internal/manager).
 //     agy-mcp passes the job timeout as --print-timeout and its supervisor arms
 //     the same deadline, so the two race; the hard kill won the one run MEASURED

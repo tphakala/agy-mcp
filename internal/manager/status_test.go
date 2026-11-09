@@ -734,6 +734,19 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantResult: "the first half", wantPartial: true,
 			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
 		}, {
+			// agy 1.4.11 added finished_reason to the result. A SUCCESS payload that
+			// names print_timeout is agy's own structured statement that the turn was
+			// cut short, so it must not depend on the stderr notice, which a bounded
+			// tail can lose. NOT MEASURED against an agy that exits 0 with it; the
+			// shape follows the changelog entry for 1.4.11.
+			name: "a SUCCESS payload with finished_reason print_timeout is a timeout without the stderr notice",
+			code: 0, res: &streamjson.Result{
+				Status: streamjson.StatusSuccess, Response: "the first half",
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			wantState: StateFailed, wantResult: "the first half", wantPartial: true,
+			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+		}, {
 			// With no terminal payload the streamed text is the answer, as on every
 			// other no-payload path, and it is partial.
 			name: "a print-timeout expiry with no payload carries the stream",
@@ -2094,6 +2107,7 @@ func TestStatusRecoveredFromPayload(t *testing.T) {
 		{"an unrecognized status", nil, streamjson.Result{Status: "MAX_TURNS"}, "", "", StateFailed, ReasonAgyError, "", false},
 		// Stderr notices on the recovery path (issue #186).
 		{"print timeout", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", printTimeoutNotice + "\n", StateFailed, ReasonTimeout, "half an answer", true},
+		{"SUCCESS print timeout named only by finished_reason", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer", FinishedReason: streamjson.FinishedReasonPrintTimeout}, "", "", StateFailed, ReasonTimeout, "half an answer", true},
 		{"background abort", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", backgroundAbortNotice, StateFailed, ReasonBackgroundAborted, "half an answer", true},
 		// The agy 1.5 shape: an ERROR payload whose finished_reason names the expiry.
 		{"1.5 print timeout", nil, streamjson.Result{Status: streamjson.StatusError, Error: finishedPrintTimeoutError, FinishedReason: streamjson.FinishedReasonPrintTimeout}, "", finishedPrintTimeoutStderr, StateFailed, ReasonTimeout, "", false},

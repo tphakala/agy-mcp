@@ -267,11 +267,11 @@ func recoverInterrupted(dir string, meta jobstore.Meta, st Status) Status {
 // before agy 1.1.28 its own print-timeout) in band with a specific message, where
 // the exit code says less; markLegacyPrintTimeout relabels that print-timeout
 // report as a timeout. From 1.1.28 to 1.4.x an expired print-timeout exits 0
-// instead, which case 0 below detects from stderr. From 1.5.0 it is an ERROR
-// payload again, at exit 3 with finished_reason print_timeout, which
-// markFinishedPrintTimeout relabels in the default branch. The code still owns every case where
-// no payload could be written, which is exactly the terminations agy-mcp itself
-// performs.
+// instead, which case 0 below detects from stderr or from the payload's
+// finished_reason. From 1.5.0 it is an ERROR payload again, at exit 3 with
+// finished_reason print_timeout, which markFinishedPrintTimeout relabels in the
+// default branch. The code still owns every case where no payload could be
+// written, which is exactly the terminations agy-mcp itself performs.
 //
 // Every non-zero code shares one epilogue rather than repeating it per branch.
 // The branches differ only in the state and the explanation they choose; what
@@ -359,15 +359,17 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	return st
 }
 
-// applyCleanExitNotices lets agy's stderr notices reclassify a run whose outcome
+// applyCleanExitNotices lets agy's stderr notices (and a payload's finished_reason
+// naming a print-timeout) reclassify a run whose outcome
 // was derived as though agy finished its work: a clean exit (code 0), or a
 // recovered job whose supervisor died after persisting agy's result payload. The
 // supervisor persists that payload only after agy has been reaped (see run in
 // internal/supervisor), so in both cases agy's stderr is complete. done is the status
 // derived from the payload (or its absence); res and hasResult are that payload.
 func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res streamjson.Result, hasResult bool) Status {
-	// Two stderr notices can show that a run agy vouched for did not finish
-	// its work. Both reclassify the same three shapes: a SUCCESS whose
+	// Two notices can show that a run agy vouched for did not finish its work:
+	// agy's stderr lines, and for the print-timeout one also the payload's
+	// finished_reason. Both reclassify the same three shapes: a SUCCESS whose
 	// state is still done here; a json-schema SUCCESS that never emitted
 	// structured_output, which applyResult has already failed as a generic
 	// agy_error; and a json-schema run that never wrote any terminal payload,
@@ -415,8 +417,11 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 	// hard kill won when this was MEASURED against agy 1.2.9 (a 15s job
 	// ended with exit code 124), but nothing guarantees that order, and
 	// this covers the case where agy's timer wins, which would otherwise
-	// report a truncated answer as done.
-	if notices.printTimeout {
+	// report a truncated answer as done. agy's structured finished_reason (agy
+	// 1.4.11 and later) says the same thing in the payload, so it counts too and
+	// timeout verdict does not hinge on the stderr notice surviving the bounded
+	// tail. The background-abort check above still reads stderr only.
+	if notices.printTimeout || res.FinishedReason == streamjson.FinishedReasonPrintTimeout {
 		return markPrintTimeout(done)
 	}
 	return done
@@ -452,9 +457,9 @@ func markBackgroundAborted(st Status) Status {
 }
 
 // markPrintTimeout reclassifies a status derived as though agy finished (a clean
-// exit, or a job recovered from its payload) whose stderr shows agy's own
-// --print-timeout expired with the turn still in progress. agy returns the
-// partial output it has and exits 0 in that case (per agy's changelog, from
+// exit, or a job recovered from its payload) whose stderr notice, or whose
+// payload's finished_reason, shows agy's own --print-timeout expired with the
+// turn still in progress. agy returns the partial output it has and exits 0 in that case (per agy's changelog, from
 // 1.1.28; MEASURED against agy 1.2.9, and from 1.5.0 the expiry exits 3 instead,
 // see markFinishedPrintTimeout), so the run did not finish even when the payload
 // says SUCCESS. The
