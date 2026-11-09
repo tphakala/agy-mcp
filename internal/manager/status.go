@@ -542,9 +542,11 @@ func markLegacyPrintTimeout(meta jobstore.Meta, st Status, res streamjson.Result
 //
 // agy's own message is appended to the reported error: it carries the timeout
 // value, and for a background wait it names the command that was terminated.
-// State, Result and Partial are left to carryText, which runs after this and
-// decides the text; Retryable stays as applyAgyError set it, and the tool layer
-// keeps the continue-the-conversation advice for a timeout despite it.
+// State is not set here: it runs inside a failure ladder, after the run is already
+// failed (the non-zero-exit default branch and applyResult's ERROR branch). Result and
+// Partial are left to carryText, which runs after this and decides the text;
+// Retryable stays as applyAgyError set it, and the tool layer keeps the
+// continue-the-conversation advice for a timeout despite it.
 func markFinishedPrintTimeout(dir string, st Status, res streamjson.Result) Status {
 	if res.FinishedReason != streamjson.FinishedReasonPrintTimeout {
 		return st
