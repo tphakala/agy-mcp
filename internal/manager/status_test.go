@@ -678,6 +678,19 @@ func terminalCases() []terminalCase {
 			code: 0, res: &streamjson.Result{},
 			wantState: StateFailed, wantErrSub: "no status and no response", wantReason: ReasonAgyError,
 		}, {
+			// A response of only newlines is no text once trimmed, so it is as
+			// indeterminate as a payload with no response at all.
+			name: "a status-less payload whose response is only a newline is indeterminate",
+			code: 0, res: &streamjson.Result{Response: "\n"},
+			wantState: StateFailed, wantErrSub: "no status and no response", wantReason: ReasonAgyError,
+		}, {
+			// The newline-only response must neither count as the payload's text nor
+			// hide the streamed text behind it.
+			name: "an error payload whose response is only a newline falls back to the stream",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Response: "\n", Error: "model unavailable"},
+			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,
+			wantErrSub: "model unavailable", wantReason: ReasonAgyError,
+		}, {
 			name: "an indeterminate payload still falls back to the stream",
 			code: 0, res: &streamjson.Result{},
 			out: "streamed", wantState: StateFailed, wantResult: "streamed", wantPartial: true,

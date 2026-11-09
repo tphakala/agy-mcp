@@ -701,7 +701,7 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 	// renames or restructures the status field while keeping a response would
 	// otherwise have a run cut short by MAX_TURNS reported as a clean, complete
 	// answer, which is the exact failure this branch exists to prevent.
-	case res.Status == "" && res.Response != "" && !strictSchema:
+	case res.Status == "" && strings.TrimRight(res.Response, "\n") != "" && !strictSchema:
 		st.State = StateDone
 	case res.Status == "":
 		st.State = StateFailed
@@ -864,10 +864,13 @@ func carryText(dir string, st Status, hasResult bool, res streamjson.Result, str
 		st.Partial = st.Partial || res.FinishedReason != ""
 		return st
 	}
-	if hasResult && res.Response != "" {
-		// Match readFile's trimming so a result reads identically whether it came
-		// from the payload or from the streamed fallback.
-		st.Result = strings.TrimRight(res.Response, "\n")
+	// Match readFile's trimming so a result reads identically whether it came
+	// from the payload or from the streamed fallback. The emptiness test uses the
+	// trimmed text for the same reason: a response of only newlines is no text, and
+	// must neither set an empty Result with Partial raised nor skip the fallback.
+	resp := strings.TrimRight(res.Response, "\n")
+	if hasResult && resp != "" {
+		st.Result = resp
 		// Raised, never lowered. Partial is a pessimistic flag: the only safe
 		// operation on it is to set it. No caller sets it before calling here
 		// today, so this is currently the same as an assignment, but a caller
