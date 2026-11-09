@@ -43,6 +43,34 @@ const (
 	finishedBackgroundTimeoutStderr = backgroundAbortNotice +
 		"[agy] print timeout after 25s with 1 background task(s) still running; terminating them\n" +
 		finishedBackgroundTimeoutTail
+
+	// The deadline fell while the agent was waiting on two background tasks
+	// (MEASURED against agy 1.5.3; the conversation id is synthetic and the task log
+	// paths are omitted). Both marker lines print ahead of the error lines.
+	finishedMultiTaskTimeoutError = "print timeout after 1m10s while the agent was waiting on 2 background task(s); " +
+		"the response may be incomplete; terminated 00000000-0000-4000-8000-000000000002/task-2 (sleep 300, running 48s), " +
+		"00000000-0000-4000-8000-000000000002/task-3 (sleep 330, running 47s)"
+	finishedMultiTaskTimeoutStderr = "root agent idle; waiting up to 1m10s for 2 background task(s)\n" +
+		"terminating 2 background task(s) on exit\n" +
+		"[agy] print timeout after 1m10s with 2 background task(s) still running; terminating them\n" +
+		"error: " + finishedMultiTaskTimeoutError + "\n" +
+		wireAgyErrorPrefix + `{"short_error":"` + finishedMultiTaskTimeoutError + `","status":"DEADLINE_EXCEEDED","retryable":false,"reason":"print_timeout",` +
+		`"tasks":[{"id":"00000000-0000-4000-8000-000000000002/task-2","description":"sleep 300","elapsed_seconds":48},` +
+		`{"id":"00000000-0000-4000-8000-000000000002/task-3","description":"sleep 330","elapsed_seconds":47}]}` + "\n"
+
+	// The deadline fell while the model was still mid-turn with two background tasks
+	// already started (MEASURED against agy 1.5.3, same synthetic id): the payload
+	// says the turn was in progress and not "background task", and stderr has the
+	// terminating line but no "root agent idle" line.
+	finishedInProgressTasksError = "print timeout after 30s with the turn still in progress; the response is partial; " +
+		"terminated 00000000-0000-4000-8000-000000000003/task-2 (sleep 120, running 10s), " +
+		"00000000-0000-4000-8000-000000000003/task-3 (sleep 150, running 9s)"
+	finishedInProgressTasksStderr = "[agy] print timeout after 30s with turn in progress; returning partial output\n" +
+		"terminating 2 background task(s) on exit\n" +
+		"error: " + finishedInProgressTasksError + "\n" +
+		wireAgyErrorPrefix + `{"short_error":"` + finishedInProgressTasksError + `","status":"DEADLINE_EXCEEDED","retryable":false,"reason":"print_timeout",` +
+		`"tasks":[{"id":"00000000-0000-4000-8000-000000000003/task-2","description":"sleep 120","elapsed_seconds":10},` +
+		`{"id":"00000000-0000-4000-8000-000000000003/task-3","description":"sleep 150","elapsed_seconds":9}]}` + "\n"
 )
 
 // signInStderr is the stderr of a run with no usable sign-in (issue #214), as
@@ -768,8 +796,9 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantReason: ReasonBackgroundAborted,
 			wantErrSub: "in the foreground",
 		}, {
-			// The exit-0 finished_reason shape is NOT MEASURED (agy 1.4.11 to 1.4.x,
-			// from the changelog). The filler stands for the lines that follow the two
+			// A hand-staged combination: the exit-0 SUCCESS finished_reason shape was
+			// MEASURED against agy 1.4.11 and 1.4.12 with an empty response and no
+			// background markers. The filler stands for the lines that follow the two
 			// markers in the measured 1.5.3 shape, enough to push them out of the
 			// errTailBytes window.
 			name: "a SUCCESS print_timeout whose background markers sit beyond the 2000-byte tail is background_aborted",
@@ -804,8 +833,9 @@ func terminalCases() []terminalCase {
 			// agy 1.4.11 added finished_reason to the result. A SUCCESS payload that
 			// names print_timeout is agy's own structured statement that the turn was
 			// cut short, so it must not depend on the stderr notice, which a bounded
-			// tail can lose. NOT MEASURED against an agy that exits 0 with it; the
-			// shape follows the changelog entry for 1.4.11.
+			// tail can lose. This row has text and no notice; the shape agy 1.4.11
+			// and 1.4.12 produced (MEASURED) has an empty response and the notice, see
+			// the next row.
 			name: "a SUCCESS payload with finished_reason print_timeout is a timeout without the stderr notice",
 			code: 0, res: &streamjson.Result{
 				Status: streamjson.StatusSuccess, Response: "the first half",
@@ -813,6 +843,18 @@ func terminalCases() []terminalCase {
 			},
 			wantState: StateFailed, wantResult: "the first half", wantPartial: true,
 			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+		}, {
+			// MEASURED against agy 1.4.11 and 1.4.12 (--print-timeout 8s, a foreground
+			// sleep): exit 0, a SUCCESS payload with an empty response and
+			// finished_reason print_timeout, the stderr notice, no AGY_ERROR line.
+			name: "a 1.4.x expiry at exit 0 with an empty SUCCESS and finished_reason is a timeout with no result",
+			code: 0, res: &streamjson.Result{
+				Status: streamjson.StatusSuccess, ConversationID: "cid-pt14",
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile:   printTimeoutNotice + "\n",
+			wantState: StateFailed, wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
+			wantConvID: "cid-pt14",
 		}, {
 			// Only the background markers are matched in the wide window; the
 			// print-timeout notice counts only in the last errTailBytes. A notice with
@@ -933,6 +975,32 @@ func terminalCases() []terminalCase {
 			errFile:   finishedBackgroundTimeoutTail,
 			wantState: StateFailed, wantResult: "started", wantPartial: true,
 			wantReason: ReasonBackgroundAborted, wantErrSub: "agy reported: print timeout after 25s",
+			wantRetryable: new(false),
+		}, {
+			// MEASURED against agy 1.5.3 with two background tasks: the wait wording
+			// counts them ("2 background task(s)") and names each terminated command.
+			name: "a 1.5 two-task background wait expiry is background_aborted",
+			code: 3, res: &streamjson.Result{
+				Status: streamjson.StatusError, Response: "started\n", Error: finishedMultiTaskTimeoutError,
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile:   finishedMultiTaskTimeoutStderr,
+			wantState: StateFailed, wantResult: "started", wantPartial: true,
+			wantReason: ReasonBackgroundAborted, wantErrSub: "agy reported: print timeout after 1m10s",
+			wantRetryable: new(false),
+		}, {
+			// MEASURED against agy 1.5.3: tasks were already running when the deadline
+			// cut the turn, but the payload says the turn was in progress and stderr
+			// lacks the idle line, so neither background signal fires and the run is a
+			// timeout whose reported error names the terminated tasks.
+			name: "a 1.5 in-progress expiry that terminated started tasks is a timeout",
+			code: 3, res: &streamjson.Result{
+				Status: streamjson.StatusError, Error: finishedInProgressTasksError,
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile:   finishedInProgressTasksStderr,
+			wantState: StateFailed, wantReason: ReasonTimeout,
+			wantErrSub:    "terminated 00000000-0000-4000-8000-000000000003/task-2 (sleep 120",
 			wantRetryable: new(false),
 		}, {
 			// The payload names the terminated command, and the text classifier reads
@@ -1172,6 +1240,19 @@ func terminalCases() []terminalCase {
 			code: 3, res: &streamjson.Result{Status: streamjson.StatusError, Error: measuredAgyErrorLine1, ConversationID: "c1"},
 			errFile:   measuredAgyErrorStderr,
 			wantState: StateFailed, wantErrSub: measuredAgyErrorLine1, wantReason: ReasonAgyError, wantConvID: "c1",
+			wantRetryable: new(false), wantErrorID: measuredAgyErrorID,
+		}, {
+			// MEASURED against agy 1.5.3 for a model the account's region does not serve:
+			// exit 3, the payload text is agy's own wording with finished_reason error, and
+			// the AGY_ERROR line keeps its `NOT_FOUND (code 404):` prefix, with retryable
+			// false, an error_id and no status key. The line's object is the 1.3.1 fixture.
+			name: "a 1.5 model-not-served failure keeps the AGY_ERROR verdict and agy_error",
+			code: 3, res: &streamjson.Result{
+				Status: streamjson.StatusError, ConversationID: "c15", FinishedReason: "error",
+				Error: "Selected model is not supported in the selected location.",
+			},
+			errFile:   "error: Selected model is not supported in the selected location.\n" + wireAgyErrorPrefix + measuredAgyErrorJSON + "\n",
+			wantState: StateFailed, wantErrSub: "Selected model is not supported", wantReason: ReasonAgyError, wantConvID: "c15",
 			wantRetryable: new(false), wantErrorID: measuredAgyErrorID,
 		}, {
 			name: "exit 0 error payload reads agy's AGY_ERROR line",

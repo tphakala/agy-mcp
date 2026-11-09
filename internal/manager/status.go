@@ -33,8 +33,8 @@ const errTailBytes = 2000
 // scans for the two background-abort markers, which are matched in a wider window
 // than the errTailBytes the other notices use. On agy 1.5.3 the markers are the
 // first stderr lines and the lines after them grow with each terminated task
-// (MEASURED for one task, 921 bytes in all; more tasks NOT MEASURED), so a
-// 2000-byte tail can lose them. The bound keeps the read of a polled done job
+// (MEASURED: 921 bytes in all for one task and 1305 for two), so a 2000-byte tail
+// can lose them. The bound keeps the read of a polled done job
 // small.
 const backgroundMarkerScanBytes = 64 << 10
 
@@ -563,9 +563,14 @@ func markLegacyPrintTimeout(meta jobstore.Meta, st Status, res streamjson.Result
 // window. The wording is the safety net for markers that are absent (a reworded or
 // future agy) or that more than that window of later lines pushes out: the markers
 // are the first lines and the error and AGY_ERROR lines after them name each
-// terminated task. Only a one-task run was captured (NOT MEASURED for more); a
-// four-task attempt on agy 1.5.3 produced daemon tasks and no wait, so the
-// multi-task wait shape is still NOT MEASURED.
+// terminated task. MEASURED against agy 1.5.3 for one task and for two: the wait
+// wording counts them ("waiting on 2 background task(s)") and both marker lines
+// print. A four-task attempt produced daemon tasks and no wait. A deadline that
+// fell while the turn was still in progress, with background tasks already started,
+// is a different shape (MEASURED against agy 1.5.3, two tasks): the payload says
+// "the turn still in progress", stderr has the terminating line but no idle line,
+// and the run is reported as a timeout, with the terminated tasks named in the
+// reported error.
 //
 // agy's own message is appended to the reported error: it carries the timeout
 // value, and for a background wait it names the command that was terminated.

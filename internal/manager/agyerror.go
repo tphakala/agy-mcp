@@ -226,7 +226,7 @@ func readAgyError(dir string) (agyErrorInfo, bool) {
 // the canonical status reads as a quota wall (never a demotion). It returns st
 // unchanged when stderr has no usable line.
 //
-// MEASURED against agy 1.2.9 and 1.3.1 for a model-not-found failure: exit 3, and
+// MEASURED against agy 1.2.9, 1.3.1 and 1.5.3 for a model-not-found failure: exit 3, and
 // the AGY_ERROR object has the keys short_error, retryable, error_id. MEASURED
 // against agy 1.5.3 for an expired --print-timeout: exit 3, and the keys
 // short_error, status ("DEADLINE_EXCEEDED"), retryable (false) and reason
