@@ -137,16 +137,18 @@ type Status struct {
 	//     mid-stream). The text may be truncated or hold intermediate turns.
 	//   - Taken from a terminal event agy did emit but did not mark SUCCESS: an
 	//     ERROR, an outcome this build does not recognize, or none at all. The
-	//     text is whatever the run had produced when it stopped.
+	//     text is whatever the run had produced when it stopped. The same holds
+	//     for an event that carries a finished_reason, agy's own statement
+	//     (changelog, 1.4.11) that the turn ended early, even when it says SUCCESS.
 	//   - Taken from a clean exit, or from a job recovered from its payload after
 	//     its supervisor died, whose stderr shows agy ended the run early: its own
 	//     --print-timeout expired mid-turn (markPrintTimeout) or it killed
 	//     outstanding background tasks (markBackgroundAborted). Either overrides a
 	//     SUCCESS mark, because agy set it on a run that did not finish.
 	//
-	// Otherwise, for a non-schema run, a response agy marked SUCCESS is
-	// authoritative. For a schema run, only SUCCESS structured_output is
-	// authoritative; response is diagnostic and partial when that structured
+	// Otherwise, for a non-schema run, a response agy marked SUCCESS (and gave no
+	// finished_reason) is authoritative. For a schema run, only SUCCESS
+	// structured_output without a finished_reason is authoritative; response is diagnostic and partial when that structured
 	// result is missing. Either kind of authoritative result stays complete even
 	// if the process then exits via cancel or timeout. The one exception after
 	// exit is a timeout (code 124) whose stderr shows agy's own print-timeout had
@@ -792,7 +794,9 @@ func argsSelectJSONSchema(args []string) bool {
 //     result remains complete even when the process then exits badly: agy can
 //     print its result and hang, or be cancelled a moment later. Any other
 //     terminal status is agy declining to vouch for the text, so it is handed
-//     back and flagged rather than discarded.
+//     back and flagged rather than discarded. So is a payload that carries a
+//     finished_reason, which agy's changelog (1.4.11) defines as why a turn
+//     ended early: that overrides a SUCCESS mark.
 //   - the streamed out file, reached when there is no payload or the payload
 //     carried no text. It is reconstructed from a stream that stopped, so it may
 //     be truncated or hold intermediate turns, and is partial.
@@ -813,6 +817,7 @@ func argsSelectJSONSchema(args []string) bool {
 func carryText(dir string, st Status, hasResult bool, res streamjson.Result, strictSchema bool) Status {
 	if hasResult && strictSchema && res.Status == streamjson.StatusSuccess && len(res.StructuredOutput) > 0 {
 		st.Result = string(res.StructuredOutput)
+		st.Partial = st.Partial || res.FinishedReason != ""
 		return st
 	}
 	if hasResult && res.Response != "" {
@@ -825,7 +830,7 @@ func carryText(dir string, st Status, hasResult bool, res streamjson.Result, str
 		// that learns the text is untrustworthy for its own reason (skipped
 		// lines in the stream, say) must not have that silently cleared by a
 		// payload agy happened to mark SUCCESS.
-		st.Partial = st.Partial || res.Status != streamjson.StatusSuccess || strictSchema
+		st.Partial = st.Partial || res.Status != streamjson.StatusSuccess || strictSchema || res.FinishedReason != ""
 		return st
 	}
 	out, err := readFile(jobstore.OutPath(dir))

@@ -148,7 +148,8 @@ import (
 //     the run with exit 0 and status SUCCESS.
 //   - 1.4.11 added finished_reason to json and stream-json results (changelog:
 //     print_timeout, interrupted, or error; omitted when the turn finishes
-//     normally). agy-mcp reads print_timeout (see 1.5.0 above).
+//     normally). agy-mcp reads print_timeout (see 1.5.0 above) and treats any
+//     value as marking the result partial.
 //   - 1.5.2 changed `-p --dangerously-skip-permissions` to deny terminal
 //     commands or file access outside the workspace that a Gemini Enterprise
 //     administrator requires to be reviewed, and to block commands on the system

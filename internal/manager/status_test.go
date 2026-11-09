@@ -884,6 +884,26 @@ func terminalCases() []terminalCase {
 			// deleting the epilogue that carries them passed the whole suite.
 			wantConvID: "cid-cancelled", wantTurns: 4,
 		}, {
+			// The control above has no finished_reason. agy's changelog (1.4.11) says
+			// the field names why a turn ended early, so a SUCCESS response that
+			// carries one is not the complete answer. "interrupted" is the changelog's
+			// word for a canceled run; this payload is hand-staged, not MEASURED.
+			name: "a cancel after a SUCCESS payload agy marked interrupted is partial",
+			code: jobstore.ExitSIGTERM,
+			res: &streamjson.Result{
+				Status: streamjson.StatusSuccess, Response: "finished so far", FinishedReason: "interrupted",
+			},
+			wantState: StateCancelled, wantResult: "finished so far", wantPartial: true,
+		}, {
+			// The structured_output branch of carryText: a schema SUCCESS is only
+			// authoritative when agy gave no finished_reason. Hand-staged, not MEASURED.
+			name: "a schema SUCCESS carrying a finished_reason is partial",
+			code: 0, args: []string{jsonSchemaFlag, "{}"},
+			res: &streamjson.Result{
+				Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(`{"a":1}`), FinishedReason: "error",
+			},
+			wantState: StateDone, wantResult: `{"a":1}`, wantPartial: true,
+		}, {
 			// The bug: the payload branch never set Partial, so truncated text
 			// arriving with an ERROR status was reported as a complete answer.
 			name: "a cancel after an error payload is partial",
@@ -1128,7 +1148,8 @@ func terminalCases() []terminalCase {
 // that can catch that.
 func TestStatusTerminalContractTableIsWellFormed(t *testing.T) {
 	for _, tc := range terminalCases() {
-		vouched := tc.res != nil && tc.res.Status == streamjson.StatusSuccess && tc.res.Response != ""
+		vouched := tc.res != nil && tc.res.Status == streamjson.StatusSuccess && tc.res.Response != "" &&
+			tc.res.FinishedReason == ""
 		// Ask the production predicate, not a copy of it: a validator that
 		// classified a row differently from the code would pass exactly the rows
 		// it exists to catch.
