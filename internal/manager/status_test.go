@@ -934,15 +934,6 @@ func terminalCases() []terminalCase {
 			},
 			wantState: StateCancelled, wantResult: "finished so far", wantPartial: true,
 		}, {
-			// The structured_output branch of carryText: a schema SUCCESS is only
-			// authoritative when agy gave no finished_reason. Hand-staged, not MEASURED.
-			name: "a schema SUCCESS carrying a finished_reason is partial",
-			code: 0, args: []string{jsonSchemaFlag, "{}"},
-			res: &streamjson.Result{
-				Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(`{"a":1}`), FinishedReason: "error",
-			},
-			wantState: StateDone, wantResult: `{"a":1}`, wantPartial: true,
-		}, {
 			// The bug: the payload branch never set Partial, so truncated text
 			// arriving with an ERROR status was reported as a complete answer.
 			name: "a cancel after an error payload is partial",
@@ -1359,6 +1350,17 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
 			},
 			wantState: StateDone, wantResult: `{"business":"ok"}`,
+		}, {
+			// The structured_output branch of carryText: a schema SUCCESS is only
+			// authoritative when agy gave no finished_reason. Hand-staged, not MEASURED.
+			name: "a schema SUCCESS structured_output that agy marked with a finished_reason is partial",
+			code: 0,
+			args: schemaArgs,
+			res: &streamjson.Result{
+				Status: streamjson.StatusSuccess, StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+				FinishedReason: "interrupted",
+			},
+			wantState: StateDone, wantResult: `{"business":"ok"}`, wantPartial: true,
 		}, {
 			name:      "schema success without structured output fails closed",
 			code:      0,
