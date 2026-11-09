@@ -80,14 +80,16 @@ import (
 // single run still reads back intact and nothing agy-mcp does can flush agy's
 // store on its behalf.
 //
-// Three later releases change how a headless run ends. None raises the floor,
+// Four later releases change how a headless run ends. None raises the floor,
 // because agy-mcp classifies the run on both sides of each change:
 //   - 1.1.28 made an expired --print-timeout return the partial output and exit
 //     0 instead of failing. Below 1.1.28 the expiry is an in-band ERROR (exit 1,
 //     error "timeout waiting for response", MEASURED against agy 1.1.15 and
 //     1.1.27), reported as a timeout when the job ran its full timeout
-//     (markLegacyPrintTimeout in internal/manager). From 1.1.28 status
-//     derivation reads agy's stderr notice and reports a timeout
+//     (markLegacyPrintTimeout in internal/manager). From 1.1.28 to 1.4.x status
+//     derivation reads agy's stderr notice (and a SUCCESS payload's
+//     finished_reason, a field agy added in 1.4.11 per its changelog; an exit-0
+//     run carrying it is NOT MEASURED) and reports a timeout
 //     (markPrintTimeout in internal/manager).
 //     agy-mcp passes the job timeout as --print-timeout and its supervisor arms
 //     the same deadline, so the two race; the hard kill won the one run MEASURED
@@ -102,6 +104,17 @@ import (
 //     about 5s after the agent goes idle. A task still running at the end is
 //     killed, and the run is reported as background_aborted, or as a timeout
 //     when agy-mcp's own hard kill fires first.
+//   - 1.5.0 made an expired --print-timeout exit 3 with an ERROR payload whose
+//     finished_reason is print_timeout (the field arrived in 1.4.11), plus an
+//     `[agy] print timeout ...` stderr line and an AGY_ERROR line with retryable
+//     false. MEASURED against agy 1.5.3 for a turn in progress and for a
+//     background-task wait, which still prints the two background-abort
+//     markers. Status derivation reads finished_reason and reports a timeout,
+//     or background_aborted for the background wait (markFinishedPrintTimeout
+//     in internal/manager). The supervisor's hard kill won the one run through
+//     agy-mcp MEASURED against agy 1.5.3 (exit 124). The same release made a run
+//     without --print-timeout wait for background tasks without limit; agy-mcp
+//     always passes one (see 1.2.6).
 //
 // 1.2.9 also fixed a conversation-database corruption risk in which checking the
 // file for write access could drop file locks held by concurrent CLI processes.
@@ -110,7 +123,7 @@ import (
 // parallel jobs benefit from it. Whether those jobs actually share a database
 // file is not measured, and the floor stays put on the same reasoning.
 //
-// Later releases up to 1.4.8 were read against the flags and output agy-mcp
+// Later releases up to 1.5.3 were read against the flags and output agy-mcp
 // consumes, and none raises the floor. These touch behaviour a caller can see:
 //   - 1.3.4 made an unknown --agent fail the run before any model call (exit 1,
 //     an ERROR result naming the available agents; MEASURED against agy 1.4.6).
@@ -135,6 +148,18 @@ import (
 //     an ordinary result. State stays exit-code-driven (see 1.1.14 above), and
 //     MEASURED against agy 1.4.8 a shell command that exits non-zero still ends
 //     the run with exit 0 and status SUCCESS.
+//   - 1.4.11 added finished_reason to json and stream-json results (changelog:
+//     print_timeout, interrupted, or error; omitted when the turn finishes
+//     normally). agy-mcp reads print_timeout (see 1.5.0 above) and treats any
+//     value as marking the result partial.
+//   - 1.5.2 changed `-p --dangerously-skip-permissions` to deny terminal
+//     commands or file access outside the workspace that a Gemini Enterprise
+//     administrator requires to be reviewed, and to block commands on the system
+//     command denylist (changelog; NOT MEASURED, no such account here). The
+//     README's statement that a run writes under cwd and dirs stays true.
+//   - 1.5.3 rewords the Vertex model-not-found message (changelog). agy-mcp
+//     matches the AGY_ERROR status prefix, not that text; whether the 1.5.3
+//     short_error keeps its `NOT_FOUND (code 404):` prefix is NOT MEASURED.
 //
 // The facts about agy releases are from agy's own changelog (run
 // `agy changelog`), except where a line is marked MEASURED; the 1.1.15 line
