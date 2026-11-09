@@ -803,6 +803,14 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantResult: "the first half", wantPartial: true,
 			wantErrSub: "--print-timeout expired", wantReason: ReasonTimeout,
 		}, {
+			// Only the background markers are matched in the wide window; the
+			// print-timeout notice counts only in the last errTailBytes. A notice with
+			// more than that after it is not read as this run's expiry.
+			name: "a print-timeout notice beyond the 2000-byte tail does not downgrade a done run",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "the real answer"},
+			errFile:   printTimeoutNotice + "\n" + strings.Repeat("some agy chatter line\n", 150),
+			wantState: StateDone, wantResult: "the real answer",
+		}, {
 			// With no terminal payload the streamed text is the answer, as on every
 			// other no-payload path, and it is partial.
 			name: "a print-timeout expiry with no payload carries the stream",
@@ -1200,6 +1208,14 @@ func terminalCases() []terminalCase {
 			errFile:   signInStderr,
 			wantState: StateFailed, wantErrSub: "authentication failed or timed out", wantReason: ReasonAgyError,
 			wantSignIn: true,
+		}, {
+			// The sign-in notice counts only in the last errTailBytes, like the
+			// print-timeout notice; an older one with more than that after it does not
+			// flag this run.
+			name: "a sign-in notice beyond the 2000-byte tail is not flagged",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: "request failed"},
+			errFile:   signInStderr + strings.Repeat("some agy chatter line\n", 150),
+			wantState: StateFailed, wantErrSub: "request failed", wantReason: ReasonAgyError,
 		}, {
 			// Changelog wording, NOT MEASURED; carried by the payload on a clean exit.
 			name: "agy's changelog expiry wording in an error payload is flagged",
