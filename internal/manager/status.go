@@ -70,10 +70,12 @@ const (
 	// ReasonBackgroundAborted: agy ended the run itself (a clean exit, with a
 	// SUCCESS payload in the run MEASURED against agy 1.2.7, issue #173; a clean
 	// exit with no terminal payload and a job recovered from its payload also
-	// qualify), but its stderr shows it went idle with outstanding background
-	// shell tasks and killed them at exit, so the "answer" is only progress
-	// narration, not usable work. Actionable: re-run and keep verification in
-	// the foreground.
+	// qualify; so does, from agy 1.5.0, an ERROR payload at exit 3 whose
+	// finished_reason says its own --print-timeout cut its wait on the tasks
+	// short, MEASURED against agy 1.5.3), but its output shows it went idle with
+	// outstanding background shell tasks and killed them at exit, so the "answer"
+	// is only progress narration, not usable work. Actionable: re-run and keep
+	// verification in the foreground.
 	ReasonBackgroundAborted = "background_aborted"
 	ReasonUnknown           = "unknown" // a failure that fits none of the above (e.g. the output could not be read)
 )
@@ -262,8 +264,10 @@ func recoverInterrupted(dir string, meta jobstore.Meta, st Status) Status {
 // the outcome: agy reports failures it survives (an unresolvable model, and
 // before agy 1.1.28 its own print-timeout) in band with a specific message, where
 // the exit code says less; markLegacyPrintTimeout relabels that print-timeout
-// report as a timeout. From 1.1.28 an expired print-timeout exits 0 instead,
-// which case 0 below detects from stderr. The code still owns every case where
+// report as a timeout. From 1.1.28 to 1.4.x an expired print-timeout exits 0
+// instead, which case 0 below detects from stderr. From 1.5.0 it is an ERROR
+// payload again, at exit 3 with finished_reason print_timeout, which
+// markFinishedPrintTimeout relabels in the default branch. The code still owns every case where
 // no payload could be written, which is exactly the terminations agy-mcp itself
 // performs.
 //
@@ -322,9 +326,13 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// pre-1.1.28 print-timeout expiry arrives as an ERROR payload (issue
 		// #192), so its relabelling sits between the two: it only touches an
 		// agy_error that survived the promotion, and the sign-in check then skips it.
+		// From agy 1.5.0 the expiry is an ERROR payload at exit 3 that names itself
+		// in finished_reason; markFinishedPrintTimeout relabels it at the same
+		// position, under the same gate, for the same reasons.
 		if !hasResult || res.Status != streamjson.StatusSuccess {
 			st = applyAgyError(dir, st)
 			st = markLegacyPrintTimeout(meta, st, res)
+			st = markFinishedPrintTimeout(dir, st, res)
 			st = markSignInRequired(dir, st, res.Error)
 		}
 	}
@@ -376,8 +384,11 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 	}
 	// The first notice: in headless -p mode agy waits a bounded time after its
 	// root agent goes idle for outstanding background shell tasks, then kills
-	// any still running and exits 0 whose response is only progress narration
-	// (issue #173). Before agy 1.2.9 that wait was about 5s; from 1.2.9 it runs
+	// any still running and, before agy 1.5.0, exits 0 whose response is only
+	// progress narration (issue #173; from 1.5.0 a wait that reaches the
+	// --print-timeout deadline exits 3 with an ERROR payload, which the ladders in
+	// statusFromExitCode and applyResult handle, and the two markers still print,
+	// MEASURED against agy 1.5.3). Before agy 1.2.9 that wait was about 5s; from 1.2.9 it runs
 	// to the --print-timeout deadline (capped at 30 minutes per agy's
 	// changelog), so a task that finishes in time is no longer killed and the
 	// run stays done. Reclassified to background_aborted (issue #176), which is
@@ -391,10 +402,12 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 	if notices.backgroundAborted {
 		return markBackgroundAborted(done)
 	}
-	// The second notice: from agy 1.1.28, an expired --print-timeout makes
-	// agy return whatever it has and exit 0 (with a SUCCESS payload in the
+	// The second notice: from agy 1.1.28 to 1.4.x, an expired --print-timeout
+	// makes agy return whatever it has and exit 0 (with a SUCCESS payload in the
 	// run MEASURED against agy 1.2.9; before 1.1.28 agy reported the expiry
-	// as an in-band ERROR, which markLegacyPrintTimeout relabels above). agy-mcp
+	// as an in-band ERROR, which markLegacyPrintTimeout relabels above, and from
+	// 1.5.0 it is an exit-3 ERROR payload, which markFinishedPrintTimeout
+	// relabels). agy-mcp
 	// passes the job timeout as --print-timeout and the supervisor arms the
 	// same deadline right after starting agy, so the two timers race. The
 	// hard kill won when this was MEASURED against agy 1.2.9 (a 15s job
@@ -409,7 +422,9 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 
 // markBackgroundAborted reclassifies a status derived as though agy finished (a
 // clean exit, or a job recovered from its payload) that agy's stderr reveals
-// to be an idle-killed background run (issue #173): a status the caller derived as
+// to be an idle-killed background run (issue #173), or an agy 1.5.0+ ERROR payload
+// whose finished_reason and wording show its --print-timeout cut a background
+// wait short (markFinishedPrintTimeout): a status the caller derived as
 // "done", a json-schema SUCCESS that applyResult had already failed for carrying
 // no structured_output (issue #176), or a json-schema run that wrote no terminal
 // payload at all and cleanExitWithoutPayload had failed for the same reason
@@ -437,8 +452,10 @@ func markBackgroundAborted(st Status) Status {
 // markPrintTimeout reclassifies a status derived as though agy finished (a clean
 // exit, or a job recovered from its payload) whose stderr shows agy's own
 // --print-timeout expired with the turn still in progress. agy returns the
-// partial output it has and exits 0 in that case (per agy's changelog, since
-// 1.1.28), so the run did not finish even when the payload says SUCCESS. The
+// partial output it has and exits 0 in that case (per agy's changelog, from
+// 1.1.28; MEASURED against agy 1.2.9, and from 1.5.0 the expiry exits 3 instead,
+// see markFinishedPrintTimeout), so the run did not finish even when the payload
+// says SUCCESS. The
 // text it did produce is kept and flagged partial. When there is none and the
 // run named a conversation, the generic "continue this conversation_id" recovery
 // hint in toStatusOutput applies, as it does to a run agy-mcp killed itself.
@@ -460,7 +477,9 @@ const printTimeoutExpired = "agy's --print-timeout expired with the turn still i
 // --print-timeout before 1.1.28: exit 1, status ERROR, empty response, empty
 // stderr (MEASURED against agy 1.1.15 and 1.1.27, issue #192). The agy 1.1.28
 // changelog says the CLI stopped failing with a timeout error and returns
-// partial output instead, which markPrintTimeout covers.
+// partial output instead, which markPrintTimeout covers; from 1.5.0 the expiry is
+// an ERROR payload again, now with finished_reason, which
+// markFinishedPrintTimeout covers.
 const legacyPrintTimeoutError = "timeout waiting for response"
 
 // legacyPrintTimeoutSlack is how far short of the job's timeout the measured
@@ -491,6 +510,66 @@ func markLegacyPrintTimeout(meta jobstore.Meta, st Status, res streamjson.Result
 	st.FailureReason = ReasonTimeout
 	st.Error = printTimeoutExpired + " (agy before 1.1.28 reports this as \"" + legacyPrintTimeoutError + "\")"
 	return st
+}
+
+// markFinishedPrintTimeout relabels the agy 1.5.0+ print-timeout expiry: exit 3,
+// an ERROR payload whose finished_reason is print_timeout, an `[agy] print
+// timeout ...` line and an AGY_ERROR line with retryable false on stderr (MEASURED
+// against agy 1.5.3, for a turn in progress and for a background-task wait). The
+// structured finished_reason is the only signal read, so a payload without it
+// keeps its agy_error. Like markLegacyPrintTimeout it reads only an agy_error, so
+// callers run it after applyAgyError has had its chance to promote the reason to
+// quota_exhausted.
+//
+// An expiry that cut a background-task wait short is background_aborted, not a
+// timeout, with the same precedence as applyCleanExitNotices: continuing the
+// conversation would launch the same background command again. It is recognised
+// from the payload's own wording first, which skips the stderr read, and then
+// from the stderr markers. The wording is the safety net for the markers leaving
+// the bounded stderr tail: they are the first lines and the error and AGY_ERROR
+// lines after them name the terminated task, so many tasks could push them out
+// (NOT MEASURED; only a one-task run was captured).
+//
+// agy's own message is appended to the reported error: it carries the timeout
+// value, and for a background wait it names the command that was terminated.
+// State, Result and Partial are untouched for a timeout, so carryText still
+// decides the text; Retryable stays as applyAgyError set it, and the tool layer
+// keeps the continue-the-conversation advice for a timeout despite it.
+func markFinishedPrintTimeout(dir string, st Status, res streamjson.Result) Status {
+	if st.FailureReason != ReasonAgyError || res.FinishedReason != streamjson.FinishedReasonPrintTimeout {
+		return st
+	}
+	// The payload's conversation id must be visible to markBackgroundAborted's
+	// conversation clause on the sentinel path, where the epilogue carries it later.
+	st = carryResultMetadata(st, res)
+	if matchesBackgroundTimeout(res.Error) || readStderrNotices(dir).backgroundAborted {
+		st = markBackgroundAborted(st)
+		if res.Error != "" {
+			st.Error += " agy reported: " + res.Error
+		}
+		return st
+	}
+	st.FailureReason = ReasonTimeout
+	st.Error = printTimeoutExpired + ", so agy returned only the partial output it had"
+	if res.Error != "" {
+		st.Error += ". agy reported: " + res.Error
+	}
+	return st
+}
+
+// matchesBackgroundTimeout reports the payload wording of an expired
+// --print-timeout that cut a background-task wait short. MEASURED against agy
+// 1.5.3: "print timeout after 25s while the agent was waiting on 1 background
+// task(s); the response may be incomplete; terminated <conversation>/task-2
+// (sleep 120, running 11s)". Both phrases must fall on one line, like the other
+// matchers, and the caller consults it only under finished_reason print_timeout.
+func matchesBackgroundTimeout(msg string) bool {
+	for line := range strings.Lines(msg) {
+		if lineHasAll(line, "print timeout", "background task") {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanExitWithoutPayload classifies a job that exited 0 without ever reaching a
@@ -550,9 +629,11 @@ func applyResult(dir string, meta jobstore.Meta, st Status, res streamjson.Resul
 		// supplies the retryable verdict (issue #183). Every caller reaches here
 		// with a payload, which the supervisor writes only after agy was reaped, so
 		// stderr is final. The pre-1.1.28 print-timeout relabelling follows it for
-		// the reason given in statusFromExitCode.
+		// the reason given in statusFromExitCode, and so does the agy 1.5
+		// finished_reason relabelling (markFinishedPrintTimeout).
 		st = applyAgyError(dir, st)
 		st = markLegacyPrintTimeout(meta, st, res)
+		st = markFinishedPrintTimeout(dir, st, res)
 		st = markSignInRequired(dir, st, res.Error)
 	case res.Status == streamjson.StatusSuccess:
 		if schemaSuccessWithoutOutput(meta, res) {
@@ -1077,6 +1158,14 @@ func lineHasAll(line string, phrases ...string) bool {
 // A separate run, whose background-task wait reached the deadline, printed only
 // the background-abort markers and not this line. Should both ever appear, the
 // background-abort check in applyCleanExitNotices runs first.
+//
+// MEASURED against agy 1.5.3, the same line appears on the exit-3 expiry of a
+// turn in progress (with a different duration). That shape is classified from
+// the payload's finished_reason, so this matcher runs only on the exit-0,
+// recovered and 124 paths. The 1.5.3 background-task expiry instead prints
+// "[agy] print timeout after 25s with 1 background task(s) still running;
+// terminating them", which this does not match, besides the two background-abort
+// markers.
 func matchesPrintTimeout(stderr string) bool {
 	for line := range strings.Lines(stderr) {
 		if lineHasAll(line, "print timeout", "turn in progress", "partial output") {
@@ -1129,8 +1218,8 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 }
 
 // matchesBackgroundAbort tests stderr text for BOTH of agy's background-abort
-// markers. It is a heuristic, not an infallible signal: agy exits 0 either way,
-// so its stderr is the only record of the abort. Requiring both markers biases
+// markers. It is a heuristic, not an infallible signal: before agy 1.5.0 agy
+// exits 0 either way, so its stderr is the only record of the abort. Requiring both markers biases
 // toward precision, because the two failure directions are not equally costly. A
 // false negative (a marker absent, or pushed out of the bounded tail below by
 // verbose interleaved output) only leaves the pre-existing SUCCESS reporting in
@@ -1160,7 +1249,9 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 // the wait runs to the --print-timeout deadline (capped at 30 minutes per agy's
 // changelog): a background task that outlived a 60s budget produced the same
 // two lines (the first reading "waiting up to 1m0s"), and one that finished in
-// time left only the idle-wait line, which on its own does not match.
+// time left only the idle-wait line, which on its own does not match. Re-MEASURED
+// against agy 1.5.3, where such a run exits 3 with an ERROR payload: both marker
+// lines still print, ahead of the print-timeout, error and AGY_ERROR lines.
 func matchesBackgroundAbort(stderr string) bool {
 	var idleWaiting, killedAtExit bool
 	for line := range strings.Lines(stderr) {

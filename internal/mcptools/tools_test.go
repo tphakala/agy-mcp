@@ -745,6 +745,16 @@ func TestStatusOutputRecoveryNotRetryable(t *testing.T) {
 			t.Errorf("Recovery = %q, want a not-retryable note without conversation_id", got)
 		}
 	})
+	// agy marks its own expired --print-timeout not retryable (MEASURED against
+	// agy 1.5.3), yet continuing the conversation is how a cut-short run is carried
+	// on, so the fix-the-cause note would be wrong advice.
+	t.Run("a timeout keeps the continue-the-conversation note when not retryable", func(t *testing.T) {
+		t.Parallel()
+		got := toStatusOutput(failed(no, func(s *manager.Status) { s.FailureReason = manager.ReasonTimeout })).Recovery
+		if got != genericHint {
+			t.Errorf("Recovery = %q, want %q", got, genericHint)
+		}
+	})
 	t.Run("retryable true or unknown keeps today's text", func(t *testing.T) {
 		t.Parallel()
 		for _, r := range []*bool{yes, nil} {

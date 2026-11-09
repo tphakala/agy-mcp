@@ -196,9 +196,15 @@ func readAgyError(dir string) (agyErrorInfo, bool) {
 // the canonical status reads as a quota wall (never a demotion). It returns st
 // unchanged when stderr has no usable line.
 //
-// MEASURED against agy 1.2.9 and 1.3.1: exit 3, and the AGY_ERROR object has
-// exactly the keys short_error, retryable, error_id. A RESOURCE_EXHAUSTED status
-// has NOT been captured; its promotion follows agy's canonical status naming.
+// MEASURED against agy 1.2.9 and 1.3.1 for a model-not-found failure: exit 3, and
+// the AGY_ERROR object has the keys short_error, retryable, error_id. MEASURED
+// against agy 1.5.3 for an expired --print-timeout: exit 3, and the keys
+// short_error, status ("DEADLINE_EXCEEDED"), retryable (false) and reason
+// ("print_timeout"), plus tasks for a background-task expiry, with no error_id.
+// Keys this decoder does not model are ignored, and the canonical status is still
+// read from short_error's prefix, not from the status key. A RESOURCE_EXHAUSTED
+// status has NOT been captured; its promotion follows agy's canonical status
+// naming.
 func applyAgyError(dir string, st Status) Status {
 	info, ok := readAgyError(dir)
 	if !ok {

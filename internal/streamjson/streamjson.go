@@ -21,13 +21,18 @@ const (
 // Terminal result statuses. agy reports ERROR in-band (with a populated Error)
 // for failures it survives long enough to describe, such as an unresolvable
 // model or, before agy 1.1.28, its own print-timeout expiring (MEASURED against
-// agy 1.1.15 and 1.1.27). From 1.1.28 an
-// expired print-timeout returns the partial output and exits 0 instead (MEASURED
-// against agy 1.2.9, once, with a SUCCESS payload).
+// agy 1.1.15 and 1.1.27). From 1.1.28 an expired print-timeout returns the
+// partial output and exits 0 instead (MEASURED against agy 1.2.9, once, with a
+// SUCCESS payload). From agy 1.5.0 it is again an ERROR payload, with exit 3 and
+// a finished_reason of print_timeout (MEASURED against agy 1.5.3).
 const (
 	StatusSuccess = "SUCCESS"
 	StatusError   = "ERROR"
 )
+
+// FinishedReasonPrintTimeout is the Result.FinishedReason agy gives a run whose
+// --print-timeout expired. It is the only value this package names.
+const FinishedReasonPrintTimeout = "print_timeout"
 
 // StepTypeAgentResponse marks the step whose TextDelta values make up the
 // assistant's answer. Other step types (tool calls, checkpoints) carry
@@ -91,6 +96,13 @@ type Result struct {
 	DurationSeconds  float64         `json:"duration_seconds,omitempty"`
 	NumTurns         int             `json:"num_turns,omitempty"`
 	Usage            *Usage          `json:"usage,omitempty"`
+	// FinishedReason is why agy ended the turn early. agy's changelog (1.4.11)
+	// names print_timeout, interrupted and error, and says the field is omitted
+	// when the turn finishes normally. MEASURED against agy 1.5.3: print_timeout on
+	// an expired --print-timeout. The supervisor persists this struct re-marshalled
+	// (internal/supervisor/stream.go), so a field missing here never reaches
+	// result.json.
+	FinishedReason string `json:"finished_reason,omitempty"`
 }
 
 // Event is one decoded line of the stream. agy sets exactly one payload pointer,

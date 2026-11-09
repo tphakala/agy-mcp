@@ -183,7 +183,10 @@ func TestPersistWritesResultAndNotesMalformed(t *testing.T) {
 	dir := t.TempDir()
 	var errBuf bytes.Buffer
 	oc := streamOutcome{
-		result:    &streamjson.Result{ConversationID: "c-1", Status: streamjson.StatusSuccess, Response: "done"},
+		result: &streamjson.Result{
+			ConversationID: "c-1", Status: streamjson.StatusSuccess, Response: "done",
+			FinishedReason: streamjson.FinishedReasonPrintTimeout,
+		},
 		malformed: 3,
 	}
 	oc.persist(dir, &errBuf)
@@ -198,6 +201,11 @@ func TestPersistWritesResultAndNotesMalformed(t *testing.T) {
 	}
 	if res.Response != "done" || res.ConversationID != "c-1" {
 		t.Fatalf("result = %+v", res)
+	}
+	// result.json is the supervisor's re-marshal of the decoded result, not a copy
+	// of agy's line, so a field the manager reads must survive that step.
+	if res.FinishedReason != streamjson.FinishedReasonPrintTimeout {
+		t.Fatalf("finished_reason = %q, want %q: persist dropped it", res.FinishedReason, streamjson.FinishedReasonPrintTimeout)
 	}
 	// Skipped lines must be visible: silently dropping output would make a
 	// truncated answer look complete.

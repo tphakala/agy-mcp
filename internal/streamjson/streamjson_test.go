@@ -678,16 +678,36 @@ func BenchmarkNext(b *testing.B) {
 }
 
 // An in-band failure decodes with its message intact; this is how agy reports an
-// unresolvable model or, before agy 1.1.28, its own print-timeout.
+// unresolvable model, its own print-timeout before agy 1.1.28, and again from
+// agy 1.5.0, when the result also carries finished_reason.
 func TestErrorResult(t *testing.T) {
-	in := `{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"timeout waiting for response"}}`
-	r := NewReader(strings.NewReader(in))
-	evs := readAll(t, r)
-	if len(evs) != 1 {
-		t.Fatalf("got %d events", len(evs))
-	}
-	res := evs[0].Result
-	if res.Status != StatusError || res.Error != "timeout waiting for response" {
-		t.Fatalf("result = %+v", res)
+	for _, tc := range []struct {
+		name, in, wantError, wantFinished string
+	}{
+		{
+			name:      "in-band error",
+			in:        `{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"timeout waiting for response"}}`,
+			wantError: "timeout waiting for response",
+		},
+		{
+			// MEASURED against agy 1.5.3 (conversation id replaced). Manager tests and
+			// the fake agy marshal this same struct, so a wrong JSON tag round-trips
+			// through them unseen; only decoding agy's own spelling pins it.
+			name:         "expired print-timeout carries finished_reason",
+			in:           `{"event":"result","result":{"conversation_id":"00000000-0000-4000-8000-000000000001","status":"ERROR","response":"","error":"print timeout after 12s with the turn still in progress; the response is partial","duration_seconds":0,"num_turns":1,"usage":{"input_tokens":0,"output_tokens":0,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":0},"finished_reason":"print_timeout"}}`,
+			wantError:    "print timeout after 12s with the turn still in progress; the response is partial",
+			wantFinished: FinishedReasonPrintTimeout,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			evs := readAll(t, NewReader(strings.NewReader(tc.in)))
+			if len(evs) != 1 {
+				t.Fatalf("got %d events", len(evs))
+			}
+			res := evs[0].Result
+			if res.Status != StatusError || res.Error != tc.wantError || res.FinishedReason != tc.wantFinished {
+				t.Fatalf("result = %+v, want error %q finished_reason %q", res, tc.wantError, tc.wantFinished)
+			}
+		})
 	}
 }
