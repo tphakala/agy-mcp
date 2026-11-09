@@ -59,6 +59,14 @@ func TestParseAgyErrorTail(t *testing.T) {
 		{name: "status prefix without a code", tail: line(`{"short_error":"NOT_FOUND: x","retryable":true}`), wantOK: true, wantRetryable: new(true)},
 		{name: "unrecognized short_error", tail: line(`{"short_error":"oops","retryable":true}`), wantOK: true, wantRetryable: new(true)},
 		{name: "synthetic RESOURCE_EXHAUSTED, no captured sample", tail: line(`{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true}`), wantOK: true, wantRetryable: new(true), wantStatus: "RESOURCE_EXHAUSTED"},
+		// The line's own status key is the fallback when short_error has no canonical
+		// prefix. MEASURED against agy 1.5.3 for the print timeout (DEADLINE_EXCEEDED);
+		// the RESOURCE_EXHAUSTED value is synthetic, NOT MEASURED.
+		{name: "status key without a short_error prefix", tail: line(`{"short_error":"oops","status":"RESOURCE_EXHAUSTED","retryable":true}`), wantOK: true, wantRetryable: new(true), wantStatus: "RESOURCE_EXHAUSTED"},
+		{name: "measured print-timeout line carries DEADLINE_EXCEEDED", tail: line(`{"short_error":"print timeout after 12s with the turn still in progress; the response is partial","status":"DEADLINE_EXCEEDED","retryable":false,"reason":"print_timeout"}`), wantOK: true, wantRetryable: new(false), wantStatus: "DEADLINE_EXCEEDED"},
+		{name: "the short_error prefix wins over the status key", tail: line(`{"short_error":"NOT_FOUND (code 404): x","status":"RESOURCE_EXHAUSTED"}`), wantOK: true, wantStatus: "NOT_FOUND"},
+		{name: "a status key that is not a status word is ignored", tail: line(`{"short_error":"oops","status":"resource exhausted","retryable":true}`), wantOK: true, wantRetryable: new(true)},
+		{name: "a non-string status key is ignored, not fatal", tail: line(`{"status":7,"retryable":true}`), wantOK: true, wantRetryable: new(true)},
 		{name: "two lines, last valid wins", tail: line(`{"retryable":true,"error_id":"first"}`) + line(`{"retryable":false,"error_id":"last"}`), wantOK: true, wantRetryable: new(false), wantErrorID: "last"},
 		{name: "two lines, last malformed, no fallback", tail: line(`{"retryable":true,"error_id":"first"}`) + wireAgyErrorPrefix + `{"retryable":fal`},
 		{name: "CRLF line endings", tail: strings.ReplaceAll(measuredAgyErrorStderr, "\n", "\r\n"), wantOK: true, wantRetryable: new(false), wantErrorID: measuredAgyErrorID, wantStatus: "NOT_FOUND"},

@@ -40,6 +40,10 @@ func TestResolveExitCode(t *testing.T) {
 		{"timeout that escalated to SIGKILL reports timeout", 128 + 9, true, true, false, jobstore.ExitTimeout},
 		{"cancel that died by SIGTERM reports cancel", jobstore.ExitSIGTERM, true, false, true, jobstore.ExitSIGTERM},
 		{"cancel that escalated to SIGKILL still reports cancel", 128 + 9, true, false, true, jobstore.ExitSIGTERM},
+		// MEASURED against agy 1.5.3: a SIGTERM during a run makes agy handle it, write
+		// an ERROR result with finished_reason interrupted and exit 1, so the wait
+		// fails with a plain exit code rather than a signal death.
+		{"cancel that agy handled and exited 1 still reports cancel", 1, true, false, true, jobstore.ExitSIGTERM},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

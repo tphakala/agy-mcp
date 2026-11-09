@@ -19,6 +19,10 @@ const maxAgyErrorIDLen = 128
 // for example "NOT_FOUND (code 404): ...".
 var agyErrorStatusRE = regexp.MustCompile(`^([A-Z][A-Z_]*) \(code \d+\):`)
 
+// agyErrorStatusWordRE accepts a status key only when the whole value is one
+// canonical status word, so free text in that key never reaches a classifier.
+var agyErrorStatusWordRE = regexp.MustCompile(`^[A-Z][A-Z_]*$`)
+
 // agyErrorInfo is what agy-mcp keeps from an AGY_ERROR line. It deliberately has
 // no field for short_error itself: that text carries the cloud project and
 // region and is never copied into a status field (redactAgyErrorLines keeps it
@@ -27,22 +31,44 @@ var agyErrorStatusRE = regexp.MustCompile(`^([A-Z][A-Z_]*) \(code \d+\):`)
 type agyErrorInfo struct {
 	retryable *bool  // nil: key absent
 	errorID   string // "" when absent or failing validation
-	status    string // canonical status word from short_error's prefix, "" when none
+	status    string // canonical status word: short_error's prefix, else the line's own status key; "" when neither
 }
 
-// agyErrorPayload is the wire shape of the object after the prefix.
+// quotaWall reports whether the structured status is a quota wall. It is the one
+// condition applyAgyError promotes on and markFinishedPrintTimeout defers to, so the
+// two cannot drift apart.
+func (i agyErrorInfo) quotaWall() bool { return isQuotaError(i.status) }
+
+// agyErrorPayload is the wire shape of the object after the prefix. Status is the
+// line's own status key (MEASURED against agy 1.5.3 on the print-timeout line).
 type agyErrorPayload struct {
-	ShortError string `json:"short_error"`
-	Retryable  *bool  `json:"retryable"`
-	ErrorID    string `json:"error_id"`
+	ShortError string         `json:"short_error"`
+	Status     agyErrorStatus `json:"status"`
+	Retryable  *bool          `json:"retryable"`
+	ErrorID    string         `json:"error_id"`
+}
+
+// agyErrorStatus decodes the line's status key leniently: a value that is not a
+// JSON string leaves it empty instead of failing the whole line, so a retryable
+// or error_id verdict is not lost to a status key of an unexpected type.
+type agyErrorStatus string
+
+func (s *agyErrorStatus) UnmarshalJSON(b []byte) error {
+	var v string
+	if json.Unmarshal(b, &v) == nil {
+		*s = agyErrorStatus(v)
+	}
+	return nil
 }
 
 // parseAgyErrorTail extracts agy's structured error from the tail of a stderr
 // file. truncated says the tail's first line is cut (the tail starts mid-line),
 // so that line is dropped as a fragment; a tail that starts mid-file on a line
-// boundary is not truncated. It reports ok == false on any doubt (no line, a cut or malformed
-// object, a wrongly typed field, nothing usable), so a caller keeps its prior
-// derivation unchanged.
+// boundary is not truncated. It reports ok == false on any doubt (no line, a cut
+// or malformed object, a wrongly typed short_error, retryable or error_id, nothing
+// usable), so a caller keeps its prior derivation unchanged. The status is the
+// canonical word heading short_error, else the line's own status key; a status key
+// of another type, or one that is not a single canonical word, counts as absent.
 //
 // Only the LAST line that starts with the prefix at column 0 is considered, with
 // no fallback to an earlier one: an earlier line could be a superseded error.
@@ -70,6 +96,10 @@ func parseAgyErrorTail(tail string, truncated bool) (agyErrorInfo, bool) {
 	info := agyErrorInfo{retryable: p.Retryable}
 	if m := agyErrorStatusRE.FindStringSubmatch(p.ShortError); m != nil {
 		info.status = m[1]
+	} else if agyErrorStatusWordRE.MatchString(string(p.Status)) {
+		// The prefix wins when both are present; the line's own status key is the
+		// fallback for a short_error with no canonical prefix.
+		info.status = string(p.Status)
 	}
 	if validAgyErrorID(p.ErrorID) {
 		info.errorID = p.ErrorID
@@ -201,10 +231,14 @@ func readAgyError(dir string) (agyErrorInfo, bool) {
 // against agy 1.5.3 for an expired --print-timeout: exit 3, and the keys
 // short_error, status ("DEADLINE_EXCEEDED"), retryable (false) and reason
 // ("print_timeout"), plus tasks for a background-task expiry, with no error_id.
-// Keys this decoder does not model are ignored, and the canonical status is still
-// read from short_error's prefix, not from the status key. A RESOURCE_EXHAUSTED
-// status has NOT been captured; its promotion follows agy's canonical status
-// naming.
+// Keys this decoder does not model are ignored. The canonical status is read from
+// short_error's prefix, and from the line's own status key when short_error has no
+// such prefix (the prefix wins when both are present). An unrecognized --model
+// is a different, local failure: MEASURED against agy 1.5.3, an ERROR payload with
+// finished_reason error and no AGY_ERROR line at all, so it gets no Retryable. A
+// RESOURCE_EXHAUSTED status has NOT been captured; its promotion follows agy's
+// canonical status naming, through quotaWall, the same predicate that keeps
+// markFinishedPrintTimeout from relabelling such a run.
 func applyAgyError(dir string, st Status) Status {
 	info, ok := readAgyError(dir)
 	if !ok {
@@ -212,7 +246,7 @@ func applyAgyError(dir string, st Status) Status {
 	}
 	st.Retryable = info.retryable
 	st.ErrorID = info.errorID
-	if isQuotaError(info.status) {
+	if info.quotaWall() {
 		st.FailureReason = ReasonQuotaExhausted
 	}
 	return st

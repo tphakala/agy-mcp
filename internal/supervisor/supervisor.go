@@ -193,9 +193,13 @@ func closed(ch <-chan struct{}) bool {
 // its own meaning even when it escalated to SIGKILL: agy that ignores SIGTERM and
 // is then SIGKILLed dies with signal 9 (raw 137), but the job was timed out or
 // cancelled, not crashed, so it must report ExitTimeout or ExitSIGTERM rather
-// than the raw signal failure. A natural exit (waitFailed false, or neither flag
-// set) keeps its raw code. Timeout takes precedence; in practice only one flag is
-// ever set.
+// than the raw signal failure. agy also handles SIGTERM itself: MEASURED against
+// agy 1.5.3, a SIGTERM delivered during a foreground command makes agy write an
+// ERROR result (error "interrupted", finished_reason interrupted) and exit 1,
+// which arrives here with waitFailed true and so still reports the cancel (or the
+// timeout). A natural exit (waitFailed false, which means agy exited 0, or
+// neither flag set) keeps its raw code. Timeout takes precedence; in practice only
+// one flag is ever set.
 func resolveExitCode(raw int, waitFailed, timedOut, cancelled bool) int {
 	if !waitFailed {
 		return raw
