@@ -467,13 +467,18 @@ func markPrintTimeout(st Status) Status {
 	st.State = StateFailed
 	st.FailureReason = ReasonTimeout
 	st.Partial = st.Result != ""
-	st.Error = printTimeoutExpired + ", so agy returned only the partial output it had"
+	st.Error = printTimeoutPartialError
 	return st
 }
 
 // printTimeoutExpired is the opening of the Error text every print-timeout
 // reclassification reports, so the wording stays in one place.
 const printTimeoutExpired = "agy's --print-timeout expired with the turn still in progress"
+
+// printTimeoutPartialError is the full Error text of a print-timeout that agy
+// reported with its partial output: markPrintTimeout (exit 0) and
+// markFinishedPrintTimeout (exit 3) share it.
+const printTimeoutPartialError = printTimeoutExpired + ", so agy returned only the partial output it had"
 
 // legacyPrintTimeoutError is the payload error agy reported for an expired
 // --print-timeout before 1.1.28: exit 1, status ERROR, empty response, empty
@@ -552,7 +557,7 @@ func markFinishedPrintTimeout(dir string, st Status, res streamjson.Result) Stat
 		return st
 	}
 	st.FailureReason = ReasonTimeout
-	st.Error = printTimeoutExpired + ", so agy returned only the partial output it had"
+	st.Error = printTimeoutPartialError
 	if res.Error != "" {
 		st.Error += ". agy reported: " + res.Error
 	}
