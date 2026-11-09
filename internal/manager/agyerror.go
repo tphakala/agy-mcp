@@ -30,6 +30,11 @@ type agyErrorInfo struct {
 	status    string // canonical status word from short_error's prefix, "" when none
 }
 
+// quotaWall reports whether the structured status is a quota wall. It is the one
+// condition applyAgyError promotes on and markFinishedPrintTimeout defers to, so the
+// two cannot drift apart.
+func (i agyErrorInfo) quotaWall() bool { return isQuotaError(i.status) }
+
 // agyErrorPayload is the wire shape of the object after the prefix.
 type agyErrorPayload struct {
 	ShortError string `json:"short_error"`
@@ -202,9 +207,12 @@ func readAgyError(dir string) (agyErrorInfo, bool) {
 // short_error, status ("DEADLINE_EXCEEDED"), retryable (false) and reason
 // ("print_timeout"), plus tasks for a background-task expiry, with no error_id.
 // Keys this decoder does not model are ignored, and the canonical status is still
-// read from short_error's prefix, not from the status key. A RESOURCE_EXHAUSTED
-// status has NOT been captured; its promotion follows agy's canonical status
-// naming.
+// read from short_error's prefix, not from the status key. An unrecognized --model
+// is a different, local failure: MEASURED against agy 1.5.3, an ERROR payload with
+// finished_reason error and no AGY_ERROR line at all, so it gets no Retryable. A
+// RESOURCE_EXHAUSTED status has NOT been captured; its promotion follows agy's
+// canonical status naming, through quotaWall, the same predicate that keeps
+// markFinishedPrintTimeout from relabelling such a run.
 func applyAgyError(dir string, st Status) Status {
 	info, ok := readAgyError(dir)
 	if !ok {
@@ -212,7 +220,7 @@ func applyAgyError(dir string, st Status) Status {
 	}
 	st.Retryable = info.retryable
 	st.ErrorID = info.errorID
-	if isQuotaError(info.status) {
+	if info.quotaWall() {
 		st.FailureReason = ReasonQuotaExhausted
 	}
 	return st

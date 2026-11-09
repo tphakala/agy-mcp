@@ -34,8 +34,8 @@ const (
 	// The deadline fell while the agent was waiting on a background task.
 	finishedBackgroundTimeoutError = "print timeout after 25s while the agent was waiting on 1 background task(s); " +
 		"the response may be incomplete; terminated 00000000-0000-4000-8000-000000000001/task-2 (sleep 120, running 11s)"
-	// The error: and AGY_ERROR lines alone, which is all that is left of the stderr
-	// when a many-task expiry pushes the markers out of the tail window.
+	// The error: and AGY_ERROR lines alone: stderr without the marker lines, as from
+	// an agy that stops printing them. NOT MEASURED.
 	finishedBackgroundTimeoutTail = "error: " + finishedBackgroundTimeoutError + "\n" +
 		wireAgyErrorPrefix + `{"short_error":"` + finishedBackgroundTimeoutError + `","status":"DEADLINE_EXCEEDED","retryable":false,"reason":"print_timeout",` +
 		`"tasks":[{"id":"00000000-0000-4000-8000-000000000001/task-2","description":"sleep 120","elapsed_seconds":11,` +
@@ -260,7 +260,8 @@ func TestReadStderrNoticesEmptyOnUnreadableStderr(t *testing.T) {
 	// An err path that is a directory makes the read fail on POSIX. This pins the contract
 	// that an unreadable stderr leaves the derived state alone rather than guessing
 	// a timeout or a background abort. It does not pin the err guard itself:
-	// cleanTail returns "" on a read error, which both matchers already reject.
+	// readStderrNotices returns early on a read error, which the matchers would
+	// also reject on empty text.
 	if err := os.Mkdir(jobstore.ErrPath(dir), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +314,7 @@ func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
 	}{
 		{name: "stderr with content", stderr: "boom", writeIt: true, code: 1, want: "exit 1: boom"},
 		{name: "trailing whitespace trimmed", stderr: "boom\n\n", writeIt: true, code: 2, want: "exit 2: boom"},
-		// Leading whitespace is part of the message and must survive: cleanTail
+		// Leading whitespace is part of the message and must survive: trimStderrTail
 		// trims only the trailing end. This pins the parity a TrimRightFunc ->
 		// TrimSpace change would break.
 		{name: "leading whitespace preserved", stderr: "  boom  \n", writeIt: true, code: 1, want: "exit 1:   boom"},
@@ -452,9 +453,9 @@ func TestErrorSummaryReducesAgyErrorLines(t *testing.T) {
 					t.Errorf("classifyMsg = %q, want it equal to msg", classify)
 				}
 			case "-":
-				// The unreduced text is exactly what the pre-reduction reader,
-				// cleanTail, returns for the same file.
-				tail, err := cleanTail(dir)
+				// The unreduced text is exactly the last errTailBytes of the file,
+				// trimmed, which unreducedTail reads straight from it.
+				tail, err := unreducedTail(dir)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -469,12 +470,12 @@ func TestErrorSummaryReducesAgyErrorLines(t *testing.T) {
 		})
 	}
 
-	t.Run("an ordinary cut tail is byte-identical to cleanTail", func(t *testing.T) {
+	t.Run("an ordinary cut tail is byte-identical to the unreduced tail", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.WriteFile(jobstore.ErrPath(dir), []byte(strings.Repeat("plain text ", 300)+"\nend"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		tail, err := cleanTail(dir)
+		tail, err := unreducedTail(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -483,6 +484,17 @@ func TestErrorSummaryReducesAgyErrorLines(t *testing.T) {
 			t.Errorf("msg = %q, classifyMsg = %q, want both %q", got, classify, "exit 3: "+tail)
 		}
 	})
+}
+
+// unreducedTail is the oracle for "the stderr window errorSummary reports before
+// its AGY_ERROR reduction": the last errTailBytes of the file, trimmed by
+// trimStderrTail.
+func unreducedTail(dir string) (string, error) {
+	tail, err := tailFile(jobstore.ErrPath(dir), errTailBytes)
+	if err != nil {
+		return "", err
+	}
+	return trimStderrTail(tail), nil
 }
 
 // The same absence, seen through Status, which is where a caller actually meets
@@ -713,6 +725,37 @@ func terminalCases() []terminalCase {
 			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess, Response: "the real answer"},
 			errFile:   backgroundAbortKillLine + "\n",
 			wantState: StateDone, wantResult: "the real answer",
+		}, {
+			// With no narration there is no text to qualify: the failed state already
+			// says no verified answer exists, so partial must not be raised on an
+			// empty result.
+			name: "an idle-killed background run with no narration is not partial",
+			code: 0, res: &streamjson.Result{Status: streamjson.StatusSuccess},
+			errFile:   backgroundAbortNotice,
+			wantState: StateFailed, wantReason: ReasonBackgroundAborted,
+			wantErrSub: "in the foreground",
+		}, {
+			// The no-payload sibling: cleanExitWithoutPayload marks an outcome-less
+			// stream-json run partial even when it has no text, which must not
+			// survive the relabel to a failed state.
+			name: "a stream-json run with no payload and no text that agy idle-killed is not partial",
+			code: 0, args: streamArgs,
+			errFile:   backgroundAbortNotice,
+			wantState: StateFailed, wantReason: ReasonBackgroundAborted,
+			wantErrSub: "in the foreground",
+		}, {
+			// The exit-0 finished_reason shape is NOT MEASURED (agy 1.4.11 to 1.4.x,
+			// from the changelog). The filler stands for the lines that follow the two
+			// markers in the measured 1.5.3 shape, enough to push them out of the
+			// errTailBytes window.
+			name: "a SUCCESS print_timeout whose background markers sit beyond the 2000-byte tail is background_aborted",
+			code: 0, res: &streamjson.Result{
+				Status: streamjson.StatusSuccess, Response: "waiting on the build",
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile:   backgroundAbortNotice + strings.Repeat("some agy chatter line\n", 150),
+			wantState: StateFailed, wantResult: "waiting on the build", wantPartial: true,
+			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
 		},
 		// --- clean exit, but agy's own --print-timeout cut the turn short -------
 		{
@@ -847,10 +890,10 @@ func terminalCases() []terminalCase {
 			wantRetryable: new(false),
 		}, {
 			// Stderr holds only the error: and AGY_ERROR lines (the marker lines are
-			// absent, as when many terminated tasks push them out of the stderr tail;
-			// NOT MEASURED with more than one task). The payload's own wording must
-			// then carry the classification, and it names the command terminated.
-			name: "a 1.5 background-task expiry whose markers left the stderr tail is still background_aborted",
+			// absent, as from an agy that stops printing them; NOT MEASURED). The
+			// payload's own wording must then carry the classification, and it names the
+			// command terminated.
+			name: "a 1.5 background-task expiry without the stderr markers is still background_aborted",
 			code: 3, res: &streamjson.Result{
 				Status: streamjson.StatusError, Response: "started\n", Error: finishedBackgroundTimeoutError,
 				FinishedReason: streamjson.FinishedReasonPrintTimeout,
@@ -898,6 +941,22 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantResult: "started", wantPartial: true,
 			wantReason: ReasonBackgroundAborted, wantErrSub: "in the foreground",
 			wantRetryable: new(false),
+		}, {
+			// A structured RESOURCE_EXHAUSTED status keeps the quota_exhausted reason
+			// applyAgyError promoted, even when finished_reason names the expiry. The
+			// payload error deliberately does not read as quota, so the reason can only
+			// come from the structured line. Synthetic, NOT MEASURED: no 429 capture
+			// exists (issue #183).
+			name: "a 1.5 print-timeout expiry with a structured quota status stays quota_exhausted",
+			code: 3, res: &streamjson.Result{
+				Status: streamjson.StatusError, Error: "request failed",
+				FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			},
+			errFile: "[agy] print timeout after 12s with turn in progress; returning partial output\n" +
+				wireAgyErrorPrefix + `{"short_error":"RESOURCE_EXHAUSTED (code 429): try later","retryable":true,"error_id":"e-1"}` + "\n",
+			wantState: StateFailed, wantReason: ReasonQuotaExhausted,
+			wantErrSub: "request failed", noErrSub: "--print-timeout expired",
+			wantRetryable: new(true), wantErrorID: "e-1",
 		},
 		// --- clean exit, no terminal payload ------------------------------------
 		{
@@ -938,8 +997,10 @@ func terminalCases() []terminalCase {
 		}, {
 			// The control above has no finished_reason. agy's changelog (1.4.11) says
 			// the field names why a turn ended early, so a SUCCESS response that
-			// carries one is not the complete answer. "interrupted" is the changelog's
-			// word for a canceled run; this payload is hand-staged, not MEASURED.
+			// carries one is not the complete answer. MEASURED against agy 1.5.3, a
+			// SIGTERM mid-run wrote an ERROR payload with finished_reason interrupted and
+			// an empty response; this SUCCESS variant is hand-staged to pin carryText's
+			// finished_reason clause.
 			name: "a cancel after a SUCCESS payload agy marked interrupted is partial",
 			code: jobstore.ExitSIGTERM,
 			res: &streamjson.Result{

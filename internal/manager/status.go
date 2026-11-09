@@ -29,6 +29,15 @@ const maxReadBytes = 32 << 20 // 32 MiB
 // (not the head) is what matters: the final lines carry the actual error.
 const errTailBytes = 2000
 
+// backgroundMarkerScanBytes is how much of the trailing stderr readStderrNotices
+// scans for the two background-abort markers, which are matched in a wider window
+// than the errTailBytes the other notices use. On agy 1.5.3 the markers are the
+// first stderr lines and the lines after them grow with each terminated task
+// (MEASURED for one task, 921 bytes in all; more tasks NOT MEASURED), so a
+// 2000-byte tail can lose them. The bound keeps the read of a polled done job
+// small.
+const backgroundMarkerScanBytes = 64 << 10
+
 // agyErrorLookback is how many bytes before the errTailBytes window readStderrCopy
 // reads, to find where the window's first line starts. When that line is cut by
 // the window and begins with the AGY_ERROR prefix, its remainder is dropped
@@ -153,6 +162,11 @@ type Status struct {
 	// if the process then exits via cancel or timeout. The one exception after
 	// exit is a timeout (code 124) whose stderr shows agy's own print-timeout had
 	// already cut the turn short; a cancel is not checked for that notice.
+	//
+	// A failed or cancelled status never carries Partial without a Result: with no
+	// text there is nothing to qualify. A done status can, only from a stream-json
+	// clean exit with no payload and no text (cleanExitWithoutPayload), where it says
+	// the empty answer is not verified.
 	Partial bool
 	// NumTurns and Usage are agy's own accounting, present only once a terminal
 	// result event has been recorded.
@@ -420,7 +434,8 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 	// report a truncated answer as done. agy's structured finished_reason (agy
 	// 1.4.11 and later) says the same thing in the payload, so it counts too and
 	// timeout verdict does not hinge on the stderr notice surviving the bounded
-	// tail. The background-abort check above still reads stderr only.
+	// tail. The background-abort check above still reads stderr only, in the wider
+	// backgroundMarkerScanBytes window.
 	if notices.printTimeout || res.FinishedReason == streamjson.FinishedReasonPrintTimeout {
 		return markPrintTimeout(done)
 	}
@@ -435,17 +450,18 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 // "done", a json-schema SUCCESS that applyResult had already failed for carrying
 // no structured_output (issue #176), or a json-schema run that wrote no terminal
 // payload at all and cleanExitWithoutPayload had failed for the same reason
-// (issue #180). It keeps the text agy
-// did stream (the progress narration names what the agent launched) but flags it
-// partial, and states in Error how to recover. The generic issue #151 "continue
-// this conversation" hint is deliberately withheld for this reason, enforced in
+// (issue #180). It keeps the text agy did stream (the progress narration names
+// what the agent launched) and flags it partial when there is any: with no text
+// there is nothing to qualify, and the failed state already says no verified
+// answer exists. It states in Error how to recover. The generic issue #151
+// "continue this conversation" hint is deliberately withheld for this reason, enforced in
 // toStatusOutput so it holds even in the rare case where the narration was empty:
 // a blind re-run just launches the same background command and aborts the same
 // way, so the guidance is to keep verification in the foreground.
 func markBackgroundAborted(st Status) Status {
 	st.State = StateFailed
 	st.FailureReason = ReasonBackgroundAborted
-	st.Partial = true
+	st.Partial = st.Result != ""
 	msg := "agy went idle with outstanding background shell task(s) and terminated them at exit, " +
 		"so its response is only progress narration, not completed work. " +
 		"Re-run and have the agent run any verification in the foreground rather than as a background task"
@@ -532,18 +548,24 @@ func markLegacyPrintTimeout(meta jobstore.Meta, st Status, res streamjson.Result
 // keeps its agy_error. The reason the text classifier gave is not consulted: the
 // payload names the terminated command, so text such as "quota" in it would
 // otherwise read as a quota wall, and a wall ends the turn with another
-// finished_reason (changelog, 1.4.11). Callers run it after applyAgyError (for
-// Retryable) and before markLegacyPrintTimeout, so it takes precedence over that
-// relabel.
+// finished_reason (changelog, 1.4.11). The one exception is the structured quota
+// status, read the same way applyAgyError reads it: a run whose AGY_ERROR line
+// carries it is left as applyAgyError promoted it (the pairing with
+// finished_reason print_timeout is NOT MEASURED). Callers run it after
+// applyAgyError (for Retryable) and before markLegacyPrintTimeout, so it takes
+// precedence over that relabel.
 //
 // An expiry that cut a background-task wait short is background_aborted, not a
 // timeout, with the same precedence as applyCleanExitNotices: continuing the
 // conversation would launch the same background command again. It is recognised
 // from the payload's own wording first, which skips the stderr read, and then
-// from the stderr markers. The wording is the safety net for the markers leaving
-// the bounded stderr tail: they are the first lines and the error and AGY_ERROR
-// lines after them name the terminated task, so many tasks could push them out
-// (NOT MEASURED; only a one-task run was captured).
+// from the stderr markers, which are matched in the wider backgroundMarkerScanBytes
+// window. The wording is the safety net for markers that are absent (a reworded or
+// future agy) or that more than that window of later lines pushes out: the markers
+// are the first lines and the error and AGY_ERROR lines after them name each
+// terminated task. Only a one-task run was captured (NOT MEASURED for more); a
+// four-task attempt on agy 1.5.3 produced daemon tasks and no wait, so the
+// multi-task wait shape is still NOT MEASURED.
 //
 // agy's own message is appended to the reported error: it carries the timeout
 // value, and for a background wait it names the command that was terminated.
@@ -556,16 +578,18 @@ func markFinishedPrintTimeout(dir string, st Status, res streamjson.Result) Stat
 	if res.FinishedReason != streamjson.FinishedReasonPrintTimeout {
 		return st
 	}
+	// A structured quota status keeps the quota_exhausted reason applyAgyError set
+	// (README, failure_reason). Only the structured status counts: payload text is
+	// not consulted, so a terminated command that names quota is still relabelled
+	// (issue #237).
+	if info, ok := readAgyError(dir); ok && info.quotaWall() {
+		return st
+	}
 	// The payload's conversation id must be visible to markBackgroundAborted's
 	// conversation clause on the sentinel path, where the epilogue carries it later.
 	st = carryResultMetadata(st, res)
 	if matchesBackgroundTimeout(res.Error) || readStderrNotices(dir).backgroundAborted {
-		// markBackgroundAborted raises Partial whether or not any text exists, and
-		// carryText only raises it, so the prior value is restored and carryText alone
-		// decides it: an expiry before any narration has no text to flag.
-		partial := st.Partial
 		st = markBackgroundAborted(st)
-		st.Partial = partial
 		if res.Error != "" {
 			st.Error += " agy reported: " + res.Error
 		}
@@ -1038,21 +1062,10 @@ func tailFile(path string, n int64) (string, error) {
 	return string(buf[:read]), nil
 }
 
-// cleanTail returns the trailing stderr of a terminal job (the last errTailBytes,
-// trailing whitespace trimmed and starting on a valid UTF-8 boundary), or "" when
-// there is none. Trimming all trailing whitespace here, not just newlines, means a
-// caller's tail != "" check distinguishes a real message from a whitespace-only
-// tail that would otherwise render as a message after a separator.
-func cleanTail(dir string) (string, error) {
-	tail, err := tailFile(jobstore.ErrPath(dir), errTailBytes)
-	if err != nil {
-		return "", err
-	}
-	return trimStderrTail(tail), nil
-}
-
 // trimStderrTail trims trailing whitespace from a stderr window and advances it
-// to a UTF-8 rune start.
+// to a UTF-8 rune start. Trimming all trailing whitespace, not just newlines,
+// means a caller's tail != "" check distinguishes a real message from a
+// whitespace-only tail that would otherwise render as a message after a separator.
 func trimStderrTail(s string) string {
 	s = strings.TrimRightFunc(s, unicode.IsSpace)
 	// tailFile may have started mid-rune; advance to a valid UTF-8 boundary so a
@@ -1090,10 +1103,10 @@ func copyWindow(raw string, fromStart bool) (window string, headInAgyError bool)
 }
 
 // readStderrCopy reads the stderr tail that an error message copies. raw is the
-// tail exactly as cleanTail returns it. shown is raw without a cut AGY_ERROR
-// first line and with its other AGY_ERROR lines reduced by redactAgyErrorLines
-// (issue #205), and is never empty when raw is not:
-// a reduction that empties a non-empty tail yields agyErrorWithheld, so a caller
+// last errTailBytes of the stderr file, trimmed by trimStderrTail. shown is raw
+// without a cut AGY_ERROR first line and with its other AGY_ERROR lines reduced
+// by redactAgyErrorLines (issue #205), and is never empty when raw is not: a
+// reduction that empties a non-empty tail yields agyErrorWithheld, so a caller
 // cannot report "no stderr output" for stderr that had content.
 //
 // It reads agyErrorLookback bytes more than the window to find where the window's
@@ -1121,9 +1134,11 @@ func readStderrCopy(dir string) (shown, raw string, err error) {
 }
 
 // stderrNotices is what a terminal job's captured stderr says about how agy
-// ended the run. Every field comes from ONE read of the bounded stderr tail
-// (the window errorSummary reports, before its AGY_ERROR reduction). An unreadable stderr yields the zero value,
-// which leaves the derived state untouched rather than guessing a failure.
+// ended the run. Every field comes from ONE read of the bounded stderr tail:
+// backgroundAborted from the whole backgroundMarkerScanBytes window, the other two
+// from its last errTailBytes (the window errorSummary reports, before its AGY_ERROR
+// reduction). An unreadable stderr yields the zero value, which leaves the derived
+// state untouched rather than guessing a failure.
 type stderrNotices struct {
 	backgroundAborted bool // agy killed outstanding background shell tasks at exit (issue #173)
 	printTimeout      bool // agy's own --print-timeout expired with the turn in progress
@@ -1131,12 +1146,13 @@ type stderrNotices struct {
 }
 
 func readStderrNotices(dir string) stderrNotices {
-	tail, err := cleanTail(dir)
+	raw, err := tailFile(jobstore.ErrPath(dir), backgroundMarkerScanBytes)
 	if err != nil {
 		return stderrNotices{}
 	}
+	tail := trimStderrTail(raw[max(0, len(raw)-errTailBytes):])
 	return stderrNotices{
-		backgroundAborted: matchesBackgroundAbort(tail),
+		backgroundAborted: matchesBackgroundAbort(raw),
 		printTimeout:      matchesPrintTimeout(tail),
 		signInRequired:    matchesSignInRequired(tail),
 	}
@@ -1246,10 +1262,11 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 // markers. It is a heuristic, not an infallible signal: before agy 1.5.0 agy
 // exits 0 either way, so its stderr is the only record of the abort. Requiring both markers biases
 // toward precision, because the two failure directions are not equally costly. A
-// false negative (a marker absent, or pushed out of the bounded tail below by
-// verbose interleaved output) only leaves the pre-existing SUCCESS reporting in
-// place. A false positive downgrades a genuinely complete answer, so it is the
-// one to avoid; the inference behind requiring both is that a run which finished
+// false negative (a marker absent, or pushed out of the backgroundMarkerScanBytes
+// window by verbose interleaved output) leaves the run reported as it would be
+// without the markers: done, or timeout when the print-timeout notice or
+// finished_reason names an expiry. A false positive downgrades a genuinely
+// complete answer, so it is the one to avoid; the inference behind requiring both is that a run which finished
 // its answer and merely leaked a stray background task need not also have gone
 // idle waiting on it, so demanding the idle-wait line as well as the kill line
 // rejects that case. That inference is not verified against agy, so even a false
@@ -1269,14 +1286,19 @@ func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool 
 //	root agent idle; waiting up to 5s for 2 background task(s)
 //	terminating 2 background task(s) on exit
 //
-// so both marker lines fall in the bounded tail, and only the stable tokens are
+// so both marker lines fall in the scanned window, and only the stable tokens are
 // matched, not the variable grace or count. Re-MEASURED against agy 1.2.9, where
 // the wait runs to the --print-timeout deadline (capped at 30 minutes per agy's
 // changelog): a background task that outlived a 60s budget produced the same
 // two lines (the first reading "waiting up to 1m0s"), and one that finished in
 // time left only the idle-wait line, which on its own does not match. Re-MEASURED
 // against agy 1.5.3, where such a run exits 3 with an ERROR payload: both marker
-// lines still print, ahead of the print-timeout, error and AGY_ERROR lines.
+// lines still print, ahead of the print-timeout, error and AGY_ERROR lines. A run
+// whose background commands became daemon tasks (MEASURED against agy 1.5.3, four
+// sleeps) printed only "terminating 4 daemon task(s) on exit", which matches
+// neither marker: the run exited 0 with SUCCESS and no finished_reason, and is
+// reported done, since agy cut no wait short (changelog, 1.2.9: daemon processes
+// terminate when a headless run ends).
 func matchesBackgroundAbort(stderr string) bool {
 	var idleWaiting, killedAtExit bool
 	for line := range strings.Lines(stderr) {
