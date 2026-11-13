@@ -389,7 +389,7 @@ func TestToStartRequestProjectRulesWireName(t *testing.T) {
 	}
 }
 
-// TestToStartRequestValidatesEffort: effort is an agy enum (low, medium, high),
+// TestToStartRequestValidatesEffort: effort is validated against the levels this server accepts (low, medium, high, xhigh),
 // so a bad value must fail fast at the tool boundary with a message that quotes
 // the bad value and names the accepted values, rather than reaching agy. An empty
 // effort is valid and means "omit the flag". Validation is exact, so a wrong case
@@ -404,6 +404,8 @@ func TestToStartRequestValidatesEffort(t *testing.T) {
 		{name: "low ok", effort: "low", wantErr: false},
 		{name: "medium ok", effort: "medium", wantErr: false},
 		{name: "high ok", effort: "high", wantErr: false},
+		{name: "xhigh ok", effort: "xhigh", wantErr: false},
+		{name: "max rejected", effort: "max", wantErr: true},
 		{name: "unknown rejected", effort: "maximum", wantErr: true},
 		{name: "wrong case rejected", effort: "High", wantErr: true},
 	} {
@@ -414,11 +416,10 @@ func TestToStartRequestValidatesEffort(t *testing.T) {
 				if err == nil {
 					t.Fatalf("effort %q was accepted, want a rejection", tc.effort)
 				}
-				if !strings.Contains(err.Error(), tc.effort) ||
-					!strings.Contains(err.Error(), "low") ||
-					!strings.Contains(err.Error(), "medium") ||
-					!strings.Contains(err.Error(), "high") {
-					t.Fatalf("err = %v, want it to quote %q and name the accepted values", err, tc.effort)
+				for _, want := range append([]string{tc.effort}, agyEfforts...) {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("err = %v, want it to contain %q (the bad value and every accepted level)", err, want)
+					}
 				}
 				return
 			}

@@ -111,7 +111,7 @@ func New(c config.Config) *Manager {
 type StartRequest struct {
 	Prompt           string
 	Model            string   // optional; falls back to cfg.DefaultModel, then reduced by modelID
-	Effort           string   // optional; --effort <low|medium|high>, reasoning effort for the session
+	Effort           string   // optional; --effort <low|medium|high|xhigh>, reasoning effort for the session
 	Mode             string   // optional; --mode <accept-edits>, agy's agent execution mode (mcptools refuses plan, issue #219)
 	Agent            string   // optional; --agent <name>, selects a specific agy agent
 	Sandbox          bool     // optional; --sandbox, runs agy with terminal restrictions
