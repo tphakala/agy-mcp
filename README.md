@@ -158,7 +158,7 @@ outright, and on expiry the job normally ends in state `failed` with `failure_re
 because agy-mcp kills the `agy` process tree (if `agy`'s own
 `--print-timeout` fires first, `agy` stops the turn itself and any text it had comes back as a
 `partial` result); `effort`, when set, must be
-`low`, `medium`, `high` or `xhigh`, and `mode`, when set, must be `accept-edits`, with any other
+`low`, `medium`, `high` or `xhigh` (`xhigh` needs a model that offers it, such as `gemini-4-hydrogen`, which agy 1.5.8 added per its changelog), and `mode`, when set, must be `accept-edits`, with any other
 value rejected before the run starts. `plan` is refused because agy ignores `--mode plan` while
 slash command expansion is disabled, which agy-mcp does on every run so prompts stay literal, so the
 run would apply edits instead of only planning (MEASURED against agy 1.1.15, 1.1.27, 1.4.6 and 1.4.8,

@@ -389,7 +389,7 @@ func TestToStartRequestProjectRulesWireName(t *testing.T) {
 	}
 }
 
-// TestToStartRequestValidatesEffort: effort is an agy enum (low, medium, high, xhigh),
+// TestToStartRequestValidatesEffort: effort is validated against the levels this server accepts (low, medium, high, xhigh),
 // so a bad value must fail fast at the tool boundary with a message that quotes
 // the bad value and names the accepted values, rather than reaching agy. An empty
 // effort is valid and means "omit the flag". Validation is exact, so a wrong case
