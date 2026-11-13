@@ -416,12 +416,10 @@ func TestToStartRequestValidatesEffort(t *testing.T) {
 				if err == nil {
 					t.Fatalf("effort %q was accepted, want a rejection", tc.effort)
 				}
-				if !strings.Contains(err.Error(), tc.effort) ||
-					!strings.Contains(err.Error(), "low") ||
-					!strings.Contains(err.Error(), "medium") ||
-					!strings.Contains(err.Error(), "high") ||
-					!strings.Contains(err.Error(), "xhigh") {
-					t.Fatalf("err = %v, want it to quote %q and name the accepted values", err, tc.effort)
+				for _, want := range append([]string{tc.effort}, agyEfforts...) {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("err = %v, want it to contain %q (the bad value and every accepted level)", err, want)
+					}
 				}
 				return
 			}

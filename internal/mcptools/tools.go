@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,7 +23,7 @@ import (
 type runInput struct {
 	Prompt         string   `json:"prompt" jsonschema:"the complete task for the delegated agent: what to do, the context needed to do it, and the output wanted back; the agent cannot see this conversation, so the prompt must stand alone. It is sent to agy literally, so a leading slash-command or skill name (a prompt starting with /) is treated as text, not expanded"`
 	Model          string   `json:"model,omitempty" jsonschema:"agy model id, e.g. gemini-3.1-pro-high; omit to use the server's default model, or agy's own default when the server sets none. Call list_models for the accepted values and pass one from its models field, not a display label from model_details, because agy rejects a display label whenever effort is also set. Not every id accepts every effort either, and some accept none, so omit effort unless you need a specific one"`
-	Effort         string   `json:"effort,omitempty" jsonschema:"reasoning effort for this run (agy --effort): low, medium, high or xhigh. Not every model offers every level (xhigh is offered by gemini-4-hydrogen, for example); agy refuses a level the model lacks. Omit to use agy's default"`
+	Effort         string   `json:"effort,omitempty" jsonschema:"reasoning effort for this run (agy --effort): low, medium, high or xhigh. Not every model offers every level; agy refuses one the model lacks. Omit to use agy's default"`
 	Mode           string   `json:"mode,omitempty" jsonschema:"agy agent execution mode for this run (agy --mode). The only accepted value is accept-edits; plan is refused with an error, because agy ignores --mode plan when slash command expansion is disabled and agy-mcp disables it on every run so prompts stay literal. Every run skips agy's permission prompts; under that, in a measured run on agy 1.4.8, accept-edits behaved the same as passing no mode. Omit to use agy's default mode"`
 	Agent          string   `json:"agent,omitempty" jsonschema:"name of a specific agy agent to run for this session (agy --agent); omit to use agy's default agent; list_agents with the same cwd lists the accepted names, including the repository's project agents. On agy 1.3.4 and later an unknown name fails the run with failure_reason agy_error and an error listing the available agents; older agy runs its default agent instead (agy changelog 1.3.4)"`
 	Sandbox        bool     `json:"sandbox,omitempty" jsonschema:"run the agent with agy's sandbox (terminal restrictions) enabled (agy --sandbox); off by default"`
@@ -83,19 +85,13 @@ const (
 	agyModePlan        = "plan"
 )
 
-// agy --effort accepts these reasoning-effort levels, and toStartRequest
-// validates against the subset below so a bad value fails at the tool boundary
-// with a clear message rather than reaching agy. Which levels a given model
-// offers is agy's own business: MEASURED against agy 1.5.8, gemini-4-hydrogen
-// accepts xhigh and refuses max ("has no max effort"), and agy's own --effort
-// help lists max as well. max is deliberately not accepted here until a model
-// in the catalog offers it.
-const (
-	agyEffortLow    = "low"
-	agyEffortMedium = "medium"
-	agyEffortHigh   = "high"
-	agyEffortXHigh  = "xhigh"
-)
+// agyEfforts are the reasoning-effort levels toStartRequest accepts, so a bad
+// value fails at the tool boundary with a clear message rather than reaching
+// agy. Which levels a given model offers is agy's own business. agy's --effort
+// help also lists max, which is left out until a catalog model offers it
+// (MEASURED against agy 1.5.8: gemini-4-hydrogen accepts xhigh and refuses max
+// with "has no max effort").
+var agyEfforts = []string{"low", "medium", "high", "xhigh"}
 
 // ToolAgyRunSync is the agy_run_sync tool name, exported so out-of-package
 // callers (the hook-wait suppression gate) can match it against a hook payload's
@@ -191,8 +187,8 @@ func (in runInput) toStartRequest() (manager.StartRequest, error) {
 		// project_rules defaults to true, so only an explicit false opts out.
 		SkipProjectRules: in.ProjectRules != nil && !*in.ProjectRules,
 	}
-	if in.Effort != "" && in.Effort != agyEffortLow && in.Effort != agyEffortMedium && in.Effort != agyEffortHigh && in.Effort != agyEffortXHigh {
-		return manager.StartRequest{}, fmt.Errorf("invalid effort %q: want %s, %s, %s or %s", in.Effort, agyEffortLow, agyEffortMedium, agyEffortHigh, agyEffortXHigh)
+	if in.Effort != "" && !slices.Contains(agyEfforts, in.Effort) {
+		return manager.StartRequest{}, fmt.Errorf("invalid effort %q: want one of %s", in.Effort, strings.Join(agyEfforts, ", "))
 	}
 	if in.Priority != "" && in.Priority != manager.PriorityNormal && in.Priority != manager.PriorityOptional {
 		return manager.StartRequest{}, fmt.Errorf("invalid priority %q: want %s or %s", in.Priority, manager.PriorityNormal, manager.PriorityOptional)
