@@ -389,7 +389,7 @@ func TestToStartRequestProjectRulesWireName(t *testing.T) {
 	}
 }
 
-// TestToStartRequestValidatesEffort: effort is an agy enum (low, medium, high),
+// TestToStartRequestValidatesEffort: effort is an agy enum (low, medium, high, xhigh),
 // so a bad value must fail fast at the tool boundary with a message that quotes
 // the bad value and names the accepted values, rather than reaching agy. An empty
 // effort is valid and means "omit the flag". Validation is exact, so a wrong case
@@ -404,6 +404,8 @@ func TestToStartRequestValidatesEffort(t *testing.T) {
 		{name: "low ok", effort: "low", wantErr: false},
 		{name: "medium ok", effort: "medium", wantErr: false},
 		{name: "high ok", effort: "high", wantErr: false},
+		{name: "xhigh ok", effort: "xhigh", wantErr: false},
+		{name: "max rejected", effort: "max", wantErr: true},
 		{name: "unknown rejected", effort: "maximum", wantErr: true},
 		{name: "wrong case rejected", effort: "High", wantErr: true},
 	} {
@@ -417,7 +419,8 @@ func TestToStartRequestValidatesEffort(t *testing.T) {
 				if !strings.Contains(err.Error(), tc.effort) ||
 					!strings.Contains(err.Error(), "low") ||
 					!strings.Contains(err.Error(), "medium") ||
-					!strings.Contains(err.Error(), "high") {
+					!strings.Contains(err.Error(), "high") ||
+					!strings.Contains(err.Error(), "xhigh") {
 					t.Fatalf("err = %v, want it to quote %q and name the accepted values", err, tc.effort)
 				}
 				return
