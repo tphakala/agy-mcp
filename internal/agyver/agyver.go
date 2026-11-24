@@ -124,7 +124,7 @@ import (
 // parallel jobs benefit from it. Whether those jobs actually share a database
 // file is not measured, and the floor stays put on the same reasoning.
 //
-// Later releases up to 1.5.3 were read against the flags and output agy-mcp
+// Later releases up to 1.5.16 were read against the flags and output agy-mcp
 // consumes, and none raises the floor. These touch behaviour a caller can see:
 //   - 1.3.4 made an unknown --agent fail the run before any model call (exit 1,
 //     an ERROR result naming the available agents; MEASURED against agy 1.4.6).
@@ -140,6 +140,7 @@ import (
 //     refuses plan (see internal/mcptools).
 //   - 1.3.5 added --mode auto (Windows support from 1.4.4); agy-mcp does not
 //     accept it, see the comment on the mode constants in internal/mcptools.
+//     1.5.7 made it the default (below).
 //   - 1.4.7 fixed skills, rules, custom agents, plugins, plugin MCP servers
 //     and hooks not loading under Application Default Credentials sign-in
 //     (AGY_ADC_AUTH); the README's auth note carries the caveat (issue #222),
@@ -159,8 +160,14 @@ import (
 //   - 1.5.2 changed `-p --dangerously-skip-permissions` to deny terminal
 //     commands or file access outside the workspace that a Gemini Enterprise
 //     administrator requires to be reviewed, and to block commands on the system
-//     command denylist (changelog; NOT MEASURED, no such account here). The
-//     README's statement that a run writes under cwd and dirs stays true.
+//     command denylist (changelog; NOT MEASURED, no such account here). Outside
+//     such a policy the flag does not confine a run to cwd and dirs: MEASURED
+//     against agy 1.5.16 on a consumer account, a run created a new file by
+//     absolute path outside its workspace, in a plain directory and in a git
+//     repository. Overwriting an existing file there was not measured. A deny
+//     rule in the user's agy settings still applies under the flag (MEASURED
+//     against agy 1.5.16: the command fails with a tool error, and the run
+//     exits 0 with status SUCCESS).
 //   - 1.5.3 rewords the Vertex model-not-found message (changelog). agy-mcp
 //     matches the AGY_ERROR status prefix, not that text; MEASURED against
 //     agy 1.5.3, a model the region does not serve exits 3 with finished_reason
@@ -170,6 +177,44 @@ import (
 //     unrecognized model name is a different, local failure (MEASURED against agy
 //     1.5.3: exit 1, an ERROR payload with finished_reason error and no AGY_ERROR
 //     line).
+//   - 1.5.5 made a headless -p run finish shutting down within 30 seconds after
+//     printing its result when a background task such as title generation got
+//     stuck (changelog). agy-mcp's hard timeout bounds such a run either way.
+//   - 1.5.7 made Auto the default agent mode for sessions with no saved mode,
+//     headless -p runs included, wherever Auto mode is available (changelog).
+//     Auto runs commands in agy's terminal sandbox (changelog, 1.5.4), which
+//     from 1.5.10 blocks reading ~/.config (changelog). MEASURED against agy
+//     1.5.16 on a Linux host where the terminal sandbox cannot run: --mode auto
+//     warns that Auto is not available and continues in the default mode, and
+//     under --dangerously-skip-permissions the init event reports
+//     permission_mode always-proceed with no --mode, with --mode accept-edits or
+//     auto, with --sandbox, and with --settings '{"toolPermission":"strict"}'.
+//     With no --mode, with accept-edits and with --sandbox, a shell command read
+//     a file under ~/.config and reached the network. Whether the Auto default
+//     sandboxes an agy-mcp run on a host where the sandbox can run is NOT
+//     MEASURED.
+//   - 1.5.10 waits and retries when the model API asks for a retry delay of up
+//     to 4 minutes, where it used to stop the turn on a delay over 30 seconds,
+//     and stops at once on spend-cap, prepaid-balance and weekly quota errors.
+//     It also waits up to 10 minutes, not 5, on a silent model response before
+//     treating it as stalled (changelog). agy-mcp has no idle watchdog of its
+//     own, so such a wait counts against the job's timeout like any other time
+//     the run takes.
+//   - 1.5.11 makes /usage exit 2 in -p runs under a GEMINI_API_KEY sign-in,
+//     which has no account quota (changelog; NOT MEASURED). agy_usage then
+//     returns the probe's error, and priority optional does not refuse a run
+//     without a fresh quota reading.
+//   - 1.5.13 fixed json and stream-json results reporting ERROR, with a failed
+//     attempt's error, for runs that succeeded after agy retried a model request
+//     (changelog). agy-mcp fails a job whose payload status is ERROR whatever
+//     the exit code (applyResult in internal/manager), so on an older agy such a
+//     run is reported as failed.
+//   - 1.5.15 stopped pruning saved conversations beyond the 500 most recent
+//     (changelog), so an older conversation_id no longer drops out of agy's
+//     store. list_sessions and continue_latest read agy's
+//     last_conversations.json cache, not that store.
+//   - 1.5.16 added -r and --resume as aliases for --conversation (changelog);
+//     agy-mcp keeps passing --conversation, which agy 1.5.16 still accepts.
 //
 // The facts about agy releases are from agy's own changelog (run
 // `agy changelog`), except where a line is marked MEASURED; the 1.1.15 line
