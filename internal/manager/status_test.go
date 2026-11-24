@@ -614,6 +614,9 @@ type terminalCase struct {
 	// wantSignIn is asserted on every row, so no path can gain the sign-in flag
 	// unnoticed.
 	wantSignIn bool
+	// wantActionDenied is asserted on every row, so no path can gain the
+	// action-denied flag unnoticed.
+	wantActionDenied bool
 }
 
 // terminalCases is the whole Result/Partial contract in one table, consumed by
@@ -1376,6 +1379,67 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantErrSub: "request failed", wantReason: ReasonQuotaExhausted,
 			wantRetryable: new(true), wantErrorID: "e-1",
 		},
+		// --- clean exit, but agy refused tool actions (denied_actions, #244) ---
+		{
+			// MEASURED against agy 1.5.16 in request-review mode: exit 0, status
+			// SUCCESS, empty response, denied_actions naming Bash (command), and
+			// stderr starting "jetski: no output produced".
+			name: "denied_actions with empty response fails closed as agy_error and is not partial",
+			code: 0, res: &streamjson.Result{
+				Status:        streamjson.StatusSuccess,
+				DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			errFile:   "jetski: no output produced (refused command permission)\n",
+			wantState: StateFailed, wantReason: ReasonAgyError, wantActionDenied: true,
+			wantErrSub: "Bash (command)",
+		}, {
+			name: "denied_actions with opening narration fails closed and keeps text as partial",
+			code: 0, res: &streamjson.Result{
+				Status:        streamjson.StatusSuccess,
+				Response:      "I'll run the tests now.",
+				DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			wantState: StateFailed, wantResult: "I'll run the tests now.", wantPartial: true,
+			wantReason: ReasonAgyError, wantActionDenied: true,
+			wantErrSub: "Bash (command)",
+		}, {
+			name: "background_aborted beats denied_actions on clean exit",
+			code: 0, res: &streamjson.Result{
+				Status:        streamjson.StatusSuccess,
+				Response:      "waiting",
+				DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			errFile:   backgroundAbortNotice,
+			wantState: StateFailed, wantResult: "waiting", wantPartial: true,
+			wantReason: ReasonBackgroundAborted, wantErrSub: "in the foreground",
+		}, {
+			name: "print_timeout beats denied_actions on clean exit",
+			code: 0, res: &streamjson.Result{
+				Status:        streamjson.StatusSuccess,
+				Response:      "half",
+				DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			errFile:   printTimeoutNotice + "\n",
+			wantState: StateFailed, wantResult: "half", wantPartial: true,
+			wantReason: ReasonTimeout, wantErrSub: "--print-timeout expired",
+		}, {
+			name: "ERROR payload quota wall beats denied_actions on clean exit",
+			code: 0, res: &streamjson.Result{
+				Status:        streamjson.StatusError,
+				Error:         "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 21m50s.",
+				DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			wantState: StateFailed, wantReason: ReasonQuotaExhausted,
+			wantErrSub: "Resets in 21m50s", noErrSub: "permission policy",
+		}, {
+			name: "cancel after SUCCESS response carrying denied_actions marks response partial",
+			code: jobstore.ExitSIGTERM, res: &streamjson.Result{
+				Status:        streamjson.StatusSuccess,
+				Response:      "started",
+				DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			wantState: StateCancelled, wantResult: "started", wantPartial: true,
+		},
 	}
 }
 
@@ -1389,7 +1453,7 @@ func terminalCases() []terminalCase {
 func TestStatusTerminalContractTableIsWellFormed(t *testing.T) {
 	for _, tc := range terminalCases() {
 		vouched := tc.res != nil && tc.res.Status == streamjson.StatusSuccess && tc.res.Response != "" &&
-			tc.res.FinishedReason == ""
+			tc.res.FinishedReason == "" && len(tc.res.DeniedActions) == 0
 		// Ask the production predicate, not a copy of it: a validator that
 		// classified a row differently from the code would pass exactly the rows
 		// it exists to catch.
@@ -1417,6 +1481,10 @@ func TestStatusTerminalContractTableIsWellFormed(t *testing.T) {
 		// SignInRequired is set only on an agy_error failure.
 		if tc.wantSignIn && (tc.wantState != StateFailed || tc.wantReason != ReasonAgyError) {
 			t.Errorf("row %q declares a sign-in flag on something other than a failed agy_error", tc.name)
+		}
+		// ActionDenied is set only on an agy_error failure.
+		if tc.wantActionDenied && (tc.wantState != StateFailed || tc.wantReason != ReasonAgyError) {
+			t.Errorf("row %q declares an action-denied flag on something other than a failed agy_error", tc.name)
 		}
 	}
 }
@@ -1504,12 +1572,109 @@ func assertTerminalStatus(t *testing.T, st Status, tc terminalCase) {
 	if st.SignInRequired != tc.wantSignIn {
 		t.Errorf("sign_in_required = %v, want %v", st.SignInRequired, tc.wantSignIn)
 	}
+	if st.ActionDenied != tc.wantActionDenied {
+		t.Errorf("action_denied = %v, want %v", st.ActionDenied, tc.wantActionDenied)
+	}
 }
 
 func TestStatusTerminalContract(t *testing.T) {
 	for _, tc := range terminalCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			assertTerminalStatus(t, stageTerminalJob(t, tc), tc)
+		})
+	}
+}
+
+// TestStatusEmptyDeniedActionsArrayStaysDone stages raw JSON containing an
+// explicit empty denied_actions array ("denied_actions":[]), which decodes to a
+// non-nil empty slice in Go. Bypassing writeResultPayload (whose omitempty
+// would strip an empty slice) ensures status derivation checks length rather
+// than nil-ness.
+func TestStatusEmptyDeniedActionsArrayStaysDone(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir := createJob(t, m, "j")
+	if err := jobstore.WriteResultDir(dir, []byte(`{"status":"SUCCESS","response":"final","denied_actions":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.store.WriteExitCode("j", 0); err != nil {
+		t.Fatal(err)
+	}
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateDone || st.Result != "final" || st.Partial || st.ActionDenied {
+		t.Fatalf("status = %+v, want done result %q partial=false action_denied=false", st, "final")
+	}
+}
+
+func TestDeniedActionsError(t *testing.T) {
+	const suffix = " under its permission policy, so the run did not complete; adjust the prompt or permission policy before retrying."
+	many := make([]streamjson.DeniedAction, maxDeniedActionLabels+2)
+	wantMany := make([]string, 0, maxDeniedActionLabels+1)
+	for i := range many {
+		name := "tool-" + strconv.Itoa(i)
+		many[i] = streamjson.DeniedAction{Action: name}
+		if i < maxDeniedActionLabels {
+			wantMany = append(wantMany, name)
+		}
+	}
+	wantMany = append(wantMany, "and 2 more")
+
+	for _, tc := range []struct {
+		name   string
+		denied []streamjson.DeniedAction
+		want   string
+	}{
+		{
+			name: "duplicates deduplicated in first-seen order",
+			denied: []streamjson.DeniedAction{
+				{Action: "command", DisplayName: "Bash"},
+				{Action: "write", DisplayName: "Edit"},
+				{Action: "command", DisplayName: "Bash"},
+			},
+			want: "agy refused tool action(s) (Bash (command), Edit (write))" + suffix,
+		},
+		{
+			name:   "missing display name uses action",
+			denied: []streamjson.DeniedAction{{Action: "command"}},
+			want:   "agy refused tool action(s) (command)" + suffix,
+		},
+		{
+			name:   "missing action uses display name",
+			denied: []streamjson.DeniedAction{{DisplayName: "Bash"}},
+			want:   "agy refused tool action(s) (Bash)" + suffix,
+		},
+		{
+			name:   "case-insensitive equal display name and action not repeated",
+			denied: []streamjson.DeniedAction{{Action: "command", DisplayName: "Command"}},
+			want:   "agy refused tool action(s) (Command)" + suffix,
+		},
+		{
+			name:   "surrounding whitespace trimmed",
+			denied: []streamjson.DeniedAction{{Action: " command ", DisplayName: " Bash "}},
+			want:   "agy refused tool action(s) (Bash (command))" + suffix,
+		},
+		{
+			name:   "whitespace-only fields fall back without empty parens",
+			denied: []streamjson.DeniedAction{{Action: "  ", DisplayName: "\t"}},
+			want:   "agy refused tool action(s)" + suffix,
+		},
+		{
+			name:   "empty entry falls back without empty parens",
+			denied: []streamjson.DeniedAction{{}},
+			want:   "agy refused tool action(s)" + suffix,
+		},
+		{
+			name:   "more than maxDeniedActionLabels caps list with overflow count",
+			denied: many,
+			want:   "agy refused tool action(s) (" + strings.Join(wantMany, ", ") + ")" + suffix,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deniedActionsError(tc.denied); got != tc.want {
+				t.Errorf("deniedActionsError(%+v) = %q, want %q", tc.denied, got, tc.want)
+			}
 		})
 	}
 }
@@ -1677,19 +1842,41 @@ func TestStatusJSONSchemaResultSelection(t *testing.T) {
 			errFile:   backgroundAbortNotice,
 			wantState: StateFailed, wantResult: "streamed diagnostic", wantPartial: true,
 			wantErrSub: "in the foreground", wantReason: ReasonBackgroundAborted,
+		}, {
+			name: "schema success without structured_output carrying denied_actions reclassifies with refused actions",
+			code: 0, args: schemaArgs,
+			res: &streamjson.Result{
+				Status:        streamjson.StatusSuccess,
+				Response:      responseWithToolMetadata,
+				DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			wantState: StateFailed, wantResult: responseWithToolMetadata, wantPartial: true,
+			wantReason: ReasonAgyError, wantActionDenied: true,
+			wantErrSub: "Bash (command)", noErrSub: "without structured_output",
+		}, {
+			name: "schema success with structured_output carrying denied_actions fails closed as partial",
+			code: 0, args: schemaArgs,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+				DeniedActions:    []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			wantState: StateFailed, wantResult: `{"business":"ok"}`, wantPartial: true,
+			wantReason: ReasonAgyError, wantActionDenied: true,
+			wantErrSub: "Bash (command)",
+		}, {
+			name: "cancel after schema success with structured_output carrying denied_actions marks output partial",
+			code: jobstore.ExitSIGTERM, args: schemaArgs,
+			res: &streamjson.Result{
+				Status:           streamjson.StatusSuccess,
+				StructuredOutput: json.RawMessage(`{"business":"ok"}`),
+				DeniedActions:    []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+			},
+			wantState: StateCancelled, wantResult: `{"business":"ok"}`, wantPartial: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			st := stageTerminalJob(t, tc)
-			if st.State != tc.wantState || st.Result != tc.wantResult || st.Partial != tc.wantPartial {
-				t.Fatalf("status = %+v, want state %q result %q partial %v", st, tc.wantState, tc.wantResult, tc.wantPartial)
-			}
-			if tc.wantErrSub != "" && !strings.Contains(st.Error, tc.wantErrSub) {
-				t.Fatalf("error = %q, want substring %q", st.Error, tc.wantErrSub)
-			}
-			if st.FailureReason != tc.wantReason {
-				t.Fatalf("failure_reason = %q, want %q", st.FailureReason, tc.wantReason)
-			}
+			assertTerminalStatus(t, stageTerminalJob(t, tc), tc)
 		})
 	}
 
@@ -2282,35 +2469,38 @@ func TestStatusCorruptResultPayloadIsStillAStreamJSONRun(t *testing.T) {
 func TestStatusRecoveredFromPayload(t *testing.T) {
 	schemaArgs := []string{jsonSchemaFlag, "{}"}
 	for _, tc := range []struct {
-		name        string
-		args        []string
-		res         streamjson.Result
-		out         string
-		stderr      string
-		wantState   string
-		wantReason  string
-		wantResult  string
-		wantPartial bool
+		name             string
+		args             []string
+		res              streamjson.Result
+		out              string
+		stderr           string
+		wantState        string
+		wantReason       string
+		wantResult       string
+		wantPartial      bool
+		wantActionDenied bool
+		wantErrSub       string
 	}{
 		// A supervisor that died between writing the result and writing the
 		// sentinel left a complete, trustworthy answer.
-		{"success payload", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "complete"}, "streamed", "", StateDone, "", "complete", false},
-		{"error payload keeps its text", nil, streamjson.Result{Status: streamjson.StatusError, Response: "got this far"}, "", "", StateFailed, ReasonAgyError, "got this far", true},
-		{"a response with no status is unverified", nil, streamjson.Result{Response: "an answer"}, "", "", StateDone, "", "an answer", true},
-		{"an empty payload falls back to the stream", nil, streamjson.Result{}, "streamed", "", StateFailed, ReasonAgyError, "streamed", true},
+		{name: "success payload", res: streamjson.Result{Status: streamjson.StatusSuccess, Response: "complete"}, out: "streamed", wantState: StateDone, wantResult: "complete"},
+		{name: "error payload keeps its text", res: streamjson.Result{Status: streamjson.StatusError, Response: "got this far"}, wantState: StateFailed, wantReason: ReasonAgyError, wantResult: "got this far", wantPartial: true},
+		{name: "a response with no status is unverified", res: streamjson.Result{Response: "an answer"}, wantState: StateDone, wantResult: "an answer", wantPartial: true},
+		{name: "an empty payload falls back to the stream", res: streamjson.Result{}, out: "streamed", wantState: StateFailed, wantReason: ReasonAgyError, wantResult: "streamed", wantPartial: true},
 		// The no-stream sibling, so the recovery path pins the indeterminate
 		// verdict itself and not only the fallback that usually hides it.
-		{"an empty payload with no stream is indeterminate", nil, streamjson.Result{}, "", "", StateFailed, ReasonAgyError, "", false},
-		{"an unrecognized status", nil, streamjson.Result{Status: "MAX_TURNS"}, "", "", StateFailed, ReasonAgyError, "", false},
+		{name: "an empty payload with no stream is indeterminate", res: streamjson.Result{}, wantState: StateFailed, wantReason: ReasonAgyError},
+		{name: "an unrecognized status", res: streamjson.Result{Status: "MAX_TURNS"}, wantState: StateFailed, wantReason: ReasonAgyError},
 		// Stderr notices on the recovery path (issue #186).
-		{"print timeout", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", printTimeoutNotice + "\n", StateFailed, ReasonTimeout, "half an answer", true},
-		{"SUCCESS print timeout named only by finished_reason", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer", FinishedReason: streamjson.FinishedReasonPrintTimeout}, "", "", StateFailed, ReasonTimeout, "half an answer", true},
-		{"background abort", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", backgroundAbortNotice, StateFailed, ReasonBackgroundAborted, "half an answer", true},
+		{name: "print timeout", res: streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, stderr: printTimeoutNotice + "\n", wantState: StateFailed, wantReason: ReasonTimeout, wantResult: "half an answer", wantPartial: true},
+		{name: "SUCCESS print timeout named only by finished_reason", res: streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer", FinishedReason: streamjson.FinishedReasonPrintTimeout}, wantState: StateFailed, wantReason: ReasonTimeout, wantResult: "half an answer", wantPartial: true},
+		{name: "background abort", res: streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, stderr: backgroundAbortNotice, wantState: StateFailed, wantReason: ReasonBackgroundAborted, wantResult: "half an answer", wantPartial: true},
 		// The agy 1.5 shape: an ERROR payload whose finished_reason names the expiry.
-		{"1.5 print timeout", nil, streamjson.Result{Status: streamjson.StatusError, Error: finishedPrintTimeoutError, FinishedReason: streamjson.FinishedReasonPrintTimeout}, "", finishedPrintTimeoutStderr, StateFailed, ReasonTimeout, "", false},
-		{"no notice stays done", nil, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", "some agy chatter\n", StateDone, "", "half an answer", false},
-		{"schema success without output, background abort", schemaArgs, streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, "", backgroundAbortNotice, StateFailed, ReasonBackgroundAborted, "half an answer", true},
-		{"schema error keeps its reason despite background abort", schemaArgs, streamjson.Result{Status: streamjson.StatusError, Response: "half an answer"}, "", backgroundAbortNotice, StateFailed, ReasonAgyError, "half an answer", true},
+		{name: "1.5 print timeout", res: streamjson.Result{Status: streamjson.StatusError, Error: finishedPrintTimeoutError, FinishedReason: streamjson.FinishedReasonPrintTimeout}, stderr: finishedPrintTimeoutStderr, wantState: StateFailed, wantReason: ReasonTimeout},
+		{name: "no notice stays done", res: streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, stderr: "some agy chatter\n", wantState: StateDone, wantResult: "half an answer"},
+		{name: "schema success without output, background abort", args: schemaArgs, res: streamjson.Result{Status: streamjson.StatusSuccess, Response: "half an answer"}, stderr: backgroundAbortNotice, wantState: StateFailed, wantReason: ReasonBackgroundAborted, wantResult: "half an answer", wantPartial: true},
+		{name: "schema error keeps its reason despite background abort", args: schemaArgs, res: streamjson.Result{Status: streamjson.StatusError, Response: "half an answer"}, stderr: backgroundAbortNotice, wantState: StateFailed, wantReason: ReasonAgyError, wantResult: "half an answer", wantPartial: true},
+		{name: "denied actions", res: streamjson.Result{Status: streamjson.StatusSuccess, DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}}}, wantState: StateFailed, wantReason: ReasonAgyError, wantActionDenied: true, wantErrSub: "Bash (command)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
@@ -2335,15 +2525,18 @@ func TestStatusRecoveredFromPayload(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if st.State != tc.wantState || st.FailureReason != tc.wantReason || st.Result != tc.wantResult || st.Partial != tc.wantPartial {
-				t.Fatalf("status = %+v, want state %q reason %q result %q partial %v",
-					st, tc.wantState, tc.wantReason, tc.wantResult, tc.wantPartial)
+			if st.State != tc.wantState || st.FailureReason != tc.wantReason || st.Result != tc.wantResult || st.Partial != tc.wantPartial || st.ActionDenied != tc.wantActionDenied {
+				t.Fatalf("status = %+v, want state %q reason %q result %q partial %v action_denied %v",
+					st, tc.wantState, tc.wantReason, tc.wantResult, tc.wantPartial, tc.wantActionDenied)
 			}
 			// A failure must say why. The table this replaced asserted it and the
 			// fold dropped it, leaving applyResult's two default messages
 			// unpinned on the recovery path.
 			if tc.wantState == StateFailed && st.Error == "" {
 				t.Fatal("a failed recovery must carry an explanation")
+			}
+			if tc.wantErrSub != "" && !strings.Contains(st.Error, tc.wantErrSub) {
+				t.Fatalf("error = %q, want substring %q", st.Error, tc.wantErrSub)
 			}
 		})
 	}
