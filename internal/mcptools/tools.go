@@ -263,7 +263,7 @@ type statusOutput struct {
 	// actionable (for example a timeout, a cancel, a crash, or an agy error
 	// before any answer was streamed), which otherwise reads as a bare empty
 	// failure (issue #151). A quota_exhausted failure and a sign-in failure
-	// (issue #214) are the exceptions whose advice is given even without a
+	// (issues #214, #228) are the exceptions whose advice is given even without a
 	// conversation to continue: wait for the reset, or sign agy in, instead.
 	Recovery string `json:"recovery,omitempty" jsonschema:"how to recover a run that ended with no result text: present only on a terminal failed or cancelled job that produced no text. Usually the job also has a conversation_id and the advice is to start a fresh agy_run with it to continue the thread without restating the task (the killed turn's own reasoning is not recoverable). Another exception, the other way, is a failure_reason of quota_exhausted, which is transient: the advice is to wait for the quota reset and then retry, and it is given even when no conversation_id was named. A failure where agy reported it is not signed in, or that its sign-in expired, is another such case: the advice is that a person must sign agy in on the server host before a retry can succeed, and it is given even when no conversation_id was named; failure_reason stays agy_error. A background_aborted failure gets no recovery note, since simply carrying on with the same task would launch the same background command again; its error says to re-run with the verification in the foreground instead. A run failed because agy refused tool actions (denied_actions) likewise gets no recovery note, because its error already names the refused actions and advises adjusting the prompt or permission policy. When retryable is false, the advice is to fix the cause rather than continue the conversation (except a sign-in note, which keeps its sign-in advice, and a timeout, which keeps the continue-the-conversation advice), and a quota_exhausted note keeps its wait-for-reset advice without naming conversation_id but adds that the cause may need fixing first when the error names no reset time. Absent whenever any result, even a partial one, was recovered"`
 	// Retryable and ErrorID come from the structured AGY_ERROR line agy writes to
@@ -304,7 +304,7 @@ type usageOutput struct {
 const quotaTransientAdvice = "This is transient, not a hard failure: wait for the quota reset (the error message carries the reset time when agy gives one, and agy_usage reports reset times), then retry"
 
 // signInAdvice is the recovery advice for a failure where agy reported it is not
-// signed in (issue #214); the caller appends how to continue. Whether an
+// signed in (issues #214, #228); the caller appends how to continue. Whether an
 // interactive sign-in clears an AGY_ADC_AUTH failure was not measured (see the
 // README), so ADC is offered as the alternative rather than claiming either fixes it.
 const signInAdvice = "agy reported that it is not signed in on the host running agy-mcp, or that its sign-in expired, " +
@@ -352,7 +352,7 @@ func toStatusOutput(st manager.Status) statusOutput {
 	// conversation was named, since waiting for the reset and retrying is advice a
 	// fresh run can act on too.
 	//
-	// A sign-in failure (issue #214) likewise gets its own note, independent of
+	// A sign-in failure (issues #214, #228) likewise gets its own note, independent of
 	// conversation_id and of retryable, because nothing the caller sends can fix it
 	// until a person signs agy in. It ranks below the quota note (the manager sets
 	// SignInRequired only on an agy_error, so the two do not co-occur) and above the

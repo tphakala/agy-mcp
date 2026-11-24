@@ -39,15 +39,34 @@ const errTailBytes = 2000
 const backgroundMarkerScanBytes = 64 << 10
 
 // agyErrorLookback is how many bytes before the errTailBytes window readStderrCopy
-// reads, to find where the window's first line starts. When that line is cut by
-// the window and begins with the AGY_ERROR prefix, its remainder is dropped
-// instead of copied (issue #205).
+// reads, to find where the window's first line (and its preceding line) starts.
+// When that line is cut by the window and begins with the AGY_ERROR prefix, or
+// is a sign-in OAuth URL line after agy's sign-in URL prompt, its remainder is
+// dropped instead of copied (issues #205, #228).
 const agyErrorLookback = 64 << 10
 
 // agyErrorWithheld stands in for a stderr tail that held text but reduced to
 // nothing once its AGY_ERROR lines were redacted, so Error never claims "no
 // stderr output" for a stderr that had content.
 const agyErrorWithheld = "<AGY_ERROR line withheld>"
+
+// signInURLWithheld stands in for a stderr tail that held text but reduced to
+// nothing once a sign-in OAuth URL line was omitted (issue #228), so Error
+// never claims "no stderr output" or renders a dangling prefix for stderr that
+// had content.
+const signInURLWithheld = "<sign-in URL withheld>"
+
+// copyHead describes whether the first line of a copyWindow slice needs special
+// handling because the errTailBytes cut landed inside or immediately after a
+// redacted line (issues #205, #228).
+type copyHead uint8
+
+const (
+	copyHeadNone copyHead = iota
+	copyHeadAgyError
+	copyHeadSignInPrompt
+	copyHeadSignInURL
+)
 
 // Job states reported by Status. These are shared with StartJob and the gate
 // watchdog so the producer and consumer of a job's state cannot drift apart.
@@ -110,7 +129,7 @@ type Status struct {
 	// mid-stream text is not an answer. Collect a result once the state is
 	// terminal.
 	Result string
-	Error  string // present when failed: agy's own message, or the exit code and a stderr tail whose AGY_ERROR lines are reduced to their canonical status (issue #205)
+	Error  string // present when failed: agy's own message, or the exit code and a stderr tail whose AGY_ERROR lines are reduced to their canonical status and whose sign-in OAuth URL lines are omitted (issues #205, #228)
 	// FailureReason classifies a StateFailed job into one of the stable Reason
 	// constants, so a caller can branch on the cause (most usefully, tell a
 	// transient ReasonQuotaExhausted wall from a hard error) without scraping
@@ -128,7 +147,7 @@ type Status struct {
 	// absent or not a plain id.
 	ErrorID string
 	// SignInRequired reports that agy's own output shows it is not signed in, or
-	// that its sign-in expired (issue #214). It never changes State,
+	// that its sign-in expired (issues #214, #228). It never changes State,
 	// FailureReason or Error; the tool layer turns it into recovery advice. Set
 	// only alongside StateFailed and ReasonAgyError.
 	SignInRequired bool
@@ -321,6 +340,10 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	case jobstore.ExitSIGTERM, jobstore.ExitSIGINT:
 		st.State = StateCancelled
 	case jobstore.ExitTimeout:
+		// agy 1.5.16 waits 60s for OAuth sign-in on an empty config directory before
+		// exiting 1 (issue #228), so a job timeout of 60s or less fires first and
+		// stays ReasonTimeout without consulting markSignInRequired (and without
+		// copying stderr or any OAuth URL into Error).
 		st.State = StateFailed
 		st.Error = "job exceeded its timeout and was terminated"
 		st.FailureReason = ReasonTimeout
@@ -350,7 +373,7 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 		// promote the reason to quota_exhausted (issue #183). A SUCCESS payload
 		// means agy vouched for the turn in band, so a stray line is not attached
 		// to it. The same condition covers the sign-in check, which only flags an
-		// agy_error that is still one after that promotion (issue #214). A
+		// agy_error that is still one after that promotion (issues #214, #228). A
 		// pre-1.1.28 print-timeout expiry arrives as an ERROR payload (issue
 		// #192), so its relabelling sits between the two: it only touches an
 		// agy_error that survived the promotion, and the sign-in check then skips it.
@@ -1175,41 +1198,135 @@ func trimStderrTail(s string) string {
 }
 
 // copyWindow splits the last errTailBytes of raw (the window) off the bytes
-// readStderrCopy read, and reports whether the window's first line is the cut end
-// of an AGY_ERROR line that must be dropped. fromStart says raw begins at offset 0
-// of the stderr file. A window that starts on a line boundary has no cut line (a
-// whole first line is left to redactAgyErrorLines). For a cut one, the start of
-// that line is looked for in the bytes before the window. When none is found and
-// raw does not start the file, nothing shows the line is an AGY_ERROR line, so it
-// is kept: an AGY_ERROR line longer than agyErrorLookback is the known gap, which
-// the measured line (well under 1 KiB) does not approach. The line start is
-// looked for after a newline only, so a cut AGY_ERROR segment that follows a
-// bare carriage return is a second gap.
-func copyWindow(raw string, fromStart bool) (window string, headInAgyError bool) {
+// readStderrCopy read, and classifies the window's first line into one of four
+// copyHead states (issues #205, #228):
+//
+//   - copyHeadNone: no cut-boundary redaction is needed (whole in-window lines
+//     are left to redactSignInURLLines and redactAgyErrorLines).
+//   - copyHeadAgyError: the window opens mid-line inside an AGY_ERROR line, so
+//     its remainder must be dropped.
+//   - copyHeadSignInPrompt: the window opens mid-line inside agy's sign-in URL
+//     prompt (including its trailing \r or \n), so a URL on the next line must
+//     be dropped even though the prompt line itself is cut.
+//   - copyHeadSignInURL: the window opens at byte 0 of, or mid-line inside, a
+//     URL line whose immediately preceding line is agy's sign-in URL prompt, so
+//     the URL line (or its remainder) must be dropped.
+//
+// fromStart says raw begins at offset 0 of the stderr file. When a required
+// preceding line start is not found in the lookback and raw does not start the
+// file, nothing confirms the cut line's identity, so it is kept: an AGY_ERROR
+// or OAuth URL line longer than agyErrorLookback is the known gap, which the
+// measured lines (well under 1 KiB) do not approach. Line starts are looked for
+// after a newline only, so a cut segment after a bare carriage return is a
+// second gap.
+func copyWindow(raw string, fromStart bool) (window string, head copyHead) {
 	winStart := max(0, len(raw)-errTailBytes)
 	window = raw[winStart:]
-	if winStart == 0 || raw[winStart-1] == '\n' {
-		return window, false
+	if winStart == 0 {
+		return window, copyHeadNone
 	}
-	ls := strings.LastIndexByte(raw[:winStart], '\n') + 1
-	if ls == 0 && !fromStart {
-		return window, false
+	midLine := raw[winStart-1] != '\n'
+	curStart := winStart
+	if midLine {
+		curStart = strings.LastIndexByte(raw[:winStart], '\n') + 1
+		if curStart == 0 && !fromStart {
+			return window, copyHeadNone
+		}
 	}
-	// A window that opens inside the prefix itself is covered too: the line's
-	// start, not the window's, is compared.
-	return window, strings.HasPrefix(raw[ls:], agyErrorPrefix)
+	curLine, _, _ := strings.Cut(raw[curStart:], "\n")
+	// A window that opens inside the prefix or prompt text itself is covered too:
+	// the line's full start, not the window's, is inspected.
+	if midLine && strings.HasPrefix(curLine, agyErrorPrefix) {
+		return window, copyHeadAgyError
+	}
+	if midLine && isSignInURLPromptLine(curLine) {
+		return window, copyHeadSignInPrompt
+	}
+	if curStart > 0 && isURLLine(curLine) {
+		prevStart := strings.LastIndexByte(raw[:curStart-1], '\n') + 1
+		if prevStart > 0 || fromStart {
+			prevLine := raw[prevStart : curStart-1]
+			if isSignInURLPromptLine(prevLine) {
+				return window, copyHeadSignInURL
+			}
+		}
+	}
+	return window, copyHeadNone
+}
+
+// redactSignInURLLines returns tail with every HTTP/HTTPS URL line that
+// immediately follows agy's sign-in URL prompt omitted (issue #228). When
+// firstLineIsPrompt is true, tail's first line is treated as a cut sign-in URL
+// prompt fragment so a URL on the second line is still omitted. Unrelated URLs
+// (including URLs not immediately after the prompt) are left byte-identical.
+func redactSignInURLLines(tail string, firstLineIsPrompt bool) string {
+	out, _ := stripSignInURLLines(tail, firstLineIsPrompt)
+	return out
+}
+
+// stripSignInURLLines implements redactSignInURLLines and also reports whether
+// the line immediately following a firstLineIsPrompt head was dropped, so
+// readStderrCopy only trims leading terminators when that head URL was removed.
+// The output builder is allocated lazily on the first dropped line so inputs
+// with unrelated URLs incur zero allocations.
+func stripSignInURLLines(tail string, firstLineIsPrompt bool) (out string, droppedAfterFirst bool) {
+	if !strings.Contains(tail, "://") {
+		return tail, false
+	}
+	var b strings.Builder
+	afterPrompt, dropped := false, false
+	pos, lineNum := 0, 0
+	for line := range strings.Lines(tail) {
+		if afterPrompt && isURLLine(line) {
+			if !dropped {
+				b.Grow(len(tail) - len(line))
+				b.WriteString(tail[:pos])
+				dropped = true
+			}
+			if firstLineIsPrompt && lineNum == 1 {
+				droppedAfterFirst = true
+			}
+			afterPrompt = false
+			pos += len(line)
+			lineNum++
+			continue
+		}
+		if dropped {
+			b.WriteString(line)
+		}
+		afterPrompt = (lineNum == 0 && firstLineIsPrompt) || isSignInURLPromptLine(line)
+		pos += len(line)
+		lineNum++
+	}
+	if !dropped {
+		return tail, false
+	}
+	// A dropped last line must not leave a dangling trailing newline.
+	return trimStderrTail(b.String()), droppedAfterFirst
+}
+
+// redactStderrLines omits sign-in OAuth URL lines and reduces AGY_ERROR lines
+// in a full stderr capture (issues #205, #209, #211, #228). Sign-in URL
+// redaction runs before AGY_ERROR redaction so dropping an intervening
+// malformed AGY_ERROR line cannot make an unrelated URL adjacent to a sign-in
+// prompt.
+func redactStderrLines(tail string) string {
+	return redactAgyErrorLines(redactSignInURLLines(tail, false))
 }
 
 // readStderrCopy reads the stderr tail that an error message copies. raw is the
 // last errTailBytes of the stderr file, trimmed by trimStderrTail. shown is raw
-// without a cut AGY_ERROR first line and with its other AGY_ERROR lines reduced
-// by redactAgyErrorLines (issue #205), and is never empty when raw is not: a
-// reduction that empties a non-empty tail yields agyErrorWithheld, so a caller
-// cannot report "no stderr output" for stderr that had content.
+// with sign-in OAuth URL lines omitted (issue #228), any cut AGY_ERROR first
+// line dropped, and other AGY_ERROR lines reduced by redactAgyErrorLines (issue
+// #205). shown is never empty when raw is not: omitting a sign-in URL that
+// empties a non-empty tail yields signInURLWithheld, and an AGY_ERROR reduction
+// that empties it yields agyErrorWithheld, so a caller cannot report "no stderr
+// output" or a dangling prefix for stderr that had content.
 //
 // It reads agyErrorLookback bytes more than the window to find where the window's
-// first line starts. A file of exactly that many bytes plus the window is treated
-// as not reaching its start, so its first line, if cut, is kept (see copyWindow).
+// first line (and preceding line) starts. A file of exactly that many bytes plus
+// the window is treated as not reaching its start, so its first line, if cut, is
+// kept (see copyWindow).
 func readStderrCopy(dir string) (shown, raw string, err error) {
 	const n = errTailBytes + agyErrorLookback
 	b, err := tailFile(jobstore.ErrPath(dir), n)
@@ -1219,10 +1336,35 @@ func readStderrCopy(dir string) (shown, raw string, err error) {
 	window, head := copyWindow(b, int64(len(b)) < n)
 	raw = trimStderrTail(window)
 	shown = raw
-	if head {
+	switch head {
+	case copyHeadAgyError:
 		// Drop the cut AGY_ERROR fragment through its newline (all of it when
 		// there is none).
 		_, shown, _ = strings.Cut(raw, "\n")
+		if shown == "" && raw != "" {
+			return agyErrorWithheld, raw, nil
+		}
+	case copyHeadSignInURL:
+		// Drop the sign-in URL line (or its cut tail) through its newline, along
+		// with any orphaned leading blank line agy prints right after the URL.
+		_, shown, _ = strings.Cut(raw, "\n")
+		shown = strings.TrimLeft(shown, "\r\n")
+		if shown == "" && raw != "" {
+			return signInURLWithheld, raw, nil
+		}
+	case copyHeadNone, copyHeadSignInPrompt:
+		// No head line dropped before redactSignInURLLines.
+	}
+	var droppedAfterHead bool
+	shown, droppedAfterHead = stripSignInURLLines(shown, head == copyHeadSignInPrompt)
+	if droppedAfterHead && raw != "" && (raw[0] == '\n' || raw[0] == '\r') {
+		// The window opened on the prompt line's \r or \n terminator and the
+		// following URL line was dropped; trim the leftover leading terminators and
+		// agy's post-URL blank line.
+		shown = strings.TrimLeft(shown, "\r\n")
+	}
+	if shown == "" && raw != "" {
+		return signInURLWithheld, raw, nil
 	}
 	shown = redactAgyErrorLines(shown)
 	if shown == "" && raw != "" {
@@ -1235,12 +1377,14 @@ func readStderrCopy(dir string) (shown, raw string, err error) {
 // ended the run. Every field comes from ONE read of the bounded stderr tail:
 // backgroundAborted from the whole backgroundMarkerScanBytes window, the other two
 // from its last errTailBytes (the window errorSummary reports, before its AGY_ERROR
-// reduction). An unreadable stderr yields the zero value, which leaves the derived
-// state untouched rather than guessing a failure.
+// reduction; signInRequired also checks copyWindow so a sign-in prompt or URL
+// cut by the errTailBytes boundary stays aligned with readStderrCopy, issue #228).
+// An unreadable stderr yields the zero value, which leaves the derived state
+// untouched rather than guessing a failure.
 type stderrNotices struct {
 	backgroundAborted bool // agy killed outstanding background shell tasks at exit (issue #173)
 	printTimeout      bool // agy's own --print-timeout expired with the turn in progress
-	signInRequired    bool // agy reported it needs a sign-in (issue #214)
+	signInRequired    bool // agy reported it needs a sign-in (issues #214, #228)
 }
 
 func readStderrNotices(dir string) stderrNotices {
@@ -1248,21 +1392,22 @@ func readStderrNotices(dir string) stderrNotices {
 	if err != nil {
 		return stderrNotices{}
 	}
-	tail := trimStderrTail(raw[max(0, len(raw)-errTailBytes):])
+	window, head := copyWindow(raw, int64(len(raw)) < backgroundMarkerScanBytes)
+	tail := trimStderrTail(window)
 	return stderrNotices{
 		backgroundAborted: matchesBackgroundAbort(raw),
 		printTimeout:      matchesPrintTimeout(tail),
-		signInRequired:    matchesSignInRequired(tail),
+		signInRequired:    matchesSignInRequired(tail) || head == copyHeadSignInPrompt || head == copyHeadSignInURL,
 	}
 }
 
 // markSignInRequired flags an agy_error run whose own output says agy needs a
-// sign-in (issue #214), from the payload's error text or the captured stderr.
-// It sets only SignInRequired: State, FailureReason, Error and Result stay as
-// classified, so a caller branching on failure_reason sees no change. It runs
-// after applyAgyError so that a quota promotion wins, and the agy_error gate
-// keeps the flag off every other failure reason. The payload is checked first so
-// a hit there skips the stderr read.
+// sign-in (issues #214, #228), from the payload's error text or the captured
+// stderr. It sets only SignInRequired: State, FailureReason, Error and Result
+// stay as classified, so a caller branching on failure_reason sees no change.
+// It runs after applyAgyError so that a quota promotion wins, and the agy_error
+// gate keeps the flag off every other failure reason. The payload is checked
+// first so a hit there skips the stderr read.
 func markSignInRequired(dir string, st Status, payloadErr string) Status {
 	if st.FailureReason != ReasonAgyError {
 		return st
@@ -1314,25 +1459,52 @@ func matchesPrintTimeout(stderr string) bool {
 	return false
 }
 
-// matchesSignInRequired reports agy's sign-in notice (issue #214). The first
-// phrase pair is MEASURED against agy 1.4.8: a run with no usable sign-in exits
-// 1, its stderr carries "Error: authentication required. Run 'agy' to log in."
-// and its ERROR payload carries only "authentication failed or timed out". The
-// second pair is quoted from agy's changelog for 1.3.3 ("the agent now says
-// `Authentication expired. Please log back in.`") and was NOT MEASURED, nor how a
-// headless run delivers it, so it is matched in payload and stderr alike and a
-// delivery as response text on a SUCCESS run stays unflagged.
+// isSignInURLPromptLine reports whether line is agy's empty-config OAuth URL
+// sign-in prompt (issue #228). Shared by matchesSignInRequired and
+// redactSignInURLLines / copyWindow so detection and URL omission cannot drift.
+func isSignInURLPromptLine(line string) bool {
+	return lineHasAll(line, "authentication required", "visit the url to log in")
+}
+
+// isURLLine reports whether line's trimmed text starts with http:// or https://
+// (case-insensitive). Used only in tandem with isSignInURLPromptLine so
+// unrelated URLs in stderr are never stripped.
+func isURLLine(line string) bool {
+	t := strings.TrimSpace(line)
+	return (len(t) >= len("https://") && strings.EqualFold(t[:len("https://")], "https://")) ||
+		(len(t) >= len("http://") && strings.EqualFold(t[:len("http://")], "http://"))
+}
+
+// matchesSignInRequired reports agy's sign-in notice (issues #214, #228).
+//
+// The first phrase pair is MEASURED against agy 1.4.8 (with AGY_ADC_AUTH=1 on a
+// host that signs in another way): exit 1, stderr carries
+// "Error: authentication required. Run 'agy' to log in.", and its ERROR payload
+// carries only "authentication failed or timed out".
+//
+// The second pair (isSignInURLPromptLine) is MEASURED against agy 1.4.8 and
+// 1.5.16 (empty config directory, no stored sign-in): agy prints
+// "Authentication required. Please visit the URL to log in:" followed by an
+// indented OAuth URL line, waits 60s ("Waiting for authentication (timeout
+// 60s)..."), and exits 1 with an ERROR payload carrying "authentication failed
+// or timed out" and finished_reason "error" (issue #228).
+//
+// The third pair is quoted from agy's changelog for 1.3.3 ("the agent now says
+// `Authentication expired. Please log back in.`") and was NOT MEASURED, nor how
+// a headless run delivers it, so it is matched in payload and stderr alike and
+// a delivery as response text on a SUCCESS run stays unflagged.
 //
 // "authentication failed or timed out" alone is not matched because it also
 // reads as a timeout. Each pair must fall on one line, so an unrelated line such
 // as "MCP server github: authentication required" cannot pair with a "Run 'agy'
-// to log in" elsewhere in the tail. A false match changes only the recovery
-// note of an already failed agy_error run that has no text (the sign-in advice
-// replaces the note it would otherwise get); a miss leaves the earlier
-// reporting in place.
+// to log in" or "visit the URL to log in" elsewhere in the tail. A false match
+// changes only the recovery note of an already failed agy_error run that has no
+// text (the sign-in advice replaces the note it would otherwise get); a miss
+// leaves the earlier reporting in place.
 func matchesSignInRequired(msg string) bool {
 	for line := range strings.Lines(msg) {
 		if lineHasAll(line, "authentication required", "run 'agy' to log in") ||
+			isSignInURLPromptLine(line) ||
 			lineHasAll(line, "authentication expired", "log back in") {
 			return true
 		}
@@ -1524,10 +1696,11 @@ func matchesCreditsWall(msg string) bool {
 // only this string cannot otherwise tell them apart: stderr had content, stderr
 // was empty or absent, or stderr could not be read at all.
 //
-// msg is what Status.Error carries: the stderr tail with each AGY_ERROR line
-// reduced to its canonical status or dropped (issue #205). classifyMsg is the same
-// summary built from the unreduced tail, for classifyAgyError, so the reduction
-// cannot change a failure_reason.
+// msg is what Status.Error carries: the stderr tail with each sign-in OAuth URL
+// line omitted (issue #228) and each AGY_ERROR line reduced to its canonical
+// status or dropped (issue #205). classifyMsg is the same summary built from
+// the unreduced tail, for classifyAgyError, so redaction cannot change a
+// failure_reason.
 func errorSummary(dir string, code int) (msg, classifyMsg string) {
 	shown, raw, err := readStderrCopy(dir)
 	if err != nil {
@@ -1549,8 +1722,8 @@ func errorSummary(dir string, code int) (msg, classifyMsg string) {
 
 // spawnFailMessage explains a 127 exit. The supervisor writes 127 both when it
 // could not exec agy (the intended meaning) and when agy itself exits 127, so it
-// names both causes and appends the stderr tail, AGY_ERROR lines reduced as
-// errorSummary does, instead of masking it.
+// names both causes and appends the stderr tail, with sign-in OAuth URL lines
+// omitted and AGY_ERROR lines reduced as errorSummary does, instead of masking it.
 func spawnFailMessage(dir string) string {
 	msg := "agy exited 127: the supervisor could not exec the agy binary (check the configured agy path), or agy itself exited 127"
 	shown, _, err := readStderrCopy(dir)

@@ -267,3 +267,45 @@ func TestProbeErrorDoesNotUnwrapToRawStderr(t *testing.T) {
 		t.Errorf("unwrapped ExitError.Stderr lacks %q: %q", want, ee.Stderr)
 	}
 }
+
+// TestProbeErrorsOmitSignInURL: a probe that fails with agy's empty-config
+// OAuth URL prompt on stderr must omit the OAuth URL line from both the error
+// string and the wrapped *exec.ExitError.Stderr across ListModels, ListAgents,
+// and readUsage (issue #228).
+func TestProbeErrorsOmitSignInURL(t *testing.T) {
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stderr: signInURLStderr, Exit: 1})
+	m := New(config.Config{AgyPath: agy, StateDir: t.TempDir(), MaxConcurrency: 4})
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"models", func() error { _, err := m.ListModels(t.Context()); return err }},
+		{"agents", func() error { _, err := m.ListAgents(t.Context(), ""); return err }},
+		{"usage", func() error { _, err := m.readUsage(t.Context()); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatal("probe succeeded, want an error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, signInURLPrompt) {
+				t.Errorf("error lacks prompt line: %s", msg)
+			}
+			assertNoSignInURLLeak(t, msg)
+			ee, ok := errors.AsType[*exec.ExitError](err)
+			if !ok {
+				t.Fatalf("err = %v, want it to wrap an *exec.ExitError", err)
+			}
+			// Positive control: the copy carries the reduced text, not an empty
+			// original ExitError.Stderr.
+			for _, want := range []string{signInURLPrompt, "error: authentication failed or timed out"} {
+				if !strings.Contains(string(ee.Stderr), want) {
+					t.Errorf("unwrapped ExitError.Stderr lacks %q: %q", want, ee.Stderr)
+				}
+			}
+			assertNoSignInURLLeak(t, string(ee.Stderr))
+		})
+	}
+}

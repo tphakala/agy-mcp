@@ -112,9 +112,12 @@ func (m *Manager) runJSONListing(ctx context.Context, sub, dir string, workspace
 // runJSONProbe execs agy with args and returns its stdout. On a non-zero exit it
 // returns the error together with whatever stdout agy printed, so a caller can
 // still inspect a reply that came with a failure exit; the listings ignore it.
-// The error carries agy's stderr with each AGY_ERROR line reduced to its canonical
-// status (redactAgyErrorLines), so the cloud project and region do not reach the
-// tool caller (issue #209). The wrapped *exec.ExitError is a copy whose Stderr is
+// The error carries agy's stderr with sign-in OAuth URL lines omitted and each
+// AGY_ERROR line reduced to its canonical status (redactStderrLines), so
+// neither an OAuth URL (issue #228; `agy --output-format json -p /usage` prints
+// the OAuth URL prompt on empty config, MEASURED against agy 1.5.16) nor the
+// cloud project and region from short_error (issue #209) reaches the tool
+// caller. The wrapped *exec.ExitError is a copy whose Stderr is
 // the reduced text, so unwrapping the error does not recover the original. Stderr
 // is captured whole up to probeOutputLimit rather than through os/exec's head and
 // tail copy, whose cut can leave a fragment of an AGY_ERROR line without its
@@ -187,12 +190,13 @@ func (m *Manager) runJSONProbe(ctx context.Context, label string, args []string,
 		// a failure here, so every other error (ExitError included) is returned.
 		if !errors.Is(err, exec.ErrWaitDelay) {
 			// Include agy's stderr so a real cause (an auth prompt, a usage error) is
-			// visible instead of a bare "exit status 1". Each AGY_ERROR line is
-			// reduced first: its short_error carries the cloud project and region,
-			// and this error reaches the callers of list_models, list_agents and
-			// agy_usage (issue #209; the job path does the same, issue #205).
+			// visible instead of a bare "exit status 1". Sign-in OAuth URL lines are
+			// omitted (issue #228) and each AGY_ERROR line is reduced first: its
+			// short_error carries the cloud project and region, and this error reaches
+			// the callers of list_models, list_agents and agy_usage (issue #209; the
+			// job path does the same, issues #205, #228).
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-				reduced := strings.TrimSpace(redactAgyErrorLines(stderr.String()))
+				reduced := strings.TrimSpace(redactStderrLines(stderr.String()))
 				reduced = keepTail(reduced, probeErrorLimit)
 				// A copy, so errors.As on the returned error cannot reach the raw text.
 				clean := &exec.ExitError{ProcessState: ee.ProcessState, Stderr: []byte(reduced)}

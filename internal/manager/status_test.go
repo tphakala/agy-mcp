@@ -79,6 +79,38 @@ const (
 // timed out".
 const signInStderr = "Error: authentication required. Run 'agy' to log in.\nerror: authentication failed or timed out\n"
 
+// signInURLStderr is the 7-line stderr of a print-mode run on an empty config
+// directory with no stored sign-in (issue #228), as MEASURED against agy 1.4.8
+// and 1.5.16: exit 1 after agy's 60s OAuth wait, with an ERROR payload carrying
+// "authentication failed or timed out" and finished_reason "error".
+// signInURLToken stands in for the redacted OAuth URL line.
+const (
+	signInURLPrompt = "Authentication required. Please visit the URL to log in:"
+	signInURLToken  = "https://accounts.google.com/o/oauth2/auth?client_id=test&state=secret-oauth-state"
+	signInURLStderr = signInURLPrompt + "\n" +
+		"  " + signInURLToken + "\n" +
+		"\n" +
+		"Waiting for authentication (timeout 60s)...\n" +
+		"Or, paste the authorization code here and press Enter:\n" +
+		"\n" +
+		"error: authentication failed or timed out\n"
+	signInURLStderrRedacted = signInURLPrompt + "\n" +
+		"\n" +
+		"Waiting for authentication (timeout 60s)...\n" +
+		"Or, paste the authorization code here and press Enter:\n" +
+		"\n" +
+		"error: authentication failed or timed out"
+)
+
+func assertNoSignInURLLeak(t *testing.T, got string) {
+	t.Helper()
+	for _, leak := range []string{"accounts.google.com", "secret-oauth-state"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("output leaks %q: %q", leak, got)
+		}
+	}
+}
+
 // The two stderr lines agy leaves when a run ends with a background task still
 // running. Shape MEASURED against agy 1.2.7 and 1.2.9 (see matchesBackgroundAbort
 // in status.go). The matchers ignore the grace and the count, so one fixed
@@ -268,10 +300,13 @@ func TestMatchesSignInRequired(t *testing.T) {
 		want bool
 	}{
 		{"measured stderr", signInStderr, true},
+		{"measured empty-config OAuth URL stderr", signInURLStderr, true},
 		{"changelog expiry wording", "Authentication expired. Please log back in.", true},
 		// The payload text alone also reads as a timeout, so it is not a key.
 		{"payload text alone", "error: authentication failed or timed out", false},
 		{"phrases split across lines", "authentication required.\nRun 'agy' to log in.\n", false},
+		{"OAuth prompt missing authentication required", "Please visit the URL to log in:\n", false},
+		{"OAuth prompt phrases split across lines", "Authentication required.\nPlease visit the URL to log in:\n", false},
 		{"unrelated server needing authentication", "MCP server github: authentication required", false},
 	}
 	for _, tt := range tests {
@@ -281,6 +316,104 @@ func TestMatchesSignInRequired(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRedactSignInURLLines(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		tail              string
+		firstLineIsPrompt bool
+		want              string
+	}{
+		{
+			name: "measured empty-config OAuth URL stderr drops only the URL line",
+			tail: signInURLStderr,
+			want: signInURLStderrRedacted,
+		},
+		{
+			name: "unrelated URL in agy error message is kept byte-identical",
+			tail: "error: " + measuredAgyErrorLine1 + "\n",
+			want: "error: " + measuredAgyErrorLine1 + "\n",
+		},
+		{
+			name: "standalone indented URL without prompt is kept byte-identical",
+			tail: "  https://example.com/docs\n",
+			want: "  https://example.com/docs\n",
+		},
+		{
+			name: "URL separated from prompt by a blank line is kept byte-identical",
+			tail: signInURLPrompt + "\n\n  https://example.com/docs\n",
+			want: signInURLPrompt + "\n\n  https://example.com/docs\n",
+		},
+		{
+			name: "second URL after stripped OAuth URL is kept",
+			tail: signInURLPrompt + "\n  " + signInURLToken + "\n  https://example.com/keep\n",
+			want: signInURLPrompt + "\n  https://example.com/keep",
+		},
+		{
+			name: "URL at end of stderr leaves no dangling trailing newline",
+			tail: signInURLPrompt + "\n  " + signInURLToken + "\n",
+			want: signInURLPrompt,
+		},
+		{
+			name: "CRLF URL at end of stderr leaves no dangling trailing newline",
+			tail: signInURLPrompt + "\r\n  " + signInURLToken + "\r\n",
+			want: signInURLPrompt,
+		},
+		{
+			name: "prompt followed by non-URL error line containing inline URL is kept byte-identical",
+			tail: signInURLPrompt + "\nError: browser unavailable (see https://example.com/help)\n",
+			want: signInURLPrompt + "\nError: browser unavailable (see https://example.com/help)\n",
+		},
+		{
+			name: "prompt followed by non-HTTP URL scheme is kept byte-identical",
+			tail: signInURLPrompt + "\n  ftp://example.com/auth\n",
+			want: signInURLPrompt + "\n  ftp://example.com/auth\n",
+		},
+		{
+			name: "http URL after prompt is stripped",
+			tail: signInURLPrompt + "\n  http://accounts.google.com/o/oauth2/auth?state=secret-oauth-state\nWaiting...",
+			want: signInURLPrompt + "\nWaiting...",
+		},
+		{
+			name: "uppercase HTTPS URL after prompt is stripped",
+			tail: signInURLPrompt + "\n  HTTPS://accounts.google.com/o/oauth2/auth?state=secret-oauth-state\nWaiting...",
+			want: signInURLPrompt + "\nWaiting...",
+		},
+		{
+			name: "multiple prompt and URL pairs strip each paired URL",
+			tail: signInURLPrompt + "\n  " + signInURLToken + "\nretrying\n" + signInURLPrompt + "\n  " + signInURLToken + "\ndone",
+			want: signInURLPrompt + "\nretrying\n" + signInURLPrompt + "\ndone",
+		},
+		{
+			name:              "firstLineIsPrompt strips URL after a cut prompt fragment",
+			tail:              "ase visit the URL to log in:\n  " + signInURLToken + "\nWaiting...",
+			firstLineIsPrompt: true,
+			want:              "ase visit the URL to log in:\nWaiting...",
+		},
+		{
+			name:              "firstLineIsPrompt applies only to line 1 and keeps a later unrelated URL",
+			tail:              "ase visit the URL to log in:\nWaiting...\n  https://example.com/keep\n",
+			firstLineIsPrompt: true,
+			want:              "ase visit the URL to log in:\nWaiting...\n  https://example.com/keep\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactSignInURLLines(tc.tail, tc.firstLineIsPrompt)
+			if got != tc.want {
+				t.Errorf("redactSignInURLLines(%q, %v) = %q, want %q", tc.tail, tc.firstLineIsPrompt, got, tc.want)
+			}
+			assertNoSignInURLLeak(t, got)
+		})
+	}
+
+	t.Run("redactStderrLines runs URL redaction before AGY_ERROR redaction", func(t *testing.T) {
+		in := signInURLPrompt + "\n" + wireAgyErrorPrefix + "{bad\n  https://example.com/unrelated\n"
+		want := signInURLPrompt + "\n  https://example.com/unrelated"
+		if got := redactStderrLines(in); got != want {
+			t.Errorf("redactStderrLines(%q) = %q, want %q", in, got, want)
+		}
+	})
 }
 
 func TestReadStderrNoticesEmptyOnUnreadableStderr(t *testing.T) {
@@ -398,20 +531,93 @@ func TestErrorSummaryDistinguishesEmptyStderr(t *testing.T) {
 
 func TestCopyWindow(t *testing.T) {
 	a := func(n int) string { return strings.Repeat("a", n) }
+	const urlLine = "  " + signInURLToken
 	for _, tc := range []struct {
 		name      string
 		raw       string
 		fromStart bool
-		wantHead  bool
+		wantHead  copyHead
 	}{
-		{name: "short raw from the file start", raw: "abc", fromStart: true},
-		{name: "a whole AGY_ERROR line opens the window", raw: "junk\n" + wireAgyErrorPrefix + a(errTailBytes-len(wireAgyErrorPrefix)), fromStart: true},
-		{name: "the window opens inside an AGY_ERROR line whose start is in the lookback", raw: "old\n" + wireAgyErrorPrefix + a(3000), fromStart: true, wantHead: true},
-		{name: "the window opens inside the prefix itself", raw: "old\nAGY_ERROR: {" + a(errTailBytes-len("ERROR: {")), fromStart: true, wantHead: true},
-		{name: "the window opens inside an ordinary line", raw: "old\n" + a(3000), fromStart: true},
-		{name: "a lone AGY_ERROR line from the file start", raw: wireAgyErrorPrefix + a(3000), fromStart: true, wantHead: true},
-		{name: "a lone ordinary line from the file start", raw: a(3000), fromStart: true},
-		{name: "no line start found and the read did not reach the file start", raw: a(3000), fromStart: false},
+		{name: "short raw from the file start", raw: "abc", fromStart: true, wantHead: copyHeadNone},
+		{name: "a whole AGY_ERROR line opens the window", raw: "junk\n" + wireAgyErrorPrefix + a(errTailBytes-len(wireAgyErrorPrefix)), fromStart: true, wantHead: copyHeadNone},
+		{name: "the window opens inside an AGY_ERROR line whose start is in the lookback", raw: "old\n" + wireAgyErrorPrefix + a(3000), fromStart: true, wantHead: copyHeadAgyError},
+		{name: "the window opens inside the prefix itself", raw: "old\nAGY_ERROR: {" + a(errTailBytes-len("ERROR: {")), fromStart: true, wantHead: copyHeadAgyError},
+		{name: "the window opens inside an ordinary line", raw: "old\n" + a(3000), fromStart: true, wantHead: copyHeadNone},
+		{name: "a lone AGY_ERROR line from the file start", raw: wireAgyErrorPrefix + a(3000), fromStart: true, wantHead: copyHeadAgyError},
+		{name: "a lone ordinary line from the file start", raw: a(3000), fromStart: true, wantHead: copyHeadNone},
+		{name: "no line start found and the read did not reach the file start", raw: a(3000), fromStart: false, wantHead: copyHeadNone},
+		{
+			name:      "window opens at byte 0 of sign-in URL prompt line",
+			raw:       "old\n" + signInURLPrompt + "\n" + urlLine + "\n" + a(errTailBytes-len(signInURLPrompt+"\n"+urlLine+"\n")),
+			fromStart: true,
+			wantHead:  copyHeadNone,
+		},
+		{
+			name:      "window opens inside sign-in URL prompt line",
+			raw:       "old\n" + signInURLPrompt + "\n" + urlLine + "\n" + a(errTailBytes-len("visit the URL to log in:\n"+urlLine+"\n")),
+			fromStart: true,
+			wantHead:  copyHeadSignInPrompt,
+		},
+		{
+			name:      "window opens on sign-in URL prompt line LF",
+			raw:       "old\n" + signInURLPrompt + "\n" + urlLine + "\n" + a(errTailBytes-len("\n"+urlLine+"\n")),
+			fromStart: true,
+			wantHead:  copyHeadSignInPrompt,
+		},
+		{
+			name:      "window opens on sign-in URL prompt line CRLF CR",
+			raw:       "old\r\n" + signInURLPrompt + "\r\n" + urlLine + "\r\n" + a(errTailBytes-len("\r\n"+urlLine+"\r\n")),
+			fromStart: true,
+			wantHead:  copyHeadSignInPrompt,
+		},
+		{
+			name:      "window opens at byte 0 of OAuth URL line after prompt LF",
+			raw:       "old\n" + signInURLPrompt + "\n" + urlLine + "\n" + a(errTailBytes-len(urlLine+"\n")),
+			fromStart: true,
+			wantHead:  copyHeadSignInURL,
+		},
+		{
+			name:      "window opens inside OAuth URL line",
+			raw:       "old\n" + signInURLPrompt + "\n" + urlLine + "\n" + a(errTailBytes-40),
+			fromStart: true,
+			wantHead:  copyHeadSignInURL,
+		},
+		{
+			name:      "window opens inside CRLF OAuth URL line",
+			raw:       "old\r\n" + signInURLPrompt + "\r\n" + urlLine + "\r\n" + a(errTailBytes-40),
+			fromStart: true,
+			wantHead:  copyHeadSignInURL,
+		},
+		{
+			name:      "prompt at offset 0 with fromStart true classifies following URL line",
+			raw:       signInURLPrompt + "\n" + urlLine + "\n" + a(errTailBytes-40),
+			fromStart: true,
+			wantHead:  copyHeadSignInURL,
+		},
+		{
+			name:      "window opens on non-URL error line after prompt",
+			raw:       "old\n" + signInURLPrompt + "\nError: browser unavailable\n" + a(errTailBytes-len("Error: browser unavailable\n")),
+			fromStart: true,
+			wantHead:  copyHeadNone,
+		},
+		{
+			name:      "window opens inside lone URL line without prompt",
+			raw:       "old\n" + urlLine + "\n" + a(errTailBytes-40),
+			fromStart: true,
+			wantHead:  copyHeadNone,
+		},
+		{
+			name:      "window opens inside prompt line with no prior newline and fromStart false",
+			raw:       signInURLPrompt + a(3000),
+			fromStart: false,
+			wantHead:  copyHeadNone,
+		},
+		{
+			name:      "prompt at offset 0 with fromStart false does not treat preceding line as complete",
+			raw:       signInURLPrompt + "\n" + urlLine + "\n" + a(errTailBytes-40),
+			fromStart: false,
+			wantHead:  copyHeadNone,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			window, head := copyWindow(tc.raw, tc.fromStart)
@@ -419,10 +625,109 @@ func TestCopyWindow(t *testing.T) {
 				t.Errorf("window = %d bytes, want the last %d bytes of raw", len(window), len(want))
 			}
 			if head != tc.wantHead {
-				t.Errorf("headInAgyError = %v, want %v", head, tc.wantHead)
+				t.Errorf("copyHead = %v, want %v", head, tc.wantHead)
 			}
 		})
 	}
+}
+
+func TestErrorSummaryOmitsSignInURL(t *testing.T) {
+	const (
+		urlLine = "  " + signInURLToken
+		waiting = "Waiting for authentication (timeout 60s)..."
+	)
+	padToWindow := func(prefix, suffix string) string {
+		if len(suffix) > errTailBytes {
+			t.Fatalf("test suffix %d exceeds errTailBytes %d", len(suffix), errTailBytes)
+		}
+		return prefix + suffix + strings.Repeat("x", errTailBytes-len(suffix))
+	}
+	for _, tc := range []struct {
+		name       string
+		stderr     string
+		wantExact  string
+		wantPrefix string
+	}{
+		{
+			name:      "short measured stderr omits URL and preserves classifyMsg",
+			stderr:    signInURLStderr,
+			wantExact: "exit 1: " + signInURLStderrRedacted,
+		},
+		{
+			name:       "cut inside prompt line omits URL and keeps remainder",
+			stderr:     padToWindow("Authentication required. Ple", "ase visit the URL to log in:\n"+urlLine+"\n\n"+waiting+"\n"),
+			wantPrefix: "exit 1: ase visit the URL to log in:\n\n" + waiting,
+		},
+		{
+			name:       "cut on prompt LF trims orphaned blank line after dropped URL",
+			stderr:     padToWindow(signInURLPrompt, "\n"+urlLine+"\n\n"+waiting+"\n"),
+			wantPrefix: "exit 1: " + waiting,
+		},
+		{
+			name:       "cut on prompt CRLF CR trims orphaned blank line after dropped URL",
+			stderr:     padToWindow(signInURLPrompt, "\r\n"+urlLine+"\r\n\r\n"+waiting+"\r\n"),
+			wantPrefix: "exit 1: " + waiting,
+		},
+		{
+			name:       "cut on prompt LF without head URL preserves leading newline even when later URL drops",
+			stderr:     padToWindow(signInURLPrompt, "\n"+waiting+"\n"+signInURLPrompt+"\n"+urlLine+"\nend\n"),
+			wantPrefix: "exit 1: \n" + waiting + "\n" + signInURLPrompt + "\nend",
+		},
+		{
+			name:       "cut at byte 0 of URL line after prompt LF trims orphaned blank line",
+			stderr:     padToWindow(signInURLPrompt+"\n", urlLine+"\n\n"+waiting+"\n"),
+			wantPrefix: "exit 1: " + waiting,
+		},
+		{
+			name:       "cut inside URL line with trailing lines omits URL tail",
+			stderr:     padToWindow(signInURLPrompt+"\n  https://accounts.google.com/o/oauth2/auth?", "client_id=test&state=secret-oauth-state\n\n"+waiting+"\n"),
+			wantPrefix: "exit 1: " + waiting,
+		},
+		{
+			name:      "cut inside over-long URL line with nothing after it returns signInURLWithheld",
+			stderr:    signInURLPrompt + "\n  " + signInURLToken + "&pad=" + strings.Repeat("z", errTailBytes+100) + "\n",
+			wantExact: "exit 1: " + signInURLWithheld,
+		},
+		{
+			name:      "CRLF cut at prompt CR with only URL after it returns signInURLWithheld",
+			stderr:    signInURLPrompt + "\r\n  " + signInURLToken + "&pad=" + strings.Repeat("z", errTailBytes-len("\r\n  "+signInURLToken+"&pad=")-2) + "\r\n",
+			wantExact: "exit 1: " + signInURLWithheld,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(jobstore.ErrPath(dir), []byte(tc.stderr), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, classify := errorSummary(dir, 1)
+			assertNoSignInURLLeak(t, got)
+			if tc.wantExact != "" && got != tc.wantExact {
+				t.Errorf("msg = %q, want %q", got, tc.wantExact)
+			}
+			if tc.wantPrefix != "" && !strings.HasPrefix(got, tc.wantPrefix) {
+				t.Errorf("msg = %q, want prefix %q", got, tc.wantPrefix)
+			}
+			tail, err := unreducedTail(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := "exit 1: " + tail; classify != want {
+				t.Errorf("classifyMsg = %q, want %q", classify, want)
+			}
+		})
+	}
+
+	t.Run("spawnFailMessage omits sign-in OAuth URL", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(jobstore.ErrPath(dir), []byte(signInURLStderr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got := spawnFailMessage(dir)
+		assertNoSignInURLLeak(t, got)
+		if !strings.Contains(got, signInURLStderrRedacted) {
+			t.Errorf("spawnFailMessage = %q, want redacted stderr %q", got, signInURLStderrRedacted)
+		}
+	})
 }
 
 func TestErrorSummaryReducesAgyErrorLines(t *testing.T) {
@@ -1319,6 +1624,34 @@ func terminalCases() []terminalCase {
 			wantState: StateFailed, wantErrSub: "authentication failed or timed out", wantReason: ReasonAgyError,
 			wantSignIn: true,
 		}, {
+			// Empty-config OAuth URL prompt MEASURED against agy 1.4.8 and 1.5.16 (issue #228).
+			name: "empty-config OAuth URL sign-in failure with ERROR payload keeps agy_error and sets SignInRequired",
+			code: 1, res: &streamjson.Result{Status: streamjson.StatusError, Error: "authentication failed or timed out", FinishedReason: "error"},
+			errFile:   signInURLStderr,
+			wantState: StateFailed, wantErrSub: "authentication failed or timed out", noErrSub: "accounts.google.com",
+			wantReason: ReasonAgyError, wantSignIn: true,
+		}, {
+			name: "empty-config OAuth URL sign-in failure without result payload omits URL from error and sets SignInRequired",
+			code: 1, errFile: signInURLStderr,
+			wantState: StateFailed, wantErrSub: "Please visit the URL to log in:", noErrSub: "accounts.google.com",
+			wantReason: ReasonAgyError, wantSignIn: true,
+		}, {
+			// When errTailBytes cuts inside an over-long OAuth URL line, readStderrCopy
+			// withholds the URL and readStderrNotices still flags SignInRequired via
+			// copyWindow so detection and redaction stay aligned (issue #228).
+			name: "empty-config OAuth URL cut by errTailBytes withholds URL and still sets SignInRequired",
+			code: 1, errFile: signInURLPrompt + "\n  " + signInURLToken + "&pad=" + strings.Repeat("z", errTailBytes+100) + "\n",
+			wantState: StateFailed, wantErrSub: "exit 1: " + signInURLWithheld, noErrSub: "secret-oauth-state",
+			wantReason: ReasonAgyError, wantSignIn: true,
+		}, {
+			// agy 1.5.16 waits 60s for OAuth before exiting 1; a shorter job timeout
+			// kills it with ExitTimeout (124), which stays ReasonTimeout without
+			// SignInRequired or any URL echoed (issue #228).
+			name: "short timeout beating agy's 60s OAuth wait stays timeout without SignInRequired or URL",
+			code: jobstore.ExitTimeout, errFile: signInURLStderr,
+			wantState: StateFailed, wantErrSub: "exceeded its timeout", noErrSub: "accounts.google.com",
+			wantReason: ReasonTimeout, wantSignIn: false,
+		}, {
 			// The sign-in notice counts only in the last errTailBytes, like the
 			// print-timeout notice; an older one with more than that after it does not
 			// flag this run.
@@ -2100,6 +2433,41 @@ func TestStatusInterruptedOutputUnreadable(t *testing.T) {
 	if st.FailureReason != ReasonUnknown {
 		t.Fatalf("failure_reason = %q, want %q for an unreadable interrupted output", st.FailureReason, ReasonUnknown)
 	}
+}
+
+// TestRecoverInterruptedSignInRequired exercises recoverInterrupted with a dead
+// supervisor, no exit_code sentinel, a measured ERROR result.json, and
+// signInURLStderr (issue #228): applyResult must still run markSignInRequired
+// and never echo the OAuth URL.
+func TestRecoverInterruptedSignInRequired(t *testing.T) {
+	m := newManager(t, managerOpts{})
+	dir, err := m.store.Create(jobstore.Meta{ID: "j", StartedAt: time.Now(), PID: 999999, BootID: "old-boot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeResultPayload(t, dir, streamjson.Result{
+		Status:         streamjson.StatusError,
+		Error:          "authentication failed or timed out",
+		FinishedReason: "error",
+	})
+	if err := os.WriteFile(jobstore.ErrPath(dir), []byte(signInURLStderr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := m.Status("j")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateFailed || st.FailureReason != ReasonAgyError {
+		t.Fatalf("status = (%q, %q), want (%q, %q)", st.State, st.FailureReason, StateFailed, ReasonAgyError)
+	}
+	if !st.SignInRequired {
+		t.Fatalf("SignInRequired = false, want true")
+	}
+	if st.Error != "authentication failed or timed out" {
+		t.Fatalf("Error = %q, want %q", st.Error, "authentication failed or timed out")
+	}
+	assertNoSignInURLLeak(t, st.Error)
 }
 
 // TestStatusSpawnFail: ExitSpawnFail (127) with no stderr (a true spawn failure)

@@ -265,28 +265,31 @@ func readAgyVersion(ctx context.Context, agy string) (string, error) {
 // versionOutputForMessage returns the text a message quotes in place of the raw
 // output of `agy --version`, for use after agyver.Parse has failed on it. Every
 // message that quotes that output goes through here. readAgyVersion folds stderr
-// into the output, and an AGY_ERROR line's short_error carries the cloud project
-// and region, so each such line is reduced to its canonical status
-// (redactAgyErrorLines), as the job path and the probes do (issues #205, #209 and
-// #211). Because stdout and stderr share one pipe, a stderr write can land after
-// other bytes, where redactAgyErrorLines does not see it; cutSplicedAgyError
+// into the output, so every stderr-echo path omits sign-in OAuth URL lines and
+// reduces each AGY_ERROR line to its canonical status (runJSONProbe and
+// versionOutputForMessage via redactStderrLines, and readStderrCopy via the
+// same two stages directly so it can choose between signInURLWithheld and
+// agyErrorWithheld; issues #205, #209, #211 and #228). Because stdout and stderr
+// share one pipe, a stderr write can land after other bytes, where
+// redactAgyErrorLines does not see it; cutSplicedAgyError
 // first cuts such a segment at the marker. It also cuts a marker in another case
 // or without the space after its colon, as a precaution: agy has not been seen to
 // write either. MEASURED against agy 1.3.1 on 2026-10-07 (`agy --version` with
 // stdout and stderr captured apart): stdout is "1.3.1", stderr is empty, the exit
 // status is 0, and the same shape again against agy 1.4.6 (stdout "1.4.6"). That
 // covers a normal run only; whether agy ever prints an
-// AGY_ERROR line on --version, for example in a failure state, is NOT MEASURED.
+// AGY_ERROR line or sign-in prompt on --version, for example in a failure state,
+// is NOT MEASURED.
 // The reduction runs before the bound, so the cut never leaves a fragment of a
 // line that was not reduced.
 // Callers pass the unreduced output to agyver.Parse first, because the reduction
 // can drop a version that shares a line with an AGY_ERROR segment it cannot
 // decode. The result is a quoted string, or, when nothing is left of non-empty
 // output, a plain phrase, so the message does not claim that agy printed nothing.
-// Both steps key on the text AGY_ERROR, so a marker split by other bytes is not
-// recognised.
+// Both AGY_ERROR steps key on the text AGY_ERROR, so a marker split by other
+// bytes is not recognised.
 func versionOutputForMessage(raw string) string {
-	reduced := strings.TrimSpace(redactAgyErrorLines(cutSplicedAgyError(raw)))
+	reduced := strings.TrimSpace(redactStderrLines(cutSplicedAgyError(raw)))
 	if reduced == "" && strings.TrimSpace(raw) != "" {
 		return "agy's output, which reduced to nothing once AGY_ERROR lines were left out of this message"
 	}
