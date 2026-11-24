@@ -285,6 +285,13 @@ func TestVersionOutputForMessage(t *testing.T) {
 			t.Errorf("whitespace-only output = %s, want the quoted empty string", got)
 		}
 	})
+	t.Run("omits a sign-in OAuth URL line", func(t *testing.T) {
+		got := unquote(t, versionOutputForMessage(signInURLStderr))
+		if got != signInURLStderrRedacted {
+			t.Errorf("result = %q, want %q", got, signInURLStderrRedacted)
+		}
+		assertNoSignInURLLeak(t, got)
+	})
 }
 
 // TestVersionOutputForMessageCutsAgyErrorNotAtLineStart: readAgyVersion merges
