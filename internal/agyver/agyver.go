@@ -80,8 +80,15 @@ import (
 // single run still reads back intact and nothing agy-mcp does can flush agy's
 // store on its behalf.
 //
-// Four later releases change how a headless run ends. None raises the floor,
+// Later releases change how a headless run ends. None raises the floor,
 // because agy-mcp classifies the run on both sides of each change:
+//   - 1.1.27 made headless -p runs whose tool actions were refused end with a
+//     notice and report denied_actions in JSON output (changelog). MEASURED
+//     against agy 1.5.16 in request-review mode: exit 0, status SUCCESS, empty
+//     response, denied_actions: [{"action": "command", "display_name": "Bash"}],
+//     and a stderr line starting "jetski: no output produced". agy-mcp decodes
+//     denied_actions and fails such runs as agy_error, preserving any text as
+//     partial (issue #244).
 //   - 1.1.28 made an expired --print-timeout return the partial output and exit
 //     0 instead of failing. Below 1.1.28 the expiry is an in-band ERROR (exit 1,
 //     error "timeout waiting for response", MEASURED against agy 1.1.15 and
@@ -160,7 +167,9 @@ import (
 //   - 1.5.2 changed `-p --dangerously-skip-permissions` to deny terminal
 //     commands or file access outside the workspace that a Gemini Enterprise
 //     administrator requires to be reviewed, and to block commands on the system
-//     command denylist (changelog; NOT MEASURED, no such account here). Outside
+//     command denylist (changelog; NOT MEASURED, no such account here; whether
+//     either policy path emits denied_actions under `-p --dangerously-skip-permissions`
+//     is also NOT MEASURED). Outside
 //     such a policy the flag does not confine a run to cwd and dirs: MEASURED
 //     against agy 1.5.16 on a consumer account, a run created a new file by
 //     absolute path outside its workspace, in a plain directory and in a git

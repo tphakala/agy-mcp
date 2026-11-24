@@ -86,6 +86,56 @@ type StepUpdate struct {
 	Usage           *Usage  `json:"usage,omitempty"`
 }
 
+// DeniedAction is one tool action agy refused under its permission policy in a
+// headless -p run (added in agy 1.1.27 per its changelog). MEASURED against
+// agy 1.5.16 in request-review mode: {"action": "command", "display_name": "Bash"}.
+// Both fields are plain strings so json.Unmarshal copies them out of Reader's
+// scratch buffer (see readLine).
+type DeniedAction struct {
+	Action      string `json:"action,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// UnmarshalJSON decodes a denied_actions element leniently so an unmeasured
+// older, enterprise, or future agy wire shape never fails the enclosing Result
+// decode and drops result.json (issue #244):
+//   - an object with string action/display_name decodes both fields (ignoring
+//     unknown or non-string fields rather than aborting);
+//   - a plain JSON string populates DisplayName;
+//   - any other JSON value leaves a zero DeniedAction{} entry so len(DeniedActions) > 0
+//     still triggers fail-closed classification with fallback error wording.
+//
+// All decoded strings are freshly allocated by json.Unmarshal and never alias b
+// (preserving Reader.readLine's buffer-reuse invariant).
+func (d *DeniedAction) UnmarshalJSON(b []byte) error {
+	*d = DeniedAction{}
+	type rawDeniedAction struct {
+		Action      string `json:"action"`
+		DisplayName string `json:"display_name"`
+	}
+	var exact rawDeniedAction
+	if json.Unmarshal(b, &exact) == nil {
+		d.Action = exact.Action
+		d.DisplayName = exact.DisplayName
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(b, &obj) == nil {
+		if raw, ok := obj["action"]; ok {
+			_ = json.Unmarshal(raw, &d.Action)
+		}
+		if raw, ok := obj["display_name"]; ok {
+			_ = json.Unmarshal(raw, &d.DisplayName)
+		}
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		d.DisplayName = s
+	}
+	return nil
+}
+
 // Result is the payload of the terminal result event.
 type Result struct {
 	ConversationID   string          `json:"conversation_id,omitempty"`
@@ -105,6 +155,16 @@ type Result struct {
 	// (internal/supervisor/stream.go), so a field missing here never reaches
 	// result.json.
 	FinishedReason string `json:"finished_reason,omitempty"`
+	// DeniedActions lists tool actions agy refused under its permission policy in a
+	// headless -p run (added in agy 1.1.27 per its changelog; issue #244). MEASURED
+	// against agy 1.5.16 in request-review mode: exit 0, status SUCCESS, empty
+	// response, and denied_actions: [{"action": "command", "display_name": "Bash"}].
+	// Whether Gemini Enterprise admin review policies or the system command denylist
+	// under --dangerously-skip-permissions (agy 1.5.2 changelog) emit the same field
+	// and shape is NOT MEASURED. The supervisor persists this struct re-marshalled
+	// (internal/supervisor/stream.go), so a field missing here never reaches
+	// result.json.
+	DeniedActions []DeniedAction `json:"denied_actions,omitempty"`
 }
 
 // Event is one decoded line of the stream. agy sets exactly one payload pointer,

@@ -711,3 +711,52 @@ func TestErrorResult(t *testing.T) {
 		})
 	}
 }
+
+// A terminal result carrying denied_actions decodes agy's raw wire spelling
+// (issue #244). MEASURED against agy 1.5.16 in request-review mode: exit 0,
+// status SUCCESS, empty response, and denied_actions entries with action and
+// display_name. Decoding raw JSON pins the struct tags that Go-struct
+// round-tripping would hide, and pins lenient decoding of unmeasured element
+// shapes so they never drop the enclosing terminal result event.
+func TestDeniedActionsResult(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want []DeniedAction
+	}{
+		{
+			name: "measured request-review shape",
+			in:   `{"event":"result","result":{"conversation_id":"00000000-0000-4000-8000-000000000001","status":"SUCCESS","response":"","denied_actions":[{"action":"command","display_name":"Bash"}]}}`,
+			want: []DeniedAction{{Action: "command", DisplayName: "Bash"}},
+		},
+		{
+			name: "object with non-string field salvages string field",
+			in:   `{"event":"result","result":{"conversation_id":"00000000-0000-4000-8000-000000000001","status":"SUCCESS","response":"","denied_actions":[{"action":123,"display_name":"Bash"}]}}`,
+			want: []DeniedAction{{DisplayName: "Bash"}},
+		},
+		{
+			name: "plain string element populates DisplayName",
+			in:   `{"event":"result","result":{"conversation_id":"00000000-0000-4000-8000-000000000001","status":"SUCCESS","response":"","denied_actions":["Bash"]}}`,
+			want: []DeniedAction{{DisplayName: "Bash"}},
+		},
+		{
+			name: "unknown element shape preserves non-empty entry",
+			in:   `{"event":"result","result":{"conversation_id":"00000000-0000-4000-8000-000000000001","status":"SUCCESS","response":"","denied_actions":[42]}}`,
+			want: []DeniedAction{{}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sr := NewReader(strings.NewReader(tc.in))
+			evs := readAll(t, sr)
+			if sr.Malformed() != 0 {
+				t.Fatalf("malformed = %d, want 0", sr.Malformed())
+			}
+			if len(evs) != 1 || evs[0].Result == nil {
+				t.Fatalf("got %d events: %+v", len(evs), evs)
+			}
+			if got := evs[0].Result.DeniedActions; !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("DeniedActions = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

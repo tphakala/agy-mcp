@@ -484,6 +484,10 @@ func TestStatusOutputRecoveryHint(t *testing.T) {
 		// generic recovery hint: its Error carries the correct foreground advice, and
 		// the generic "continue this thread" hint would contradict it (issue #173).
 		{"background-aborted with empty narration is excluded", manager.Status{State: manager.StateFailed, FailureReason: manager.ReasonBackgroundAborted, ConversationID: "c1"}, false},
+		// A run failed because agy refused tool actions (denied_actions) also gets
+		// NO generic recovery hint: its Error already names the refused actions and
+		// advises adjusting the prompt or permission policy (issue #244).
+		{"action-denied with empty output is excluded", manager.Status{State: manager.StateFailed, FailureReason: manager.ReasonAgyError, ActionDenied: true, ConversationID: "c1"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

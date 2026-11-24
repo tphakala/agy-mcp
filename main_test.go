@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tphakala/agy-mcp/v2/internal/config"
 	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
+	"github.com/tphakala/agy-mcp/v2/internal/manager"
+	"github.com/tphakala/agy-mcp/v2/internal/streamjson"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
 
@@ -28,7 +32,7 @@ func jsonMarshalForTest(v any) ([]byte, error) { return json.MarshalIndent(v, ""
 var builtBin string
 
 // buildBinary compiles the agy-mcp binary once for the whole package test run and
-// returns its path; the two run-job tests share it instead of each rebuilding.
+// returns its path; the run-job tests share it instead of each rebuilding.
 // Lazy (built on first use) so a focused run of the pure tests below pays nothing.
 // CreateTemp gives a unique path for this one shared binary; t.TempDir/t.ArtifactDir
 // are per-test and unavailable here (this is package-level, with no *testing.T),
@@ -101,6 +105,65 @@ func TestRunJobSubcommandEndToEnd(t *testing.T) {
 	out, _ := os.ReadFile(jobstore.OutPath(jobDir))
 	if strings.TrimSpace(string(out)) != "E2E OK" {
 		t.Fatalf("out = %q", out)
+	}
+}
+
+// End-to-end wire path for denied_actions (issue #244): FakeAgy emits the
+// measured agy 1.5.16 request-review terminal event, the real agy-mcp run-job
+// supervisor decodes and re-marshals it to result.json, and Manager.Status and
+// Manager.State both report failed/agy_error with ActionDenied set.
+func TestRunJobDeniedActionsEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-specific: bash-script fake agy is not executable on Windows")
+	}
+	bin, err := buildBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{
+		Exit:          0,
+		DeniedActions: []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
+		Stderr:        "jetski: no output produced (refused command permission)\n",
+	})
+
+	stateDir := t.TempDir()
+	dir, err := jobstore.New(stateDir).Create(jobstore.Meta{
+		ID:        "denied-1",
+		AgyPath:   agy,
+		Args:      []string{"-p", "x"},
+		StartedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "run-job", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run-job: %v\n%s", err, out)
+	}
+
+	m := manager.New(config.Config{
+		StateDir:              stateDir,
+		AgyPath:               agy,
+		ConversationCacheFile: filepath.Join(t.TempDir(), "last_conversations.json"),
+	})
+	st, err := m.Status("denied-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != manager.StateFailed || st.FailureReason != manager.ReasonAgyError || !st.ActionDenied || st.Result != "" || st.Partial {
+		t.Fatalf("status = %+v, want failed/agy_error action_denied=true result=\"\" partial=false", st)
+	}
+	if !strings.Contains(st.Error, "Bash (command)") {
+		t.Fatalf("error = %q, want it to mention %q", st.Error, "Bash (command)")
+	}
+	gotState, err := m.State("denied-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotState != manager.StateFailed {
+		t.Fatalf("State = %q, want %q", gotState, manager.StateFailed)
 	}
 }
 

@@ -74,7 +74,7 @@ const (
 	ReasonQuotaExhausted = "quota_exhausted" // agy hit a provider quota, rate-limit or AI credits wall; transient unless Status.Retryable is false
 	ReasonTimeout        = "timeout"         // the run outlived its timeout: agy-mcp killed it, or agy's own --print-timeout cut the turn short
 	ReasonSpawnFailed    = "spawn_failed"    // the agy binary could not be started, or agy itself exited 127 (one exit sentinel covers both)
-	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, or returned an indeterminate result
+	ReasonAgyError       = "agy_error"       // agy itself reported an error, exited non-zero, refused tool actions under its permission policy, or returned an indeterminate result
 	ReasonInterrupted    = "interrupted"     // the job process vanished without writing a result
 	// ReasonBackgroundAborted: agy ended the run itself (a clean exit, with a
 	// SUCCESS payload in the run MEASURED against agy 1.2.7, issue #173; a clean
@@ -132,6 +132,13 @@ type Status struct {
 	// FailureReason or Error; the tool layer turns it into recovery advice. Set
 	// only alongside StateFailed and ReasonAgyError.
 	SignInRequired bool
+	// ActionDenied reports that agy's clean-exit (or recovered) result payload
+	// carried non-empty denied_actions (issue #244). Set only alongside
+	// StateFailed and ReasonAgyError by markDeniedActions; it never changes the
+	// MCP wire schema directly. toStatusOutput uses it to withhold the generic
+	// "continue this conversation_id" recovery hint because Error already explains
+	// why the run stopped.
+	ActionDenied   bool
 	ConversationID string
 	// Model is the model id agy-mcp resolved for this run and persisted to meta:
 	// the request's model, or AGY_MCP_DEFAULT_MODEL when none was given, reduced to
@@ -148,16 +155,21 @@ type Status struct {
 	//     ERROR, an outcome this build does not recognize, or none at all. The
 	//     text is whatever the run had produced when it stopped. The same holds
 	//     for an event that carries a finished_reason, agy's own statement
-	//     (changelog, 1.4.11) that the turn ended early, even when it says SUCCESS.
+	//     (changelog, 1.4.11) that the turn ended early, or non-empty
+	//     denied_actions (agy refused tool actions under its permission policy,
+	//     issue #244), even when it says SUCCESS.
 	//   - Taken from a clean exit, or from a job recovered from its payload after
-	//     its supervisor died, whose stderr shows agy ended the run early: its own
-	//     --print-timeout expired mid-turn (markPrintTimeout) or it killed
-	//     outstanding background tasks (markBackgroundAborted). Either overrides a
-	//     SUCCESS mark, because agy set it on a run that did not finish.
+	//     its supervisor died, whose stderr or payload shows agy ended the run
+	//     early: its own --print-timeout expired mid-turn (markPrintTimeout), it
+	//     killed outstanding background tasks (markBackgroundAborted), or it
+	//     refused tool actions under its permission policy (markDeniedActions).
+	//     Any of these overrides a SUCCESS mark, because agy set it on a run that
+	//     did not finish.
 	//
 	// Otherwise, for a non-schema run, a response agy marked SUCCESS (and gave no
-	// finished_reason) is authoritative. For a schema run, only SUCCESS
-	// structured_output without a finished_reason is authoritative; response is diagnostic and partial when that structured
+	// finished_reason or denied_actions) is authoritative. For a schema run, only
+	// SUCCESS structured_output without a finished_reason or denied_actions is
+	// authoritative; response is diagnostic and partial when that structured
 	// result is missing. Either kind of authoritative result stays complete even
 	// if the process then exits via cancel or timeout. The one exception after
 	// exit is a timeout (code 124) whose stderr shows agy's own print-timeout had
@@ -373,22 +385,27 @@ func (m *Manager) statusFromExitCode(dir string, meta jobstore.Meta, st Status, 
 	return st
 }
 
-// applyCleanExitNotices lets agy's stderr notices (and a payload's finished_reason
-// naming a print-timeout) reclassify a run whose outcome
-// was derived as though agy finished its work: a clean exit (code 0), or a
-// recovered job whose supervisor died after persisting agy's result payload. The
-// supervisor persists that payload only after agy has been reaped (see run in
-// internal/supervisor), so in both cases agy's stderr is complete. done is the status
-// derived from the payload (or its absence); res and hasResult are that payload.
+// applyCleanExitNotices lets agy's stderr notices and payload signals (a
+// finished_reason naming a print-timeout, or non-empty denied_actions)
+// reclassify a run whose outcome was derived as though agy finished its work:
+// a clean exit (code 0), or a recovered job whose supervisor died after
+// persisting agy's result payload. The supervisor persists that payload only
+// after agy has been reaped (see run in internal/supervisor), so in both cases
+// agy's stderr is complete. done is the status derived from the payload (or its
+// absence); res and hasResult are that payload.
 func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res streamjson.Result, hasResult bool) Status {
-	// Two notices can show that a run agy vouched for did not finish its work:
-	// agy's stderr lines, and for the print-timeout one also the payload's
-	// finished_reason. Both reclassify the same three shapes: a SUCCESS whose
-	// state is still done here; a json-schema SUCCESS that never emitted
-	// structured_output, which applyResult has already failed as a generic
-	// agy_error; and a json-schema run that never wrote any terminal payload,
-	// which cleanExitWithoutPayload has likewise failed as agy_error (issue
-	// #180). The third shape is pinned by !hasResult (so done came from
+	// Three signals can show that a run agy vouched for did not finish its work:
+	// agy's stderr notices (background-abort and print-timeout), a payload's
+	// finished_reason naming a print-timeout, and non-empty denied_actions in
+	// the payload (issue #244). The stderr notices reclassify three shapes: a
+	// SUCCESS whose state is still done here; a json-schema SUCCESS that never
+	// emitted structured_output, which applyResult has already failed as a
+	// generic agy_error; and a json-schema run that never wrote any terminal
+	// payload, which cleanExitWithoutPayload has likewise failed as agy_error
+	// (issue #180). The payload-backed checks (finished_reason and
+	// denied_actions) apply only to the two payload-bearing shapes, since
+	// denied_actions is gated on hasResult (and res is zero-valued when
+	// !hasResult). The third shape is pinned by !hasResult (so done came from
 	// cleanExitWithoutPayload) plus its agy_error reason, which excludes that
 	// function's read-failure (unknown) branch; a non-schema no-payload clean
 	// exit is already StateDone and needs no extra clause. Every other outcome
@@ -438,6 +455,14 @@ func applyCleanExitNotices(dir string, meta jobstore.Meta, done Status, res stre
 	// backgroundMarkerScanBytes window.
 	if notices.printTimeout || res.FinishedReason == streamjson.FinishedReasonPrintTimeout {
 		return markPrintTimeout(done)
+	}
+	// The third signal: agy refused one or more tool actions under its permission
+	// policy and ended a headless -p run with exit 0 and status SUCCESS (added in
+	// agy 1.1.27 per its changelog; MEASURED against agy 1.5.16 in request-review
+	// mode; issue #244). Checked after background_aborted and print_timeout so
+	// those more specific reasons keep precedence.
+	if hasResult && len(res.DeniedActions) > 0 {
+		return markDeniedActions(done, res.DeniedActions)
 	}
 	return done
 }
@@ -490,6 +515,64 @@ func markPrintTimeout(st Status) Status {
 	st.Partial = st.Result != ""
 	st.Error = printTimeoutPartialError
 	return st
+}
+
+// markDeniedActions reclassifies a clean-exit (or recovered) run whose payload
+// carried non-empty denied_actions (issue #244). Any text the run produced is
+// preserved and marked partial; when there is none, Partial stays false.
+// ActionDenied suppresses the generic continuation Recovery hint in
+// toStatusOutput because Error already names the refused actions and advises
+// adjusting the prompt or permission policy.
+func markDeniedActions(st Status, denied []streamjson.DeniedAction) Status {
+	st.State = StateFailed
+	st.FailureReason = ReasonAgyError
+	st.ActionDenied = true
+	st.Partial = st.Result != ""
+	st.Error = deniedActionsError(denied)
+	return st
+}
+
+func deniedActionsError(denied []streamjson.DeniedAction) string {
+	if names := formatDeniedActions(denied); names != "" {
+		return "agy refused tool action(s) (" + names + ") under its permission policy, so the run did not complete; adjust the prompt or permission policy before retrying."
+	}
+	return "agy refused tool action(s) under its permission policy, so the run did not complete; adjust the prompt or permission policy before retrying."
+}
+
+const maxDeniedActionLabels = 16
+
+func formatDeniedActions(denied []streamjson.DeniedAction) string {
+	seen := make(map[string]struct{}, len(denied))
+	labels := make([]string, 0, min(len(denied), maxDeniedActionLabels))
+	overflow := 0
+	for _, d := range denied {
+		dn := strings.TrimSpace(d.DisplayName)
+		act := strings.TrimSpace(d.Action)
+		var label string
+		switch {
+		case dn != "" && act != "" && !strings.EqualFold(dn, act):
+			label = dn + " (" + act + ")"
+		case dn != "":
+			label = dn
+		case act != "":
+			label = act
+		default:
+			continue
+		}
+		if _, dup := seen[label]; dup {
+			continue
+		}
+		seen[label] = struct{}{}
+		if len(labels) < maxDeniedActionLabels {
+			labels = append(labels, label)
+		} else {
+			overflow++
+		}
+	}
+	if overflow > 0 {
+		labels = append(labels, fmt.Sprintf("and %d more", overflow))
+	}
+	return strings.Join(labels, ", ")
 }
 
 // printTimeoutExpired is the opening of the Error text every print-timeout
@@ -845,7 +928,8 @@ func argsSelectJSONSchema(args []string) bool {
 //     terminal status is agy declining to vouch for the text, so it is handed
 //     back and flagged rather than discarded. So is a payload that carries a
 //     finished_reason, which agy's changelog (1.4.11) defines as why a turn
-//     ended early: that overrides a SUCCESS mark.
+//     ended early, or non-empty denied_actions (agy refused tool actions under
+//     its permission policy, issue #244): either overrides a SUCCESS mark.
 //   - the streamed out file, reached when there is no payload or the payload
 //     carried no text. It is reconstructed from a stream that stopped, so it may
 //     be truncated or hold intermediate turns, and is partial.
@@ -866,7 +950,7 @@ func argsSelectJSONSchema(args []string) bool {
 func carryText(dir string, st Status, hasResult bool, res streamjson.Result, strictSchema bool) Status {
 	if hasResult && strictSchema && res.Status == streamjson.StatusSuccess && len(res.StructuredOutput) > 0 {
 		st.Result = string(res.StructuredOutput)
-		st.Partial = st.Partial || res.FinishedReason != ""
+		st.Partial = st.Partial || res.FinishedReason != "" || len(res.DeniedActions) > 0
 		return st
 	}
 	// Match readFile's trimming so a result reads identically whether it came
@@ -882,7 +966,7 @@ func carryText(dir string, st Status, hasResult bool, res streamjson.Result, str
 		// that learns the text is untrustworthy for its own reason (skipped
 		// lines in the stream, say) must not have that silently cleared by a
 		// payload agy happened to mark SUCCESS.
-		st.Partial = st.Partial || res.Status != streamjson.StatusSuccess || strictSchema || res.FinishedReason != ""
+		st.Partial = st.Partial || res.Status != streamjson.StatusSuccess || strictSchema || res.FinishedReason != "" || len(res.DeniedActions) > 0
 		return st
 	}
 	out, err := readFile(jobstore.OutPath(dir))
@@ -1259,13 +1343,14 @@ func matchesSignInRequired(msg string) bool {
 // schemaSuccessWithoutOutput reports a json-schema run agy marked SUCCESS that
 // carried no structured_output. It is the single source of truth for that shape,
 // used at both ends so they cannot drift: applyResult fails it as a generic
-// ReasonAgyError, and applyCleanExitNotices lets agy's stderr notices reclassify
-// that same failure: the background-abort markers to background_aborted (issue
-// #176, whose real cause is an idle background-abort, issue #173), and the
-// print-timeout notice to timeout. It is deliberately narrow: an
-// indeterminate payload (empty status) and an unrecognized status both fail the
-// StatusSuccess test and keep their agy_error reason, so this cannot mask an
-// unrelated failure.
+// ReasonAgyError, and applyCleanExitNotices lets agy's stderr notices and
+// payload signals reclassify that same failure: the background-abort markers to
+// background_aborted (issue #176, whose real cause is an idle background-abort,
+// issue #173), the print-timeout notice or payload finished_reason to timeout,
+// and non-empty denied_actions to an action-denied agy_error (issue #244). It
+// is deliberately narrow: an indeterminate payload (empty status) and an
+// unrecognized status both fail the StatusSuccess test and keep their agy_error
+// reason, so this cannot mask an unrelated failure.
 func schemaSuccessWithoutOutput(meta jobstore.Meta, res streamjson.Result) bool {
 	return res.Status == streamjson.StatusSuccess &&
 		len(res.StructuredOutput) == 0 &&

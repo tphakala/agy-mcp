@@ -57,6 +57,10 @@ type FakeAgy struct {
 	// ResultError populates the terminal result's error field, for an ERROR
 	// status.
 	ResultError string
+	// DeniedActions populates the terminal result's denied_actions array
+	// (issue #244). MEASURED against agy 1.5.16 in request-review mode:
+	// [{"action": "command", "display_name": "Bash"}].
+	DeniedActions []streamjson.DeniedAction
 	// OmitResult emits the init and step events but no terminal result, standing
 	// in for a run cut short before agy could summarize it.
 	OmitResult bool
@@ -364,6 +368,7 @@ func (cfg FakeAgy) result() streamjson.Result {
 		Status:         status,
 		Response:       cfg.Stdout,
 		Error:          cfg.ResultError,
+		DeniedActions:  cfg.DeniedActions,
 		NumTurns:       1,
 		Usage:          &streamjson.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
 	}
@@ -498,9 +503,9 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 		// exclusive; enforce it here (as WriteFakeSupervisor does for its own
 		// combinations) so a test that sets both fails loudly rather than passing
 		// while silently exercising none of the output it staged.
-		if cfg.Stdout != "" || cfg.Stderr != "" || cfg.Status != "" || cfg.ResultError != "" ||
+		if cfg.Stdout != "" || cfg.Stderr != "" || cfg.Status != "" || cfg.ResultError != "" || len(cfg.DeniedActions) != 0 ||
 			cfg.OmitResult || cfg.StreamChunks != 0 || len(cfg.Models) != 0 || len(cfg.Agents) != 0 || cfg.ProjectDir != "" || len(cfg.ProjectAgents) != 0 || len(cfg.Usage) != 0 || cfg.UsageRaw != "" {
-			t.Fatal("FakeAgy.IgnoreSIGTERM is mutually exclusive with the output fields (Stdout, Stderr, Status, ResultError, OmitResult, StreamChunks, Models, Agents, ProjectDir, ProjectAgents, Usage, UsageRaw): the hang-forever script never reaches them")
+			t.Fatal("FakeAgy.IgnoreSIGTERM is mutually exclusive with the output fields (Stdout, Stderr, Status, ResultError, DeniedActions, OmitResult, StreamChunks, Models, Agents, ProjectDir, ProjectAgents, Usage, UsageRaw): the hang-forever script never reaches them")
 		}
 		// Trap and ignore SIGTERM, then loop forever. The inner sleep is killed by
 		// the supervisor's group SIGTERM, but bash ignores it and restarts the

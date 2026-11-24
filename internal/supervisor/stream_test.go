@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -186,6 +187,7 @@ func TestPersistWritesResultAndNotesMalformed(t *testing.T) {
 		result: &streamjson.Result{
 			ConversationID: "c-1", Status: streamjson.StatusSuccess, Response: "done",
 			FinishedReason: streamjson.FinishedReasonPrintTimeout,
+			DeniedActions:  []streamjson.DeniedAction{{Action: "command", DisplayName: "Bash"}},
 		},
 		malformed: 3,
 	}
@@ -206,6 +208,9 @@ func TestPersistWritesResultAndNotesMalformed(t *testing.T) {
 	// of agy's line, so a field the manager reads must survive that step.
 	if res.FinishedReason != streamjson.FinishedReasonPrintTimeout {
 		t.Fatalf("finished_reason = %q, want %q: persist dropped it", res.FinishedReason, streamjson.FinishedReasonPrintTimeout)
+	}
+	if !slices.Equal(res.DeniedActions, oc.result.DeniedActions) {
+		t.Fatalf("denied_actions = %+v, want %+v: persist dropped it", res.DeniedActions, oc.result.DeniedActions)
 	}
 	// Skipped lines must be visible: silently dropping output would make a
 	// truncated answer look complete.
