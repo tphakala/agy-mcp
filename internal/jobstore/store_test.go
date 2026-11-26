@@ -316,6 +316,9 @@ func TestDirContractSharedByStoreAndHelpers(t *testing.T) {
 	if MetaPath(dir) != filepath.Join(dir, "meta.json") {
 		t.Fatalf("MetaPath(dir) = %q, want it under the job dir", MetaPath(dir))
 	}
+	if WorkDirPath(dir) != filepath.Join(dir, "work") {
+		t.Fatalf("WorkDirPath(dir) = %q, want %q", WorkDirPath(dir), filepath.Join(dir, "work"))
+	}
 
 	// The supervisor's WriteExitCodeDir is observed by the manager's Store.ExitCode.
 	if err := WriteExitCodeDir(dir, 42); err != nil {
