@@ -1,11 +1,15 @@
 package manager
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tphakala/agy-mcp/v2/internal/jobstore"
 	"github.com/tphakala/agy-mcp/v2/internal/proc"
 	"github.com/tphakala/agy-mcp/v2/internal/testutil"
 )
@@ -54,6 +58,30 @@ func TestGitAncestor(t *testing.T) {
 				t.Fatalf("gitAncestor = (%q, %v), want (%q, %v)", root, found, wantRoot, wantRoot != "")
 			}
 		})
+	}
+}
+
+// TestPrepareWorkDirRefusesExistingDirectory: the work directory is created,
+// never reused, so prepareWorkDir refuses a path that already exists, here one
+// holding an AGENTS.md.
+func TestPrepareWorkDirRefusesExistingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "work")
+	mkdirAll(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("rules"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareWorkDir(dir); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("prepareWorkDir(existing %s) = %v, want an error wrapping fs.ErrExist", dir, err)
+	}
+}
+
+// TestRunDirRejectsInvalidJobID: an isolated run's directory comes from the
+// store, so an id the store refuses yields its error, never a path outside the
+// store root.
+func TestRunDirRejectsInvalidJobID(t *testing.T) {
+	m := newManager(t, managerOpts{defaultTimeout: time.Minute})
+	if dir, err := m.runDir(StartRequest{Isolated: true}, "../escape"); !errors.Is(err, jobstore.ErrInvalidID) || dir != "" {
+		t.Fatalf("runDir(isolated, ../escape) = %q, %v; want an error wrapping jobstore.ErrInvalidID", dir, err)
 	}
 }
 
