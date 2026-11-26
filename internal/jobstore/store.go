@@ -29,7 +29,7 @@ type Meta struct {
 	ID             string        `json:"id"`
 	AgyPath        string        `json:"agy_path"`
 	Args           []string      `json:"args"`
-	Cwd            string        `json:"cwd"`
+	Cwd            string        `json:"cwd"` // directory the supervisor runs agy in: the request's normalized cwd, or the job's WorkDir for an isolated run
 	Model          string        `json:"model,omitempty"`
 	ConversationID string        `json:"conversation_id,omitempty"`
 	IdempotencyKey string        `json:"idempotency_key,omitempty"`
@@ -75,18 +75,23 @@ const (
 	// cancelled, so a job that finishes on its own after the request still wakes
 	// (issue #194). Existence is the whole signal.
 	DismissedFile = "dismissed"
+	// WorkDir is the empty directory an isolated run uses as agy's working
+	// directory. It lives inside the job directory, which Store.Remove deletes
+	// recursively, so it goes with the job.
+	WorkDir = "work"
 )
 
-// MetaPath, OutPath, ErrPath, ExitCodePath, ProgressPath and ResultPath join a
-// job directory with the corresponding file name. They are the shared spelling
-// for callers that hold only the directory (the supervisor, the manager's
-// status reader) rather than a store id.
+// MetaPath, OutPath, ErrPath, ExitCodePath, ProgressPath, ResultPath and
+// WorkDirPath join a job directory with the corresponding file or directory
+// name. They are the shared spelling for callers that hold only the directory
+// (the supervisor, the manager's status reader) rather than a store id.
 func MetaPath(dir string) string     { return filepath.Join(dir, MetaFile) }
 func OutPath(dir string) string      { return filepath.Join(dir, OutFile) }
 func ErrPath(dir string) string      { return filepath.Join(dir, ErrFile) }
 func ExitCodePath(dir string) string { return filepath.Join(dir, ExitCodeFile) }
 func ProgressPath(dir string) string { return filepath.Join(dir, ProgressFile) }
 func ResultPath(dir string) string   { return filepath.Join(dir, ResultFile) }
+func WorkDirPath(dir string) string  { return filepath.Join(dir, WorkDir) }
 
 // Progress is the supervisor's running summary of a job's stream position. It
 // exists so the conversation id agy reports in its init event is readable by

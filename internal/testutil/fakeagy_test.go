@@ -3,6 +3,8 @@
 package testutil
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -212,5 +214,36 @@ func TestFakeAgyAgentsRejectsTrailingFlag(t *testing.T) {
 	bad := runScript(t, 10*time.Second, path, "--output-format", "json", "agents", "--add-dir", "/w")
 	if strings.Contains(bad.Stdout, `"agents":["global"]`) {
 		t.Fatalf("trailing --add-dir: stdout = %q, want no agents envelope", bad.Stdout)
+	}
+}
+
+// InvocationLog is how a test sees the directory and argv agy was run
+// with, so the fake must record the physical cwd first and then each argument
+// on its own line, including one that contains a space, and log nothing extra
+// for a call without arguments.
+func TestFakeAgyRecordsInvocation(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "invocation")
+	path := WriteFakeAgy(t, FakeAgy{Stdout: "x", InvocationLog: logPath})
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{{"--model", "m", "-p", "two words"}, nil} {
+		if res := runScript(t, 10*time.Second, path, args...); res.ExitCode != 0 {
+			t.Fatalf("args %q: exit = %d, stderr %q", args, res.ExitCode, res.Stderr)
+		}
+		b, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatalf("args %q: read invocation log: %v", args, err)
+		}
+		want := append([]string{cwd}, args...)
+		if got := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n"); !slices.Equal(got, want) {
+			t.Fatalf("args %q: invocation log = %q, want %q", args, got, want)
+		}
 	}
 }

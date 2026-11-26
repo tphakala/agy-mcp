@@ -56,13 +56,32 @@ func TestRequestKeyCoversEveryRequestField(t *testing.T) {
 // keys stop matching and refuses retries across the upgrade (issue #189).
 // If this fails, make the change deliberately and handle the stored keys.
 func TestRequestKeyGolden(t *testing.T) {
-	req := StartRequest{
-		Prompt: "review", Cwd: "/repo", Model: "m", Dirs: []string{"/a"},
-		ContinueLatest: true, ConversationID: "resolved", Timeout: time.Minute,
-	}
-	const want = "a84f1234f41cc2257b0f15fb0d3ecc0d627f912731a098b2ff9b9d2898a468bb"
-	if got := requestKey(req); got != want {
-		t.Fatalf("requestKey = %s, want %s", got, want)
+	for _, tc := range []struct {
+		name string
+		req  StartRequest
+		want string
+	}{
+		// A request that leaves isolated false must keep the key it had before the
+		// field existed.
+		{
+			name: "without isolated",
+			req: StartRequest{
+				Prompt: "review", Cwd: "/repo", Model: "m", Dirs: []string{"/a"},
+				ContinueLatest: true, ConversationID: "resolved", Timeout: time.Minute,
+			},
+			want: "a84f1234f41cc2257b0f15fb0d3ecc0d627f912731a098b2ff9b9d2898a468bb",
+		},
+		{
+			name: "isolated",
+			req:  StartRequest{Prompt: "review", Model: "m", Timeout: time.Minute, Isolated: true},
+			want: "fbbc3aaf2205faa8ab84b28bfffa4cf8912eef6ecf47cc99ffccdaf5d2da1529",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := requestKey(tc.req); got != tc.want {
+				t.Fatalf("requestKey = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -100,7 +119,7 @@ func TestRequestKeyNormalizesEquivalentRequests(t *testing.T) {
 
 // TestFindIdempotentJobAcrossBuilds: a keyed job is compared by key, so it
 // replays even when this build derives different args. A job without a key
-// (written by an older build) is compared by args, accepting the argv a release
+// (written by an older build) is compared by cwd and args, accepting the argv a release
 // persisted before the implicit --add-dir <cwd> of issue #188, which is the
 // retry-across-an-upgrade case of issue #189.
 func TestFindIdempotentJobAcrossBuilds(t *testing.T) {
@@ -120,28 +139,43 @@ func TestFindIdempotentJobAcrossBuilds(t *testing.T) {
 	}
 	other := req
 	other.Prompt = "something else"
+	// No build that wrote keyless metas had isolated, so a keyless job is never
+	// the isolated job a retry is looking for, even when its args match.
+	isolatedReq := StartRequest{Prompt: "review", IdempotencyKey: "k", Timeout: time.Minute, Isolated: true}
 	for _, tc := range []struct {
 		name       string
 		requestKey string
 		args       []string
+		cwd        string // the job's persisted cwd; "" means the request's own
+		isolated   bool   // retry with isolatedReq instead of req
 		wantFound  bool
 	}{
-		{"keyed job replays despite different args", requestKey(req), preImplicitArgs, true},
-		{"keyed job with another request's key is refused", requestKey(other), args, false},
-		{"keyless job with this build's args replays", "", args, true},
-		{"keyless job from a release before the implicit dir replays", "", preImplicitArgs, true},
-		{"keyless job with v2.8.1's literal argv replays", "", v281Args, true},
-		{"keyless job for another request is refused", "", buildAgyArgs(other), false},
+		{name: "keyed job replays despite different args", requestKey: requestKey(req), args: preImplicitArgs, wantFound: true},
+		{name: "keyed job with another request's key is refused", requestKey: requestKey(other), args: args},
+		{name: "keyless job with this build's args replays", args: args, wantFound: true},
+		{name: "keyless job from a release before the implicit dir replays", args: preImplicitArgs, wantFound: true},
+		{name: "keyless job with v2.8.1's literal argv replays", args: v281Args, wantFound: true},
+		{name: "keyless job for another request is refused", args: buildAgyArgs(other)},
+		{name: "keyless job from another cwd is refused", args: args, cwd: "/elsewhere"},
+		{name: "keyless job is never replayed for an isolated request", args: buildAgyArgs(isolatedReq), isolated: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newManager(t, managerOpts{})
+			retry := req
+			if tc.isolated {
+				retry = isolatedReq
+			}
+			cwd := tc.cwd
+			if cwd == "" {
+				cwd = retry.Cwd
+			}
 			if _, err := m.store.Create(jobstore.Meta{
-				ID: "j", IdempotencyKey: "k", RequestKey: tc.requestKey, Cwd: req.Cwd, Args: tc.args,
+				ID: "j", IdempotencyKey: "k", RequestKey: tc.requestKey, Cwd: cwd, Args: tc.args,
 				Prompt: req.Prompt, PID: 999999, BootID: "old-boot", StartedAt: time.Now(),
 			}); err != nil {
 				t.Fatal(err)
 			}
-			job, found, err := m.findIdempotentJob(req, args)
+			job, found, err := m.findIdempotentJob(retry, buildAgyArgs(retry))
 			if tc.wantFound {
 				if err != nil || !found || job.ID != "j" {
 					t.Fatalf("findIdempotentJob = %+v, %v, %v; want the existing job", job, found, err)

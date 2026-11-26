@@ -334,27 +334,43 @@ func TestToStartRequestValidatesMode(t *testing.T) {
 
 // TestToStartRequestProjectRules: project_rules defaults to true, so an omitted
 // value and an explicit true both keep project rules on, and only an explicit
-// false sets SkipProjectRules.
+// false sets SkipProjectRules. An isolated run has no workspace, so any explicit
+// project_rules value is refused with it (only this layer can tell an explicit
+// true from an omitted value), and isolated alone maps through.
 func TestToStartRequestProjectRules(t *testing.T) {
 	t.Parallel()
 	on, off := true, false
 	for _, tc := range []struct {
-		name string
-		in   *bool
-		skip bool
+		name     string
+		in       *bool
+		isolated bool
+		skip     bool
+		wantErr  bool
 	}{
 		{name: "omitted", in: nil, skip: false},
 		{name: "true", in: &on, skip: false},
 		{name: "false", in: &off, skip: true},
+		{name: "isolated alone", in: nil, isolated: true},
+		{name: "isolated with true", in: &on, isolated: true, wantErr: true},
+		{name: "isolated with false", in: &off, isolated: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			req, err := runInput{Prompt: "x", ProjectRules: tc.in}.toStartRequest()
+			req, err := runInput{Prompt: "x", ProjectRules: tc.in, Isolated: tc.isolated}.toStartRequest()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "project_rules") || !strings.Contains(err.Error(), "isolated") {
+					t.Fatalf("err = %v, want a refusal naming project_rules and isolated", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("toStartRequest: %v", err)
 			}
 			if req.SkipProjectRules != tc.skip {
 				t.Fatalf("SkipProjectRules = %v, want %v", req.SkipProjectRules, tc.skip)
+			}
+			if req.Isolated != tc.isolated {
+				t.Fatalf("Isolated = %v, want %v", req.Isolated, tc.isolated)
 			}
 		})
 	}

@@ -132,6 +132,13 @@ type FakeAgy struct {
 	// the renderer cannot produce, such as the model-turn envelope agy prints when
 	// /usage is not expanded as a command.
 	UsageRaw string
+
+	// InvocationLog, when non-empty, is a file the run invocation overwrites with
+	// the script's physical working directory (pwd -P) on the first line and then
+	// one line per argument. Listings and `--version` answer in the preamble before
+	// the write, so they never touch it. Mutually exclusive with IgnoreSIGTERM,
+	// whose script never records anything.
+	InvocationLog string
 }
 
 // FakeQuotaGroup is one quota group the fake reports for /usage.
@@ -504,8 +511,8 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 		// combinations) so a test that sets both fails loudly rather than passing
 		// while silently exercising none of the output it staged.
 		if cfg.Stdout != "" || cfg.Stderr != "" || cfg.Status != "" || cfg.ResultError != "" || len(cfg.DeniedActions) != 0 ||
-			cfg.OmitResult || cfg.StreamChunks != 0 || len(cfg.Models) != 0 || len(cfg.Agents) != 0 || cfg.ProjectDir != "" || len(cfg.ProjectAgents) != 0 || len(cfg.Usage) != 0 || cfg.UsageRaw != "" {
-			t.Fatal("FakeAgy.IgnoreSIGTERM is mutually exclusive with the output fields (Stdout, Stderr, Status, ResultError, DeniedActions, OmitResult, StreamChunks, Models, Agents, ProjectDir, ProjectAgents, Usage, UsageRaw): the hang-forever script never reaches them")
+			cfg.OmitResult || cfg.StreamChunks != 0 || len(cfg.Models) != 0 || len(cfg.Agents) != 0 || cfg.ProjectDir != "" || len(cfg.ProjectAgents) != 0 || len(cfg.Usage) != 0 || cfg.UsageRaw != "" || cfg.InvocationLog != "" {
+			t.Fatal("FakeAgy.IgnoreSIGTERM is mutually exclusive with the output fields (Stdout, Stderr, Status, ResultError, DeniedActions, OmitResult, StreamChunks, Models, Agents, ProjectDir, ProjectAgents, Usage, UsageRaw, InvocationLog): the hang-forever script never reaches them")
 		}
 		// Trap and ignore SIGTERM, then loop forever. The inner sleep is killed by
 		// the supervisor's group SIGTERM, but bash ignores it and restarts the
@@ -548,12 +555,17 @@ func WriteFakeAgy(t *testing.T, cfg FakeAgy) string {
 	if err := os.WriteFile(usagePath, []byte(cfg.usageEnvelopeJSON(t)), 0o644); err != nil {
 		t.Fatalf("write fake agy usage envelope: %v", err)
 	}
+	record := ""
+	if cfg.InvocationLog != "" {
+		// The guard keeps a zero-argument call from logging one empty line.
+		record = fmt.Sprintf("{ pwd -P; [ $# -eq 0 ] || printf '%%s\\n' \"$@\"; } > %q\n", cfg.InvocationLog)
+	}
 	script := fmt.Sprintf(`#!/usr/bin/env bash
-%ssleep %.3f
+%s%ssleep %.3f
 cat %q
 cat %q 1>&2
 exit %d
-`, cfg.subcommandPreamble(modelsPath, agentsPath, projectAgentsPath, usagePath, errPath), cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
+`, cfg.subcommandPreamble(modelsPath, agentsPath, projectAgentsPath, usagePath, errPath), record, cfg.Sleep.Seconds(), outPath, errPath, cfg.Exit)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake agy: %v", err)
 	}

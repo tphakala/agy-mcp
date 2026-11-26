@@ -5,6 +5,7 @@ package mcptools
 import (
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,6 +278,33 @@ func TestProjectRulesOverMCP(t *testing.T) {
 				t.Fatalf("--add-dir %s present = %v, want %v (args %q)", cwd, got, tc.wantDir, meta.Args)
 			}
 		})
+	}
+}
+
+// TestIsolatedOverMCP sends isolated through the real tool schema and decoder:
+// the persisted job runs agy in its own work directory with no --add-dir. The
+// unit tests build runInput directly, so only this one pins the wire name.
+func TestIsolatedOverMCP(t *testing.T) {
+	mgr, stateDir := newTestManager(t, testutil.FakeAgy{Stdout: "OK", Exit: 0})
+	testutil.SkipIfInGitWorkTree(t, stateDir)
+	cs := connect(t, mgr, nil)
+
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: toolAgyRunSync, Arguments: map[string]any{"prompt": "x", "isolated": true},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("agy_run_sync: err=%v res=%+v", err, res)
+	}
+	jobID, _ := structMap(t, res.StructuredContent)["job_id"].(string)
+	meta, err := jobstore.New(stateDir).Load(jobID)
+	if err != nil {
+		t.Fatalf("load job %q: %v", jobID, err)
+	}
+	if want := filepath.Join("jobs", jobID, jobstore.WorkDir); !strings.HasSuffix(meta.Cwd, want) {
+		t.Errorf("meta.Cwd = %q, want it to end in %q", meta.Cwd, want)
+	}
+	if slices.Contains(meta.Args, "--add-dir") {
+		t.Errorf("args carry --add-dir, want no workspace for an isolated run: %q", meta.Args)
 	}
 }
 

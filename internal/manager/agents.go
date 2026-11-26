@@ -38,6 +38,11 @@ const (
 // agy returns for a nonexistent --add-dir (MEASURED against agy 1.3.1 and again
 // against agy 1.4.6). Issue
 // #203.
+//
+// With a cwd, agy also loads that workspace's .agents/hooks.json for the listing,
+// but no hook ran (MEASURED against agy 1.5.18 on macOS with SessionStart and
+// PreInvocation hooks; other hook events were not tried). That is the basis for
+// annotating the tool read-only.
 func (m *Manager) ListAgents(ctx context.Context, cwd string) ([]string, error) {
 	n, err := normalizeCwd(cwd)
 	if err != nil {
