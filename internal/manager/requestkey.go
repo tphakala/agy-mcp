@@ -52,7 +52,7 @@ type requestKeyFields struct {
 // a different request.
 //
 // It returns "" if encoding fails, which these field types cannot cause; a job
-// stored with an empty key is compared by args, and a retry whose key came out
+// stored with an empty key is compared by cwd and args, and a retry whose key came out
 // empty against a keyed job is refused.
 func requestKey(req StartRequest) string {
 	convID := req.ConversationID

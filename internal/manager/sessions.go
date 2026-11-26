@@ -13,7 +13,7 @@ import (
 // The jsonschema tags reach clients through list_sessions' output schema, which
 // nests this type under "sessions"; see TestToolDefinitionsDescribeThemselves.
 type Session struct {
-	Workspace      string `json:"workspace" jsonschema:"absolute path of the workspace directory this conversation belongs to; pass it as cwd to continue the thread there; an isolated run's entry names its job's own directory, which is deleted with the job, so continue that thread with conversation_id instead"`
+	Workspace      string `json:"workspace" jsonschema:"absolute path of the workspace directory this conversation belongs to; pass it as cwd to continue the thread there; an isolated run's entry names its work directory inside the job directory (MEASURED against agy 1.5.18 on macOS with a state directory that has no symlink in its path), which is deleted with the job, so continue that thread with conversation_id instead"`
 	ConversationID string `json:"conversation_id" jsonschema:"most recent conversation id agy recorded for this workspace; pass it as conversation_id to agy_run or agy_run_sync"`
 }
 

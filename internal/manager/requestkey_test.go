@@ -119,7 +119,7 @@ func TestRequestKeyNormalizesEquivalentRequests(t *testing.T) {
 
 // TestFindIdempotentJobAcrossBuilds: a keyed job is compared by key, so it
 // replays even when this build derives different args. A job without a key
-// (written by an older build) is compared by args, accepting the argv a release
+// (written by an older build) is compared by cwd and args, accepting the argv a release
 // persisted before the implicit --add-dir <cwd> of issue #188, which is the
 // retry-across-an-upgrade case of issue #189.
 func TestFindIdempotentJobAcrossBuilds(t *testing.T) {
