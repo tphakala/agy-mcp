@@ -192,6 +192,35 @@ func TestStartJobRejectsConversationIDWithContinueLatest(t *testing.T) {
 	}
 }
 
+// TestStartJobRejectsIsolatedConflicts: an isolated run uses a directory
+// agy-mcp creates and has no workspace, so each input that names one, or that
+// resolves against one, is refused with a message naming both fields. The check
+// runs before the platform gate, so it is exercised on every OS.
+func TestStartJobRejectsIsolatedConflicts(t *testing.T) {
+	m := New(config.Config{StateDir: t.TempDir(), MaxConcurrency: 4})
+	for _, tc := range []struct {
+		name  string
+		req   StartRequest
+		field string
+	}{
+		{"cwd", StartRequest{Cwd: t.TempDir()}, "cwd"},
+		{"dirs", StartRequest{Dirs: []string{t.TempDir()}}, "dirs"},
+		{"continue_latest", StartRequest{ContinueLatest: true}, "continue_latest"},
+		{"project rules skipped", StartRequest{SkipProjectRules: true}, "project_rules"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.req.Prompt, tc.req.Isolated = "hi", true
+			_, err := m.StartJob(tc.req)
+			if err == nil {
+				t.Fatalf("StartJob must reject isolated together with %s", tc.field)
+			}
+			if !strings.Contains(err.Error(), tc.field) || !strings.Contains(err.Error(), "isolated") {
+				t.Fatalf("error = %v, want it to name both %s and isolated", err, tc.field)
+			}
+		})
+	}
+}
+
 // TestNormalizeRequestCanonicalCwdIsTheImplicitWorkspace pins, on every OS, that
 // a trailing-separator cwd reaches the args as its canonical form, once, and that
 // a caller dir naming it still replaces the implicit one.

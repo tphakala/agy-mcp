@@ -27,6 +27,7 @@ type requestKeyFields struct {
 	ContinueLatest   bool          `json:"continue_latest,omitempty"`
 	JSONSchema       string        `json:"json_schema,omitempty"`
 	Timeout          time.Duration `json:"timeout,omitempty"`
+	Isolated         bool          `json:"isolated,omitempty"`
 }
 
 // requestKey identifies a normalized request for idempotency_key replays. It
@@ -72,6 +73,7 @@ func requestKey(req StartRequest) string {
 		ContinueLatest:   req.ContinueLatest,
 		JSONSchema:       req.JSONSchema,
 		Timeout:          req.Timeout,
+		Isolated:         req.Isolated,
 	})
 	if err != nil {
 		return ""
@@ -83,8 +85,13 @@ func requestKey(req StartRequest) string {
 // sameRequest reports whether a persisted job was created by the same normalized
 // request. A job that recorded a request key is compared by key.
 //
-// A job written by a build that predates the key is compared by its agy args.
-// Releases v2.6.0 through v2.8.1 persisted the args this build derives with the
+// The key covers the normalized cwd, so a keyed job needs no separate cwd check;
+// an isolated job's meta.Cwd is its own work directory, which no request names.
+//
+// A job written by a build that predates the key is compared by its cwd and its
+// agy args. It is never the job an isolated request is looking for, because
+// isolated is newer than the key. Releases v2.6.0 through v2.8.1 persisted
+// the args this build derives with the
 // implicit --add-dir <cwd> (issue #188) left out, so those are accepted too. The
 // one request this can match wrongly is a job from an unreleased build that had
 // the implicit dir but no key, created with project_rules false and retried
@@ -99,6 +106,9 @@ func requestKey(req StartRequest) string {
 func sameRequest(meta jobstore.Meta, req StartRequest, args []string) bool {
 	if meta.RequestKey != "" {
 		return meta.RequestKey == requestKey(req)
+	}
+	if req.Isolated || meta.Cwd != req.Cwd {
+		return false
 	}
 	if slices.Equal(meta.Args, args) {
 		return true

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -48,6 +49,41 @@ func TestSupervisorEscalatesToSIGKILL(t *testing.T) {
 	code, _ := os.ReadFile(jobstore.ExitCodePath(dir))
 	if got := strings.TrimSpace(string(code)); got != strconv.Itoa(jobstore.ExitTimeout) {
 		t.Fatalf("exit_code = %q, want %d (timeout via SIGKILL escalation)", got, jobstore.ExitTimeout)
+	}
+}
+
+// TestSupervisorRunsAgyInMetaCwd: agy runs in the directory meta.json names, not
+// in the supervisor's own working directory. An isolated run depends on this:
+// its work directory reaches agy only through meta.Cwd, so an agy started in the
+// inherited directory would load whatever repository that directory sits in.
+func TestSupervisorRunsAgyInMetaCwd(t *testing.T) {
+	dir := t.TempDir()
+	cwd := t.TempDir()
+	invocation := filepath.Join(t.TempDir(), "invocation")
+	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "OK", InvocationLog: invocation})
+	args := []string{"--dangerously-skip-permissions", "-p", "x"}
+	writeMeta(t, dir, jobstore.Meta{
+		ID: "j", AgyPath: agy, Args: args, Cwd: cwd,
+		StartedAt: time.Now(), Timeout: time.Minute,
+	})
+
+	if err := Run(dir); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	b, err := os.ReadFile(invocation)
+	if err != nil {
+		t.Fatalf("read invocation log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	wantCwd, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines[0] != wantCwd {
+		t.Errorf("agy ran in %q, want meta.Cwd %q", lines[0], wantCwd)
+	}
+	if want := ensureStreamJSON(args); !slices.Equal(lines[1:], want) {
+		t.Errorf("agy argv = %q, want %q", lines[1:], want)
 	}
 }
 

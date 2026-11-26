@@ -116,7 +116,8 @@ type StartRequest struct {
 	Agent            string   // optional; --agent <name>, selects a specific agy agent
 	Sandbox          bool     // optional; --sandbox, runs agy with terminal restrictions
 	Dirs             []string // repeated --add-dir
-	SkipProjectRules bool     // optional; omits the implicit --add-dir <Cwd>, which loads the project's rule files on agy that needs it (MEASURED: agy 1.2.16 and 1.4.8 load them without it)
+	SkipProjectRules bool     // optional; omits the implicit --add-dir <Cwd>, which loads the project's rule files on agy that needs it (MEASURED: agy 1.2.16 and 1.4.8 load them without it); it does not isolate a run, Isolated does
+	Isolated         bool     // optional; run agy in a fresh empty directory inside the job dir with no --add-dir, so no repository's rule files or hooks load (see StartJob)
 	ConversationID   string   // optional; --conversation <id>
 	JSONSchema       string   // optional; --json-schema <inline schema or path>, constrains the final stream-json result
 	IdempotencyKey   string   // optional; retry token used only by agy-mcp, never forwarded to agy
@@ -455,7 +456,8 @@ func (m *Manager) conversationLive(convID string) (bool, error) {
 
 // findIdempotentJob returns the existing job bound to req.IdempotencyKey. The
 // key is an at-most-once creation token, not an agy argument: request identity is
-// the normalized cwd plus the request itself (see sameRequest). Any
+// the request key, which covers the normalized cwd; a keyless job is compared by
+// cwd and args (see sameRequest). Any
 // unreadable job makes the lookup fail closed because it could be the binding
 // this retry needs to find.
 func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool, error) {
@@ -474,7 +476,7 @@ func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool,
 		if meta.IdempotencyKey != req.IdempotencyKey {
 			continue
 		}
-		if meta.Cwd != req.Cwd || !sameRequest(meta, req, args) {
+		if !sameRequest(meta, req, args) {
 			return Job{}, false, fmt.Errorf("idempotency_key %q is already bound to job %s with a different normalized request", req.IdempotencyKey, id)
 		}
 		// A persisted record that never recorded a supervisor PID is a
@@ -500,32 +502,37 @@ func (m *Manager) findIdempotentJob(req StartRequest, args []string) (Job, bool,
 
 // normalizeRequest resolves every value that feeds the gate key, agy args,
 // request key and persisted meta (cwd, model, timeout, and continue_latest) back
-// into req, so all of them derive from one normalized request. The request key
-// deliberately ignores the conversation continue_latest resolved (see
-// requestKey). Keeping a resolved value in a
-// separate local while req stays stale risks a later read of req.Model/req.Timeout
-// silently bypassing the default fallback.
+// into req, so all of them derive from one normalized request. An isolated
+// request has no cwd to resolve (validateStartRequest refused one) and keeps it
+// empty. The request key deliberately ignores the conversation continue_latest
+// resolved (see requestKey). Keeping a resolved value in a separate local while
+// req stays stale risks a later read of req.Model/req.Timeout silently
+// bypassing the default fallback.
 func (m *Manager) normalizeRequest(req StartRequest) (StartRequest, error) {
-	cwd := req.Cwd
-	if cwd == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			// An empty cwd would run agy in whatever directory this process
-			// inherited, and would be persisted as the job's cwd. Fail instead.
-			// (The cwd itself has no bearing on serialization: conversation locking
-			// uses only a resolved conversation id.)
-			return StartRequest{}, fmt.Errorf("determine working directory: %w", err)
+	// An isolated request keeps Cwd empty: its run directory is the job's work
+	// directory (see runDir), and an empty Cwd is what gives agy no workspace.
+	if !req.Isolated {
+		cwd := req.Cwd
+		if cwd == "" {
+			wd, err := os.Getwd()
+			if err != nil {
+				// An empty cwd would run agy in whatever directory this process
+				// inherited, and would be persisted as the job's cwd. Fail instead.
+				// (The cwd itself has no bearing on serialization: conversation locking
+				// uses only a resolved conversation id.)
+				return StartRequest{}, fmt.Errorf("determine working directory: %w", err)
+			}
+			cwd = wd
 		}
-		cwd = wd
+		// Canonicalize the cwd once so the gate key, cache lookups, cmd.Dir, and
+		// persisted meta all share one spelling (see normalizeCwd). Report the
+		// pre-normalization input on failure (normalizeCwd returns "" on error).
+		normalized, err := normalizeCwd(cwd)
+		if err != nil {
+			return StartRequest{}, fmt.Errorf("normalize working directory %q: %w", cwd, err)
+		}
+		req.Cwd = normalized
 	}
-	// Canonicalize the cwd once so the gate key, cache lookups, cmd.Dir, and
-	// persisted meta all share one spelling (see normalizeCwd). Report the
-	// pre-normalization input on failure (normalizeCwd returns "" on error).
-	normalized, err := normalizeCwd(cwd)
-	if err != nil {
-		return StartRequest{}, fmt.Errorf("normalize working directory %q: %w", cwd, err)
-	}
-	req.Cwd = normalized
 	if req.Model == "" {
 		req.Model = m.cfg.DefaultModel
 	}
@@ -594,13 +601,11 @@ func (m *Manager) claimIdempotency(req StartRequest, args []string) (existing Jo
 
 // StartJob persists meta and spawns the detached supervisor.
 func (m *Manager) StartJob(req StartRequest) (Job, error) {
-	// conversation_id and continue_latest are mutually exclusive: continue_latest
-	// resolves to a conversation id that would otherwise silently overwrite the
-	// explicit one, and the precedence even flips depending on whether the cache
-	// resolves. Reject the combination outright (before any platform or filesystem
-	// work) so the caller gets a deterministic error instead of a confusing winner.
-	if req.ContinueLatest && req.ConversationID != "" {
-		return Job{}, fmt.Errorf("conversation_id and continue_latest are mutually exclusive: pass one or the other")
+	// Reject the unworkable input combinations outright (before any platform or
+	// filesystem work) so the caller gets a deterministic error instead of a
+	// confusing winner; see validateStartRequest.
+	if err := validateStartRequest(req); err != nil {
+		return Job{}, err
 	}
 	// Job supervision is implemented on Linux (process groups, /proc) and Windows
 	// (Job Objects, OpenProcess). On other platforms refuse before doing any work, so
@@ -695,11 +700,18 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 		m.releaseKey(key)
 		return Job{}, fmt.Errorf("generate job id: %w", err)
 	}
+	// runDir is not assigned to req.Cwd: args above and requestKey below are built
+	// from the request and must keep seeing the one the caller made.
+	runDir, err := m.runDir(req, id)
+	if err != nil {
+		m.releaseKey(key)
+		return Job{}, err
+	}
 	meta := jobstore.Meta{
 		ID:             id,
 		AgyPath:        agy,
 		Args:           args,
-		Cwd:            req.Cwd,
+		Cwd:            runDir,
 		Model:          req.Model,
 		ConversationID: req.ConversationID,
 		IdempotencyKey: req.IdempotencyKey,
@@ -724,6 +736,14 @@ func (m *Manager) StartJob(req StartRequest) (Job, error) {
 	if err != nil {
 		m.releaseKey(key)
 		return Job{}, fmt.Errorf("create job store entry: %w", err)
+	}
+	// An isolated run's work directory lives inside the job dir Create just made.
+	// A failure here precedes any supervisor, so the job is removed the way a
+	// failed spawn removes it below.
+	if err := prepareRunDir(req, meta.Cwd); err != nil {
+		_ = m.store.Remove(id)
+		m.releaseKey(key)
+		return Job{}, err
 	}
 
 	cmd := exec.Command(m.cfg.SupervisorExe, "run-job", dir)
@@ -1179,6 +1199,11 @@ const (
 // outside the repository with no --add-dir for it kept them out. The flag
 // stays because the floor is 1.1.15 and 1.2.9 needs it. Not added when a
 // caller dir already names cwd.
+//
+// An isolated run reaches here with no cwd and no dirs (normalizeRequest leaves
+// Cwd empty and validateStartRequest refused dirs), so it gets no --add-dir. That
+// is the shape MEASURED against agy 1.5.18 on macOS to keep a repository's rules
+// and hooks out while its files stay readable by absolute path.
 func workspaceDirs(req StartRequest) []string {
 	var dirs []string
 	if !req.SkipProjectRules && req.Cwd != "" && !dirsInclude(req.Dirs, req.Cwd) {

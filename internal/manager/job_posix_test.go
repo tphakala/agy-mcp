@@ -3,6 +3,7 @@
 package manager
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -88,51 +89,120 @@ func TestStartJobWiresConversationID(t *testing.T) {
 }
 
 func TestStartJobIdempotencyReusesExistingJob(t *testing.T) {
-	agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "done", Sleep: 30 * time.Second})
+	// An isolated job's meta.Cwd is its own work directory while the request's Cwd
+	// stays empty, so the retry must be compared by the request key and not by
+	// meta.Cwd against the request.
+	for _, isolated := range []bool{false, true} {
+		name := "cwd"
+		if isolated {
+			name = "isolated"
+		}
+		t.Run(name, func(t *testing.T) {
+			agy := testutil.WriteFakeAgy(t, testutil.FakeAgy{Stdout: "done", Sleep: 30 * time.Second})
+			m := newManager(t, managerOpts{
+				agyPath:        "/usr/bin/agy",
+				supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+				defaultTimeout: time.Minute,
+				maxConcurrency: 4,
+				withCacheFile:  true,
+			})
+			req := StartRequest{Prompt: "review", IdempotencyKey: "retry-1"}
+			if isolated {
+				testutil.SkipIfInGitWorkTree(t, m.cfg.StateDir)
+				req.Isolated = true
+			} else {
+				req.Cwd = t.TempDir()
+			}
+
+			first, err := m.StartJob(req)
+			if err != nil {
+				t.Fatalf("first StartJob: %v", err)
+			}
+			killJob(t, m, first.ID)
+			second, err := m.StartJob(req)
+			if err != nil {
+				t.Fatalf("retry StartJob: %v", err)
+			}
+			if second.ID != first.ID {
+				t.Fatalf("retry created job %s, want existing %s", second.ID, first.ID)
+			}
+			ids, err := m.store.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ids) != 1 {
+				t.Fatalf("job ids = %v, want exactly one", ids)
+			}
+			meta, err := m.store.Load(first.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if meta.IdempotencyKey != "retry-1" {
+				t.Fatalf("persisted idempotency_key = %q, want retry-1", meta.IdempotencyKey)
+			}
+			// The replay above would also pass on the args fallback, so pin that the key
+			// the replay is meant to compare was actually persisted.
+			nreq, err := m.normalizeRequest(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := requestKey(nreq); meta.RequestKey != want {
+				t.Fatalf("persisted request_key = %q, want %q", meta.RequestKey, want)
+			}
+		})
+	}
+}
+
+// TestStartJobIsolatedRunsInFreshWorkDir: each isolated job gets its own empty
+// directory inside its job dir as agy's working directory, and the request
+// carries no workspace, so no --add-dir reaches agy. The work directory goes
+// into meta.Cwd only: putting it in req.Cwd would add an implicit --add-dir for
+// it.
+func TestStartJobIsolatedRunsInFreshWorkDir(t *testing.T) {
 	m := newManager(t, managerOpts{
 		agyPath:        "/usr/bin/agy",
-		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{AgyPath: agy}),
+		supervisorExe:  testutil.WriteFakeSupervisor(t, testutil.FakeSupervisor{Out: "done"}),
 		defaultTimeout: time.Minute,
 		maxConcurrency: 4,
 		withCacheFile:  true,
 	})
-	cwd := t.TempDir()
-	req := StartRequest{Prompt: "review", Cwd: cwd, IdempotencyKey: "retry-1"}
+	testutil.SkipIfInGitWorkTree(t, m.cfg.StateDir)
 
-	first, err := m.StartJob(req)
-	if err != nil {
-		t.Fatalf("first StartJob: %v", err)
+	const convID = "11111111-2222-3333-4444-555555555555"
+	cwds := make([]string, 0, 2)
+	for _, req := range []StartRequest{
+		{Prompt: "one", Isolated: true},
+		{Prompt: "two", Isolated: true, ConversationID: convID},
+	} {
+		job, err := m.StartJob(req)
+		if err != nil {
+			t.Fatalf("StartJob(%q): %v", req.Prompt, err)
+		}
+		deferJobDone(t, m, job.ID)
+		meta, err := m.store.Load(job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir, err := m.store.Dir(job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := jobstore.WorkDirPath(dir); meta.Cwd != want {
+			t.Errorf("%q: meta.Cwd = %q, want the job's work dir %q", req.Prompt, meta.Cwd, want)
+		}
+		if fi, err := os.Stat(meta.Cwd); err != nil || !fi.IsDir() {
+			t.Errorf("%q: work dir %q is not an existing directory: %v", req.Prompt, meta.Cwd, err)
+		}
+		if contains(meta.Args, "--add-dir") {
+			t.Errorf("%q: args carry --add-dir, want no workspace: %q", req.Prompt, meta.Args)
+		}
+		if req.ConversationID != "" && !hasArg(meta.Args, "--conversation", convID) {
+			t.Errorf("%q: args missing --conversation %s: %q", req.Prompt, convID, meta.Args)
+		}
+		cwds = append(cwds, meta.Cwd)
 	}
-	killJob(t, m, first.ID)
-	second, err := m.StartJob(req)
-	if err != nil {
-		t.Fatalf("retry StartJob: %v", err)
-	}
-	if second.ID != first.ID {
-		t.Fatalf("retry created job %s, want existing %s", second.ID, first.ID)
-	}
-	ids, err := m.store.List()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 1 {
-		t.Fatalf("job ids = %v, want exactly one", ids)
-	}
-	meta, err := m.store.Load(first.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.IdempotencyKey != "retry-1" {
-		t.Fatalf("persisted idempotency_key = %q, want retry-1", meta.IdempotencyKey)
-	}
-	// The replay above would also pass on the args fallback, so pin that the key
-	// the replay is meant to compare was actually persisted.
-	nreq, err := m.normalizeRequest(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := requestKey(nreq); meta.RequestKey != want {
-		t.Fatalf("persisted request_key = %q, want %q", meta.RequestKey, want)
+	if cwds[0] == cwds[1] {
+		t.Errorf("both isolated jobs share the work dir %q, want one per job", cwds[0])
 	}
 }
 
