@@ -90,7 +90,11 @@ func prepareWorkDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("resolve isolated work directory: %w", err)
 	}
-	for _, start := range []string{filepath.Dir(dir), filepath.Dir(resolved)} {
+	starts := []string{filepath.Dir(dir)}
+	if r := filepath.Dir(resolved); r != starts[0] {
+		starts = append(starts, r)
+	}
+	for _, start := range starts {
 		root, found, err := gitAncestor(start)
 		if err != nil {
 			return fmt.Errorf("check isolated work directory for a git work tree: %w", err)
